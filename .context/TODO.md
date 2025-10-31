@@ -3,6 +3,8 @@
 **Last Updated:** 2025-10-31
 **Project Status:** Scaffolded, Core Implementation Pending
 
+> **⚠️ AI Assistants:** Read the "Context Management & AI Workflow" section in `CLAUDE.md` for instructions on maintaining this file and creating RESEARCH.md documents. This TODO.md MUST be updated as you work on tasks.
+
 ---
 
 ## Executive Summary

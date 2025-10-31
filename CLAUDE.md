@@ -110,11 +110,132 @@ RefLex returns structured results (symbols, spans, scopes, imports, docstrings) 
 ---
 
 ## Repository Conventions
-- Source: `src/`  
-- Core library: `src/lib.rs`  
-- CLI entrypoint: `src/main.rs`  
-- Tests: `tests/`  
+- Source: `src/`
+- Core library: `src/lib.rs`
+- CLI entrypoint: `src/main.rs`
+- Tests: `tests/`
 - Local cache/config: `.reflex/` (added to `.gitignore`)
+- Context/planning: `.context/` (tracked in git)
+
+---
+
+## Context Management & AI Workflow
+
+### `.context/` Directory Structure
+
+The `.context/` directory contains planning documents, research notes, and decision logs to maintain context across development sessions. **All AI assistants working on RefLex must actively use and update these files.**
+
+#### Required Files
+
+**`.context/TODO.md`** - Primary task tracking and implementation roadmap
+- **MUST be consulted** at the start of every development session
+- **MUST be updated** when:
+  - Starting work on a task (mark as `in_progress`)
+  - Completing a task (mark as `completed`)
+  - Discovering new tasks or requirements
+  - Making architectural decisions that affect the roadmap
+  - Changing priorities or timelines
+- Contains:
+  - MVP goals and success criteria
+  - Task breakdown by module with priority levels (P0/P1/P2/P3)
+  - Implementation phases and timeline
+  - Open questions and design decisions
+  - Performance targets and benchmarks
+  - Maintenance strategy and update policy
+
+#### Optional Research Files
+
+Create RESEARCH.md files as needed to cache important findings:
+
+**`.context/TREE_SITTER_RESEARCH.md`** - Tree-sitter grammar investigation
+- Document findings about each language grammar
+- Node types and AST structure for symbol extraction
+- Query patterns and examples
+- Quirks, gotchas, and edge cases
+- Version compatibility notes
+
+**`.context/PERFORMANCE_RESEARCH.md`** - Optimization findings
+- Benchmarking results and bottleneck analysis
+- Memory-mapping techniques and best practices
+- Indexing speed optimizations
+- Query latency improvements
+- Cache format trade-offs
+
+**`.context/BINARY_FORMAT_RESEARCH.md`** - Data serialization decisions
+- Binary format design rationale
+- Alternatives considered and rejected
+- Serialization library comparisons (bincode, rkyv, custom)
+- Versioning and migration strategies
+
+**`.context/LANGUAGE_SPECIFIC_NOTES.md`** - Per-language implementation details
+- Language-specific symbol extraction challenges
+- Parser implementation patterns
+- Testing strategies for each language
+- Real-world codebase findings
+
+### AI Assistant Workflow
+
+When working on RefLex, AI assistants should:
+
+1. **Start Every Session:**
+   - Read `CLAUDE.md` for project overview
+   - Read `.context/TODO.md` to understand current state
+   - Identify which tasks are blocked, in progress, or ready to start
+
+2. **During Development:**
+   - Update `.context/TODO.md` task statuses in real-time
+   - Create/update RESEARCH.md files when conducting investigations
+   - Document decisions and rationale inline
+   - Add new tasks as they're discovered
+
+3. **Before Ending Session:**
+   - Ensure all task statuses are accurate
+   - Document any blocking issues or open questions
+   - Update implementation notes if approach changed
+   - Commit research findings to appropriate RESEARCH.md files
+
+4. **When Conducting Research:**
+   - Create focused RESEARCH.md files rather than losing findings
+   - Include code examples, links, and specific version numbers
+   - Note what was tried and why it didn't work (avoid repeated dead ends)
+   - Cross-reference related TODO.md tasks
+
+5. **Decision Documentation:**
+   - Major decisions go in `.context/TODO.md` under "Notes & Design Decisions"
+   - Technical deep-dives go in specific RESEARCH.md files
+   - Quick notes and TODOs stay in source code comments
+
+### Example: Starting a New Language Parser
+
+```bash
+# 1. Check TODO.md for the task
+# 2. Create research file
+touch .context/RUST_PARSER_RESEARCH.md
+
+# 3. Document investigation
+# - Examine tree-sitter-rust grammar
+# - List all node types for symbols
+# - Create example AST traversal code
+# - Note edge cases (macros, proc macros, etc.)
+
+# 4. Update TODO.md
+# - Mark parser task as in_progress
+# - Add any new subtasks discovered
+# - Document key decisions
+
+# 5. Implement based on research
+# 6. Update TODO.md to completed
+# 7. Reference RESEARCH.md in code comments
+```
+
+### Context Preservation Goals
+
+The `.context/` directory enables:
+- **Session continuity:** Pick up where previous work left off
+- **Decision tracking:** Understand why choices were made
+- **Avoiding rework:** Don't re-research solved problems
+- **Onboarding:** New contributors understand the project state
+- **AI handoff:** Different AI assistants can collaborate effectively
 
 ---
 
