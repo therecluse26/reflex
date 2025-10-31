@@ -1,0 +1,60 @@
+[package]
+name = "reflex"
+version = "0.1.0"
+edition = "2024"
+authors = ["RefLex Contributors"]
+description = "A local-first, structure-aware code search engine for AI agents"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/reflex"
+readme = "README.md"
+
+[dependencies]
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Error handling
+anyhow = "1.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Parsing
+tree-sitter = "0.24"
+
+# Hashing
+blake3 = "1.5"
+
+# HTTP server
+axum = "0.7"
+tokio = { version = "1.40", features = ["full"] }
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Parallel processing
+rayon = "1.10"
+
+# Compression
+zstd = "0.13"
+
+# File watching
+notify = "6.1"
+
+# Ignore patterns
+ignore = "0.4"
+
+# Date/time utilities
+chrono = "0.4"
+
+[dev-dependencies]
+tempfile = "3.12"
+
+[[bin]]
+name = "reflex"
+path = "src/main.rs"
+
+[lib]
+name = "reflex"
+path = "src/lib.rs"
