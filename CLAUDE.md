@@ -92,10 +92,10 @@ RefLex returns structured results (symbols, spans, scopes, imports, docstrings) 
 ---
 
 ## MVP Goals
-1. <100 ms per query on 100k+ files (warm path, OS cache).  
-2. Accurate symbol-level and scope-aware retrieval for Rust, TS/JS, Go, and Python.  
-3. Fully offline; no daemon required (per-request invocation loads mmap’d cache).  
-4. Clean, stable JSON API suitable for LLM tools and editor integrations.  
+1. <100 ms per query on 100k+ files (warm path, OS cache).
+2. Accurate symbol-level and scope-aware retrieval for Rust, TS/JS, Go, Python, PHP, C, C++, and Java.
+3. Fully offline; no daemon required (per-request invocation loads mmap'd cache).
+4. Clean, stable JSON API suitable for LLM tools and editor integrations.
 5. Optional on-save incremental indexing.
 
 ---

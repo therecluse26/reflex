@@ -147,6 +147,7 @@ fn handle_index(path: PathBuf, force: bool, languages: Vec<String>) -> Result<()
             "typescript" | "ts" => Some(Language::TypeScript),
             "go" => Some(Language::Go),
             "java" => Some(Language::Java),
+            "php" => Some(Language::PHP),
             "c" => Some(Language::C),
             "cpp" | "c++" => Some(Language::Cpp),
             _ => {
@@ -193,6 +194,7 @@ fn handle_query(
         "typescript" | "ts" => Some(Language::TypeScript),
         "go" => Some(Language::Go),
         "java" => Some(Language::Java),
+        "php" => Some(Language::PHP),
         "c" => Some(Language::C),
         "cpp" | "c++" => Some(Language::Cpp),
         _ => None,
