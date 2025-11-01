@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use ignore::WalkBuilder;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -29,7 +29,7 @@ impl Indexer {
     }
 
     /// Build or update the index for the given root directory
-    pub fn index(&self, root: impl AsRef<Path>) -> Result<IndexStats> {
+    pub fn index(&self, root: impl AsRef<Path>, show_progress: bool) -> Result<IndexStats> {
         let root = root.as_ref();
         log::info!("Indexing directory: {:?}", root);
 
@@ -81,18 +81,32 @@ impl Indexer {
                 .push(symbol);
         }
 
-        // Create progress bar
-        let pb = ProgressBar::new(total_files as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} files ({percent}%) ETA: {eta}")
-                .unwrap()
-                .progress_chars("=>-")
-        );
+        // Create progress bar (only if requested via --progress flag)
+        let pb = if show_progress {
+            let pb = ProgressBar::new(total_files as u64);
+            pb.set_draw_target(ProgressDrawTarget::stderr());
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} files ({percent}%) {msg}")
+                    .unwrap()
+                    .progress_chars("=>-")
+            );
+            // Force updates every 100ms to ensure progress is visible
+            pb.enable_steady_tick(std::time::Duration::from_millis(100));
+            pb
+        } else {
+            ProgressBar::hidden()
+        };
 
         let start_time = Instant::now();
 
         for (idx, file_path) in files.iter().enumerate() {
+            // Update progress bar at the start of each iteration
+            if show_progress {
+                pb.set_position((idx + 1) as u64);
+                pb.set_message(format!("{}", file_path.file_name().unwrap_or_default().to_string_lossy()));
+            }
+
             // Compute hash for incremental indexing
             let hash = self.hash_file(&file_path)?;
             let path_str = file_path.to_string_lossy().to_string();
@@ -159,12 +173,12 @@ impl Indexer {
                     new_hashes.insert(path_str, hash);
                 }
             }
-
-            // Update progress bar
-            pb.set_position((idx + 1) as u64);
         }
 
-        pb.finish_with_message("Indexing complete");
+        // Update progress bar message for post-processing
+        if show_progress {
+            pb.set_message("Finalizing trigram index...".to_string());
+        }
         log::info!("Parsed {} files, extracted {} symbols", files_indexed, all_symbols.len());
 
         // Step 3: Finalize and write trigram index
@@ -172,11 +186,18 @@ impl Indexer {
         let trigrams_path = self.cache.path().join("trigrams.bin");
         log::info!("Writing trigram index with {} trigrams to trigrams.bin",
                    trigram_index.trigram_count());
+
+        if show_progress {
+            pb.set_message("Writing trigram index...".to_string());
+        }
         trigram_index.write(&trigrams_path)
             .context("Failed to write trigram index")?;
         log::info!("Wrote {} files to trigrams.bin", trigram_index.file_count());
 
         // Step 4: Write content store
+        if show_progress {
+            pb.set_message("Writing content store...".to_string());
+        }
         let content_path = self.cache.path().join("content.bin");
         content_writer.write(&content_path)
             .context("Failed to write content store")?;
@@ -185,6 +206,9 @@ impl Indexer {
 
         // Step 5: Write symbols to cache (only if we have new symbols)
         if !all_symbols.is_empty() {
+            if show_progress {
+                pb.set_message("Writing symbols...".to_string());
+            }
             let mut writer = SymbolWriter::new();
             writer.add_all(&all_symbols);
             let symbols_path = self.cache.path().join(SYMBOLS_BIN);
@@ -196,8 +220,13 @@ impl Indexer {
         }
 
         // Step 6: Update SQLite statistics from database totals
+        if show_progress {
+            pb.set_message("Updating statistics...".to_string());
+        }
         // Note: Hashes are already persisted to SQLite via cache.update_file() in the loop above
         self.cache.update_stats()?;
+
+        pb.finish_with_message("Indexing complete");
 
         // Return stats
         let stats = self.cache.stats()?;

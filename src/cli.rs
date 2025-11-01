@@ -44,6 +44,10 @@ pub enum Command {
         /// Languages to include (empty = all)
         #[arg(short, long, value_delimiter = ',')]
         languages: Vec<String>,
+
+        /// Show progress bar during indexing
+        #[arg(short, long)]
+        progress: bool,
     },
 
     /// Query the code index
@@ -152,8 +156,8 @@ impl Cli {
 
         // Execute the subcommand
         match self.command {
-            Command::Index { path, force, languages } => {
-                handle_index(path, force, languages)
+            Command::Index { path, force, languages, progress } => {
+                handle_index(path, force, languages, progress)
             }
             Command::Query { pattern, symbols, lang, kind, ast, json, limit, expand, file, exact, count } => {
                 handle_query(pattern, symbols, lang, kind, ast, json, limit, expand, file, exact, count)
@@ -175,7 +179,7 @@ impl Cli {
 }
 
 /// Handle the `index` subcommand
-fn handle_index(path: PathBuf, force: bool, languages: Vec<String>) -> Result<()> {
+fn handle_index(path: PathBuf, force: bool, languages: Vec<String>, show_progress: bool) -> Result<()> {
     log::info!("Starting index command");
 
     let cache = CacheManager::new(&path);
@@ -211,7 +215,7 @@ fn handle_index(path: PathBuf, force: bool, languages: Vec<String>) -> Result<()
     };
 
     let indexer = Indexer::new(cache, config);
-    let stats = indexer.index(&path)?;
+    let stats = indexer.index(&path, show_progress)?;
 
     println!("Indexing complete!");
     println!("  Files indexed: {}", stats.total_files);
