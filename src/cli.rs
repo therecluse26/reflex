@@ -67,7 +67,8 @@ pub enum Command {
         #[arg(short, long)]
         symbols: bool,
 
-        /// Filter by language (rust, python, javascript, etc.)
+        /// Filter by language
+        /// Supported: rust, javascript (js), typescript (ts), vue, svelte
         #[arg(short, long)]
         lang: Option<String>,
 
@@ -287,18 +288,40 @@ fn handle_query(
     let cache = CacheManager::new(".");
     let engine = QueryEngine::new(cache);
 
-    let language = lang.as_deref().and_then(|s| match s.to_lowercase().as_str() {
-        "rust" | "rs" => Some(Language::Rust),
-        "python" | "py" => Some(Language::Python),
-        "javascript" | "js" => Some(Language::JavaScript),
-        "typescript" | "ts" => Some(Language::TypeScript),
-        "go" => Some(Language::Go),
-        "java" => Some(Language::Java),
-        "php" => Some(Language::PHP),
-        "c" => Some(Language::C),
-        "cpp" | "c++" => Some(Language::Cpp),
-        _ => None,
-    });
+    // Parse and validate language filter
+    let language = if let Some(lang_str) = lang.as_deref() {
+        match lang_str.to_lowercase().as_str() {
+            "rust" | "rs" => Some(Language::Rust),
+            "javascript" | "js" => Some(Language::JavaScript),
+            "typescript" | "ts" => Some(Language::TypeScript),
+            "vue" => Some(Language::Vue),
+            "svelte" => Some(Language::Svelte),
+            // Unsupported languages (no parser yet)
+            "python" | "py" => {
+                anyhow::bail!("Language 'python' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte");
+            }
+            "go" => {
+                anyhow::bail!("Language 'go' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte");
+            }
+            "java" => {
+                anyhow::bail!("Language 'java' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte");
+            }
+            "php" => {
+                anyhow::bail!("Language 'php' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte");
+            }
+            "c" => {
+                anyhow::bail!("Language 'c' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte");
+            }
+            "cpp" | "c++" => {
+                anyhow::bail!("Language 'c++' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte");
+            }
+            _ => {
+                anyhow::bail!("Unknown language '{}'. Supported languages: rust, javascript (js), typescript (ts), vue, svelte", lang_str);
+            }
+        }
+    } else {
+        None
+    };
 
     // Parse symbol kind - try exact match first (case-insensitive), then treat as Unknown
     let kind = kind_str.as_deref().and_then(|s| {
