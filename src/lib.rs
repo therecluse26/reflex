@@ -27,10 +27,12 @@
 
 pub mod cache;
 pub mod cli;
+pub mod content_store;
 pub mod indexer;
 pub mod models;
 pub mod parsers;
 pub mod query;
+pub mod trigram;
 
 // Re-export commonly used types
 pub use cache::CacheManager;

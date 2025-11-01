@@ -1,9 +1,32 @@
 # RefLex TODO
 
 **Last Updated:** 2025-10-31
-**Project Status:** Scaffolded, Core Implementation Pending
+**Project Status:** Architecture Redesign - Trigram-Based Full-Text Search
 
 > **⚠️ AI Assistants:** Read the "Context Management & AI Workflow" section in `CLAUDE.md` for instructions on maintaining this file and creating RESEARCH.md documents. This TODO.md MUST be updated as you work on tasks.
+
+---
+
+## 🔄 MAJOR ARCHITECTURAL DECISION (2025-10-31)
+
+**Decision:** RefLex is being redesigned from a **symbol-only index** to a **trigram-based full-text code search engine** (like Sourcegraph/Zoekt).
+
+**Rationale:**
+- User requirement: "Local, fast replacement for Sourcegraph Code Search for AI workflows"
+- Symbol-only approach was incomplete: `query "extract_symbols"` found 1/8 occurrences (12.5% recall)
+- Full-text search needed to find function calls, variable usage, comments, etc.
+- Trigram indexing enables <100ms queries on 10k+ files with complete coverage
+
+**Key Changes:**
+1. **Indexing**: Extract trigrams from all file content (not just symbol snippets)
+2. **Storage**: `trigrams.bin` (inverted index) + `content.bin` (full file contents)
+3. **Querying**: Intersect trigram posting lists → verify matches → return line-based results
+4. **Symbol filter**: Keep Tree-sitter integration for `symbol:` prefix queries
+5. **Regex support**: Extract trigrams from patterns; fall back to full scan when needed
+
+**Implementation Status:** Documentation updated (CLAUDE.md), implementation in progress
+
+**See:** `.context/TRIGRAM_RESEARCH.md` for technical details
 
 ---
 
@@ -15,10 +38,12 @@ RefLex has been successfully scaffolded with all major modules in place:
 - ✅ Module structure (cache, indexer, query, cli)
 - ✅ Build system (Rust 2024, all dependencies configured)
 - ✅ Basic tests (integration test stubs)
+- ✅ Tree-sitter integration for Rust (proof of concept)
+- ✅ Symbol indexing with incremental updates (working but incomplete)
 
-**Current State:** All modules are placeholder implementations with comprehensive TODO comments. The project compiles and the CLI is functional, but no actual indexing or querying capability exists yet.
+**Current State:** Transitioning from symbol-only to trigram-based full-text search.
 
-**Next Phase:** Implement core indexing and query functionality to achieve MVP goals.
+**Next Phase:** Implement trigram indexing and query engine.
 
 ---
 

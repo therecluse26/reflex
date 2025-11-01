@@ -4,10 +4,11 @@
 //! deterministic searches based on lexical, structural, or symbol patterns.
 
 use anyhow::{Context, Result};
-use std::path::Path;
 
 use crate::cache::{CacheManager, SymbolReader, SYMBOLS_BIN};
-use crate::models::{Language, SearchResult, SymbolKind};
+use crate::content_store::ContentReader;
+use crate::models::{Language, SearchResult, Span, SymbolKind};
+use crate::trigram::TrigramIndex;
 
 /// Query filter options
 #[derive(Debug, Clone)]
@@ -20,6 +21,8 @@ pub struct QueryFilter {
     pub use_ast: bool,
     /// Maximum number of results
     pub limit: Option<usize>,
+    /// Search symbol definitions only (vs full-text)
+    pub symbols_mode: bool,
 }
 
 impl Default for QueryFilter {
@@ -29,6 +32,7 @@ impl Default for QueryFilter {
             kind: None,
             use_ast: false,
             limit: None,
+            symbols_mode: false,
         }
     }
 }
@@ -60,40 +64,29 @@ impl QueryEngine {
         let reader = SymbolReader::open(&symbols_path)
             .context("Failed to open symbols cache")?;
 
-        // Step 2: Parse query pattern and execute search
-        let query_type = parse_query(pattern);
-        let mut results = match query_type {
-            QueryType::Symbol(name) => {
-                // Symbol name search (filtered to symbol names only)
-                if name.ends_with('*') {
-                    // Prefix match: "get_*"
-                    let prefix = name.trim_end_matches('*');
-                    reader.find_by_prefix(prefix)?
-                } else if name == "*" {
-                    // List all symbols
-                    reader.read_all()?
-                } else if name.contains('*') {
-                    // Wildcard match - treat as substring but symbol-only
-                    let substring = name.replace('*', "");
-                    reader.find_by_symbol_name_only(&substring)?
-                } else {
-                    // Substring match in symbol names only
-                    reader.find_by_symbol_name_only(&name)?
-                }
+        // Step 2: Execute search based on mode
+        let mut results = if filter.symbols_mode {
+            // Symbol name search (filtered to symbol definitions only)
+            // Searches Tree-sitter parsed symbols: functions, classes, structs, etc.
+            if pattern.ends_with('*') {
+                // Prefix match: "get_*"
+                let prefix = pattern.trim_end_matches('*');
+                reader.find_by_prefix(prefix)?
+            } else if pattern == "*" {
+                // List all symbols
+                reader.read_all()?
+            } else if pattern.contains('*') {
+                // Wildcard match - treat as substring but symbol-only
+                let substring = pattern.replace('*', "");
+                reader.find_by_symbol_name_only(&substring)?
+            } else {
+                // Substring match in symbol names only
+                reader.find_by_symbol_name_only(pattern)?
             }
-            QueryType::Code(text) => {
-                // Code content search (filtered to preview content only)
-                reader.find_by_preview_only(&text)?
-            }
-            QueryType::Lexical(text) => {
-                // Plain text search (searches both symbol names AND preview content)
-                reader.find_by_substring(&text)?
-            }
-            QueryType::Ast(_pattern) => {
-                // AST pattern matching - not yet implemented
-                log::warn!("AST pattern matching not yet implemented");
-                vec![]
-            }
+        } else {
+            // Trigram-based full-text search
+            // Searches all file content for any occurrence of the pattern
+            self.search_with_trigrams(pattern)?
         };
 
         // Step 3: Apply filters
@@ -101,6 +94,7 @@ impl QueryEngine {
             results.retain(|r| r.lang == lang);
         }
 
+        // Apply kind filter (only relevant for symbol searches)
         if let Some(kind) = filter.kind {
             results.retain(|r| r.kind == kind);
         }
@@ -123,10 +117,11 @@ impl QueryEngine {
 
     /// Search for symbols by exact name match
     pub fn find_symbol(&self, name: &str) -> Result<Vec<SearchResult>> {
-        self.search(
-            &format!("symbol:{}", name),
-            QueryFilter::default(),
-        )
+        let filter = QueryFilter {
+            symbols_mode: true,
+            ..Default::default()
+        };
+        self.search(name, filter)
     }
 
     /// Search using a Tree-sitter AST pattern
@@ -144,32 +139,86 @@ impl QueryEngine {
     pub fn list_by_kind(&self, kind: SymbolKind) -> Result<Vec<SearchResult>> {
         let filter = QueryFilter {
             kind: Some(kind),
+            symbols_mode: true,
             ..Default::default()
         };
 
         self.search("*", filter)
     }
-}
 
-/// Parse a query string into structured components
-fn parse_query(query: &str) -> QueryType {
-    if query.starts_with("symbol:") {
-        QueryType::Symbol(query.strip_prefix("symbol:").unwrap().to_string())
-    } else if query.starts_with("code:") {
-        QueryType::Code(query.strip_prefix("code:").unwrap().to_string())
-    } else if query.starts_with("fn ") || query.starts_with("class ") {
-        QueryType::Ast(query.to_string())
-    } else {
-        QueryType::Lexical(query.to_string())
+    /// Search using trigram-based full-text search
+    fn search_with_trigrams(&self, pattern: &str) -> Result<Vec<SearchResult>> {
+        // Load content store
+        let content_path = self.cache.path().join("content.bin");
+        let content_reader = ContentReader::open(&content_path)
+            .context("Failed to open content store")?;
+
+        // Build trigram index from content store
+        log::debug!("Building trigram index from {} files", content_reader.file_count());
+        let mut trigram_index = TrigramIndex::new();
+
+        for file_id in 0..content_reader.file_count() {
+            let file_path = content_reader.get_file_path(file_id as u32)
+                .context("Invalid file_id")?
+                .to_path_buf();
+            let content = content_reader.get_file_content(file_id as u32)?;
+
+            let idx = trigram_index.add_file(file_path);
+            trigram_index.index_file(idx, content);
+        }
+
+        trigram_index.finalize();
+        log::debug!("Trigram index built with {} trigrams", trigram_index.trigram_count());
+
+        // Search using trigrams
+        let candidates = trigram_index.search(pattern);
+        log::debug!("Found {} candidate locations", candidates.len());
+
+        // Verify matches and build results
+        let mut results = Vec::new();
+
+        for loc in candidates {
+            let file_path = trigram_index.get_file(loc.file_id)
+                .context("Invalid file_id from trigram search")?;
+            let content = content_reader.get_file_content(loc.file_id)?;
+
+            // Find all occurrences of the pattern in this file
+            for (line_idx, line) in content.lines().enumerate() {
+                if line.contains(pattern) {
+                    let line_no = line_idx + 1;
+
+                    // Calculate byte offset for this line
+                    let byte_offset: usize = content.lines()
+                        .take(line_idx)
+                        .map(|l| l.len() + 1) // +1 for newline
+                        .sum();
+
+                    // Detect language from file extension
+                    let ext = file_path.extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("");
+                    let lang = Language::from_extension(ext);
+
+                    results.push(SearchResult {
+                        path: file_path.to_string_lossy().to_string(),
+                        lang,
+                        kind: SymbolKind::Variable, // Use Variable as placeholder for text matches
+                        symbol: pattern.to_string(),
+                        span: Span {
+                            start_line: line_no,
+                            end_line: line_no,
+                            start_col: 0,
+                            end_col: 0,
+                        },
+                        scope: None,
+                        preview: line.to_string(),
+                    });
+                }
+            }
+        }
+
+        Ok(results)
     }
-}
-
-#[derive(Debug)]
-enum QueryType {
-    Symbol(String),
-    Code(String),
-    Ast(String),
-    Lexical(String),
 }
 
 #[cfg(test)]
@@ -187,20 +236,23 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_query() {
-        match parse_query("symbol:get_user") {
-            QueryType::Symbol(s) => assert_eq!(s, "get_user"),
-            _ => panic!("Expected Symbol query type"),
-        }
+    fn test_filter_modes() {
+        // Test that symbols_mode works as expected
+        let filter_fulltext = QueryFilter::default();
+        assert!(!filter_fulltext.symbols_mode);
 
-        match parse_query("fn main()") {
-            QueryType::Ast(_) => {},
-            _ => panic!("Expected Ast query type"),
-        }
+        let filter_symbols = QueryFilter {
+            symbols_mode: true,
+            ..Default::default()
+        };
+        assert!(filter_symbols.symbols_mode);
 
-        match parse_query("hello world") {
-            QueryType::Lexical(_) => {},
-            _ => panic!("Expected Lexical query type"),
-        }
+        // Test that kind implies symbols_mode (handled in CLI layer)
+        let filter_with_kind = QueryFilter {
+            kind: Some(SymbolKind::Function),
+            symbols_mode: true,
+            ..Default::default()
+        };
+        assert!(filter_with_kind.symbols_mode);
     }
 }

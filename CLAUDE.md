@@ -1,18 +1,19 @@
 # CLAUDE.md
 
 ## Project Overview
-**RefLex** is a local-first, structure-aware code search engine written in Rust. It’s a fast, deterministic, machine-friendly replacement for tools like grep/ripgrep/plain code search, designed specifically to feed AI coding agents and automation.
+**RefLex** is a local-first, full-text code search engine written in Rust. It's a fast, deterministic replacement for Sourcegraph Code Search, designed specifically for AI coding workflows and automation.
 
-RefLex returns structured results (symbols, spans, scopes, imports, docstrings) with sub-100 ms query latency on large monorepos by reading a lightweight, incremental cache stored in `.reflex/` (which is `.gitignored`).
+RefLex uses **trigram-based indexing** to enable sub-100ms full-text search across large codebases (10k+ files). Unlike symbol-only tools, RefLex finds **every occurrence** of patterns—function calls, variable usage, comments, and more—not just definitions. Results include file paths, line numbers, and surrounding context, with optional symbol-aware filtering.
 
 ---
 
 ## Core Principles
-1. Local-first: runs fully offline; all data stays on the developer’s machine.  
-2. Structured, not semantic: uses parsers (Tree-sitter) and deterministic indexes; no embeddings required.  
-3. Deterministic results: same query → same answer; no probabilistic ranking.  
-4. Instant access: memory-mapped cache enables per-invocation queries in tens of milliseconds.  
-5. Agent-oriented: outputs normalized JSON built for programmatic consumption (LLMs, IDEs, scripts).
+1. **Local-first**: Runs fully offline; all data stays on the developer's machine
+2. **Complete coverage**: Finds every occurrence, not just symbol definitions
+3. **Deterministic results**: Same query → same answer; no probabilistic ranking
+4. **Instant access**: Trigram index + memory-mapping enables sub-100ms queries
+5. **Agent-oriented**: Clean JSON output built for AI coding agents and automation
+6. **Regex support**: Extract trigrams from patterns for fast regex search
 
 ---
 
@@ -21,17 +22,20 @@ RefLex returns structured results (symbols, spans, scopes, imports, docstrings) 
 ### Components
 | Module | Description |
 | --- | --- |
-| Indexer | Scans and parses code with Tree-sitter; writes token/AST summaries and metadata into `.reflex/`. |
-| Query Engine | Loads the cache on demand; executes lexical + structural lookups; returns structured JSON. |
-| CLI / API Layer | Single binary for human and programmatic use (CLI and optional HTTP/MCP). |
-| Watcher (optional) | Incrementally updates cache on save, commit, or branch change. |
+| **Trigram Indexer** | Extracts trigrams from all code files; builds inverted index (trigram → file locations) |
+| **Content Store** | Stores full file contents (memory-mapped); enables context extraction around matches |
+| **Query Engine** | Intersects trigram posting lists; verifies matches; returns line-by-line results with context |
+| **Symbol Filter** | Uses Tree-sitter to identify symbol definitions (optional filter for queries) |
+| **CLI / API Layer** | Single binary for human and programmatic use (CLI and optional HTTP/MCP) |
+| **Watcher (optional)** | Incrementally updates index on file changes |
 
 ### Index Cache Structure (`.reflex/`)
     .reflex/
-      meta.db          # Metadata and config
-      symbols.bin      # Serialized symbol table (functions/classes/consts, spans, scopes)
-      tokens.bin       # Compressed lexical tokens / n-grams
-      hashes.json      # blake3(file) -> metadata for incremental updates
+      meta.db          # SQLite: file metadata, stats, config
+      trigrams.bin     # Inverted index: trigram → [file_id, line_no] posting lists
+      content.bin      # Memory-mapped full file contents for context extraction
+      symbols.bin      # Tree-sitter symbol index (for symbol: filter queries)
+      hashes.json      # blake3(file) → hash for incremental indexing
       config.toml      # Index settings (languages, filters, ignore rules)
 
 ---
@@ -41,14 +45,19 @@ RefLex returns structured results (symbols, spans, scopes, imports, docstrings) 
     # Build or update the local cache
     reflex index
 
-    # Query symbol definitions
-    reflex query "symbol:get_user"
+    # Full-text search (default - finds all occurrences)
+    reflex query "extract_symbols"
+    → Finds function definition + all call sites (11 total)
 
-    # Structural pattern search (Tree-sitter pattern)
-    reflex query 'fn :name(params)' --lang rust --ast
+    # Filter to symbol definitions only
+    reflex query "symbol:extract_symbols"
+    → Finds only the function definition (1 result)
 
-    # Export results as JSON (for AI agent use)
-    reflex query 'class User' --json
+    # Full-text search with language filter
+    reflex query "unwrap" --lang rust
+
+    # Export results as JSON (for AI agents)
+    reflex query "format!" --json
 
     # Serve a local HTTP API (optional)
     reflex serve --port 7878
@@ -56,12 +65,15 @@ RefLex returns structured results (symbols, spans, scopes, imports, docstrings) 
 ---
 
 ## Tech Stack
-- Language: Rust (Edition 2024)  
-- Crates:
-  - Parsing: `tree-sitter` + language grammars  
-  - Index/Meta: `tantivy` (or a custom mmap’d store), `serde`, `serde_json`  
-  - Incremental: `blake3` (content hashing), `notify` (FS watcher, optional)  
-  - Perf/infra: `rayon` (parallel), `zstd`/`lz4` (compression), `clap` (CLI)
+- **Language**: Rust (Edition 2024)
+- **Core Algorithm**: Trigram-based inverted index (inspired by Zoekt/Google Code Search)
+- **Crates**:
+  - **Indexing**: Custom trigram extraction, `memmap2` (zero-copy I/O)
+  - **Parsing**: `tree-sitter` + language grammars (for `symbol:` filter)
+  - **Storage**: `rusqlite` (metadata), `rkyv` (symbol serialization), custom binary format (trigrams)
+  - **Incremental**: `blake3` (content hashing), `ignore` (gitignore support)
+  - **Performance**: `rayon` (parallel indexing), memory-mapped I/O
+  - **CLI**: `clap` (argument parsing), `serde_json` (JSON output)
 
 ---
 
@@ -82,21 +94,35 @@ RefLex returns structured results (symbols, spans, scopes, imports, docstrings) 
 ---
 
 ## Design Notes
-- Incremental by content: files reindexed only if `blake3` changes.  
-- Memory-mapped reads: cache is mmap’d for zero-copy, fast cold-start.  
-- Deterministic filters: queries support lexical, regex, and AST-pattern filters (no embeddings).  
-- Respect ignore rules: honors `.gitignore` plus `config.toml` language/path allow/deny lists.  
-- Programmatic output: results are normalized JSON like:
-  - `{ path, lang, kind, symbol, span {start,end}, scope, preview }`.
+- **Trigram Algorithm**: Extracts 3-character substrings; builds inverted index for O(1) lookups
+- **Incremental by content**: Files reindexed only if `blake3` hash changes
+- **Memory-mapped I/O**: Zero-copy access to trigrams.bin and content.bin
+- **Regex support**: Extracts guaranteed trigrams from patterns; falls back to full scan if needed
+- **Deterministic**: Same query always returns same results (sorted by file:line)
+- **Respects .gitignore**: Uses `ignore` crate to skip untracked files
+- **Programmatic output**: Line-based results with context:
+  ```json
+  {
+    "file": "src/parsers/rust.rs",
+    "line": 67,
+    "column": 12,
+    "match": "extract_symbols(source, root, &query, ...)",
+    "context_before": ["    symbols.extend(extract_functions(...", ""],
+    "context_after": ["    symbols.extend(extract_structs(...", ""]
+  }
+  ```
 
 ---
 
 ## MVP Goals
-1. <100 ms per query on 100k+ files (warm path, OS cache).
-2. Accurate symbol-level and scope-aware retrieval for Rust, TS/JS, Go, Python, PHP, C, C++, and Java.
-3. Fully offline; no daemon required (per-request invocation loads mmap'd cache).
-4. Clean, stable JSON API suitable for LLM tools and editor integrations.
-5. Optional on-save incremental indexing.
+1. **<100ms per query** on 10k+ files (trigram index reduces search space 100-1000x)
+2. **Complete coverage**: Find every occurrence of patterns, not just definitions
+3. **Deterministic results**: Same query → same results (sorted by file:line)
+4. **Fully offline**: No daemon; per-query invocation with memory-mapped cache
+5. **Clean JSON API**: Structured output for AI agents and editor integrations
+6. **Symbol filtering**: Optional `symbol:` prefix uses Tree-sitter to filter to definitions
+7. **Regex support**: Extract trigrams from regex for fast pattern matching
+8. **Incremental indexing**: Only reindex changed files (blake3 hashing)
 
 ---
 

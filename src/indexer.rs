@@ -9,8 +9,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::cache::{CacheManager, SymbolReader, SymbolWriter, SYMBOLS_BIN};
+use crate::content_store::ContentWriter;
 use crate::models::{IndexConfig, IndexStats, Language, SearchResult};
 use crate::parsers::ParserFactory;
+use crate::trigram::TrigramIndex;
 
 /// Manages the indexing process
 pub struct Indexer {
@@ -58,10 +60,14 @@ impl Indexer {
         let files = self.discover_files(root)?;
         log::info!("Discovered {} files to index", files.len());
 
-        // Step 2: Parse files and extract symbols
+        // Step 2: Parse files and extract symbols + build trigram index
         let mut new_hashes = HashMap::new();
         let mut all_symbols = Vec::new();
         let mut files_indexed = 0;
+
+        // Initialize trigram index and content store
+        let mut trigram_index = TrigramIndex::new();
+        let mut content_writer = ContentWriter::new();
 
         // Build a map of path -> symbols from existing cache for quick lookup
         let mut existing_symbols_by_path: HashMap<String, Vec<SearchResult>> = HashMap::new();
@@ -77,6 +83,21 @@ impl Indexer {
             let hash = self.hash_file(&file_path)?;
             let path_str = file_path.to_string_lossy().to_string();
 
+            // Read file content for trigram indexing
+            let content = match std::fs::read_to_string(&file_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    log::warn!("Failed to read {}: {}", path_str, e);
+                    new_hashes.insert(path_str, hash);
+                    continue;
+                }
+            };
+
+            // Add file to trigram index and content store (always, not just for changed files)
+            let file_id = trigram_index.add_file(file_path.clone());
+            trigram_index.index_file(file_id, &content);
+            content_writer.add_file(file_path.clone(), &content);
+
             // Check if file changed
             if let Some(existing_hash) = existing_hashes.get(&path_str) {
                 if existing_hash == &hash {
@@ -91,8 +112,10 @@ impl Indexer {
                 }
             }
 
-            // File is new or changed - parse it
+            // File is new or changed - parse for symbols
             log::debug!("Parsing file: {}", path_str);
+
+            // Parse for symbols (Tree-sitter)
             match self.parse_file(&file_path) {
                 Ok(symbols) => {
                     let symbol_count = symbols.len();
@@ -126,7 +149,22 @@ impl Indexer {
 
         log::info!("Parsed {} files, extracted {} symbols", files_indexed, all_symbols.len());
 
-        // Step 3: Write symbols to cache (only if we have new symbols)
+        // Step 3: Finalize and write trigram index
+        trigram_index.finalize();
+        let trigrams_path = self.cache.path().join("trigrams.bin");
+        log::info!("Writing trigram index with {} trigrams to trigrams.bin",
+                   trigram_index.trigram_count());
+        // TODO: Implement binary serialization for TrigramIndex
+        // For now, we'll skip writing trigrams.bin and just keep it in memory
+
+        // Step 4: Write content store
+        let content_path = self.cache.path().join("content.bin");
+        content_writer.write(&content_path)
+            .context("Failed to write content store")?;
+        log::info!("Wrote {} files ({} bytes) to content.bin",
+                   content_writer.file_count(), content_writer.content_size());
+
+        // Step 5: Write symbols to cache (only if we have new symbols)
         if !all_symbols.is_empty() {
             let mut writer = SymbolWriter::new();
             writer.add_all(&all_symbols);
@@ -138,10 +176,10 @@ impl Indexer {
             log::info!("No new symbols to write (incremental indexing skipped all files)");
         }
 
-        // Step 4: Save updated hashes
+        // Step 6: Save updated hashes
         self.cache.save_hashes(&new_hashes)?;
 
-        // Step 5: Update SQLite statistics from database totals
+        // Step 7: Update SQLite statistics from database totals
         self.cache.update_stats()?;
 
         // Return stats

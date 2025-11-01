@@ -46,13 +46,30 @@ pub enum Command {
     },
 
     /// Query the code index
+    ///
+    /// Search modes:
+    ///   - Default: Full-text trigram search (finds all occurrences)
+    ///     Example: reflex query "extract_symbols"
+    ///
+    ///   - Symbol search: Search symbol definitions only
+    ///     Example: reflex query "parse" --symbols
+    ///     Example: reflex query "parse" --kind function  (implies --symbols)
     Query {
-        /// Search pattern (e.g., "symbol:get_user", "fn main", or plain text)
+        /// Search pattern
         pattern: String,
 
-        /// Filter by language
+        /// Search symbol definitions only (functions, classes, etc.)
+        #[arg(short, long)]
+        symbols: bool,
+
+        /// Filter by language (rust, python, javascript, etc.)
         #[arg(short, long)]
         lang: Option<String>,
+
+        /// Filter by symbol kind (implies --symbols)
+        /// Supported: function, class, struct, enum, trait, etc.
+        #[arg(short, long)]
+        kind: Option<String>,
 
         /// Use AST pattern matching
         #[arg(long)]
@@ -117,8 +134,8 @@ impl Cli {
             Command::Index { path, force, languages } => {
                 handle_index(path, force, languages)
             }
-            Command::Query { pattern, lang, ast, json, limit } => {
-                handle_query(pattern, lang, ast, json, limit)
+            Command::Query { pattern, symbols, lang, kind, ast, json, limit } => {
+                handle_query(pattern, symbols, lang, kind, ast, json, limit)
             }
             Command::Serve { port, host } => {
                 handle_serve(port, host)
@@ -187,7 +204,9 @@ fn handle_index(path: PathBuf, force: bool, languages: Vec<String>) -> Result<()
 /// Handle the `query` subcommand
 fn handle_query(
     pattern: String,
+    symbols_flag: bool,
     lang: Option<String>,
+    kind_str: Option<String>,
     use_ast: bool,
     as_json: bool,
     limit: Option<usize>,
@@ -210,11 +229,36 @@ fn handle_query(
         _ => None,
     });
 
+    let kind = kind_str.as_deref().and_then(|s| match s.to_lowercase().as_str() {
+        "function" | "fn" | "func" => Some(crate::models::SymbolKind::Function),
+        "class" => Some(crate::models::SymbolKind::Class),
+        "struct" => Some(crate::models::SymbolKind::Struct),
+        "enum" => Some(crate::models::SymbolKind::Enum),
+        "interface" => Some(crate::models::SymbolKind::Interface),
+        "trait" => Some(crate::models::SymbolKind::Trait),
+        "constant" | "const" => Some(crate::models::SymbolKind::Constant),
+        "variable" | "var" => Some(crate::models::SymbolKind::Variable),
+        "method" => Some(crate::models::SymbolKind::Method),
+        "module" | "mod" => Some(crate::models::SymbolKind::Module),
+        "namespace" | "ns" => Some(crate::models::SymbolKind::Namespace),
+        "type" => Some(crate::models::SymbolKind::Type),
+        "import" => Some(crate::models::SymbolKind::Import),
+        "export" => Some(crate::models::SymbolKind::Export),
+        _ => {
+            log::warn!("Unknown symbol kind: {}", s);
+            None
+        }
+    });
+
+    // Smart behavior: --kind implies --symbols
+    let symbols_mode = symbols_flag || kind.is_some();
+
     let filter = QueryFilter {
         language,
+        kind,
         use_ast,
         limit,
-        ..Default::default()
+        symbols_mode,
     };
 
     let results = engine.search(&pattern, filter)?;
