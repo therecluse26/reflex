@@ -3,6 +3,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use std::time::Instant;
 
 use crate::cache::CacheManager;
 use crate::indexer::Indexer;
@@ -283,15 +284,26 @@ fn handle_query(
         exact,
     };
 
+    // Measure query time
+    let start = Instant::now();
     let results = engine.search(&pattern, filter)?;
+    let elapsed = start.elapsed();
+
+    // Format timing string
+    let timing_str = if elapsed.as_millis() < 1 {
+        format!("{:.1}ms", elapsed.as_secs_f64() * 1000.0)
+    } else {
+        format!("{}ms", elapsed.as_millis())
+    };
 
     if as_json {
         println!("{}", serde_json::to_string_pretty(&results)?);
+        eprintln!("Found {} results in {}", results.len(), timing_str);
     } else {
         if results.is_empty() {
-            println!("No results found.");
+            println!("No results found (searched in {}).", timing_str);
         } else {
-            println!("Found {} results:\n", results.len());
+            println!("Found {} results in {}:\n", results.len(), timing_str);
             for result in results {
                 println!("{}:{} - {} {}",
                          result.path,
