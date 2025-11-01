@@ -28,7 +28,7 @@
 //! ```
 
 use anyhow::{Context, Result};
-use memmap2::{Mmap, MmapMut};
+use memmap2::Mmap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};

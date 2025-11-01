@@ -372,13 +372,11 @@ pub fn extract_trigrams_with_locations(text: &str, file_id: u32) -> Vec<(Trigram
     let mut result = Vec::new();
 
     let mut line_no = 1;
-    let mut line_start = 0;
 
     for (i, &byte) in bytes.iter().enumerate() {
         // Track newlines
         if byte == b'\n' {
             line_no += 1;
-            line_start = i + 1;
         }
 
         // Extract trigram
@@ -407,34 +405,6 @@ fn trigram_to_bytes(trigram: Trigram) -> [u8; 3] {
         ((trigram >> 8) & 0xFF) as u8,
         (trigram & 0xFF) as u8,
     ]
-}
-
-/// Intersect multiple sorted posting lists
-///
-/// Returns locations that appear in ALL lists.
-/// Uses efficient multi-way merge algorithm.
-fn intersect_all_lists(lists: &[&Vec<FileLocation>]) -> Vec<FileLocation> {
-    if lists.is_empty() {
-        return vec![];
-    }
-
-    if lists.len() == 1 {
-        return lists[0].clone();
-    }
-
-    // Start with smallest list
-    let mut result = lists[0].clone();
-
-    // Intersect with each subsequent list
-    for &list in &lists[1..] {
-        result = intersect_two_lists(&result, list);
-        if result.is_empty() {
-            // Early exit if no candidates remain
-            break;
-        }
-    }
-
-    result
 }
 
 /// Intersect posting lists by file ID
@@ -467,26 +437,6 @@ fn intersect_by_file(lists: &[&Vec<FileLocation>]) -> Vec<FileLocation> {
     }
 
     result.sort_unstable();
-    result
-}
-
-/// Intersect two sorted lists in O(n+m) time
-fn intersect_two_lists(a: &[FileLocation], b: &[FileLocation]) -> Vec<FileLocation> {
-    let mut result = Vec::new();
-    let (mut i, mut j) = (0, 0);
-
-    while i < a.len() && j < b.len() {
-        match a[i].cmp(&b[j]) {
-            std::cmp::Ordering::Equal => {
-                result.push(a[i]);
-                i += 1;
-                j += 1;
-            }
-            std::cmp::Ordering::Less => i += 1,
-            std::cmp::Ordering::Greater => j += 1,
-        }
-    }
-
     result
 }
 
@@ -575,37 +525,6 @@ mod tests {
         // Search for "goodbye" (not in text)
         let results = index.search("goodbye");
         assert!(results.is_empty());
-    }
-
-    #[test]
-    fn test_intersect_two_lists() {
-        let a = vec![
-            FileLocation::new(0, 1, 0),
-            FileLocation::new(0, 2, 10),
-            FileLocation::new(0, 3, 20),
-        ];
-
-        let b = vec![
-            FileLocation::new(0, 2, 10),
-            FileLocation::new(0, 3, 20),
-            FileLocation::new(0, 4, 30),
-        ];
-
-        let result = intersect_two_lists(&a, &b);
-
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], FileLocation::new(0, 2, 10));
-        assert_eq!(result[1], FileLocation::new(0, 3, 20));
-    }
-
-    #[test]
-    fn test_intersect_no_overlap() {
-        let a = vec![FileLocation::new(0, 1, 0), FileLocation::new(0, 2, 10)];
-
-        let b = vec![FileLocation::new(0, 3, 20), FileLocation::new(0, 4, 30)];
-
-        let result = intersect_two_lists(&a, &b);
-        assert!(result.is_empty());
     }
 
     #[test]

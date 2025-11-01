@@ -233,12 +233,6 @@ impl QueryEngine {
                 if line.contains(pattern) {
                     let line_no = line_idx + 1;
 
-                    // Calculate byte offset for this line
-                    let byte_offset: usize = content.lines()
-                        .take(line_idx)
-                        .map(|l| l.len() + 1) // +1 for newline
-                        .sum();
-
                     // Detect language from file extension
                     let ext = file_path.extension()
                         .and_then(|e| e.to_str())

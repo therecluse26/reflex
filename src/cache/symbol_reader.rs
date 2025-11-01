@@ -2,7 +2,6 @@
 
 use anyhow::{Context, Result};
 use memmap2::Mmap;
-use rkyv::Deserialize;
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;

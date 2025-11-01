@@ -8,6 +8,8 @@
 
 pub mod rust;
 pub mod typescript;
+pub mod vue;
+pub mod svelte;
 
 use anyhow::Result;
 use crate::models::{Language, SearchResult};
@@ -26,6 +28,8 @@ impl ParserFactory {
             Language::Rust => rust::parse(path, source),
             Language::TypeScript => typescript::parse(path, source, language),
             Language::JavaScript => typescript::parse(path, source, language),
+            Language::Vue => vue::parse(path, source),
+            Language::Svelte => svelte::parse(path, source),
             Language::Python => {
                 // TODO: Implement Python parser
                 Ok(vec![])

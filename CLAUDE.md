@@ -64,6 +64,50 @@ RefLex uses **trigram-based indexing** to enable sub-100ms full-text search acro
 
 ---
 
+## Supported Languages & Frameworks
+
+RefLex currently supports symbol extraction for the following languages and frameworks:
+
+### Fully Supported (Tree-sitter parsers implemented)
+
+| Language/Framework | Extensions | Symbol Extraction | Notes |
+|-------------------|------------|------------------|-------|
+| **Rust** | `.rs` | Functions, structs, enums, traits, impls, modules, methods | Complete Rust support |
+| **TypeScript** | `.ts`, `.tsx`, `.mts`, `.cts` | Functions, classes, interfaces, types, enums, methods | Full TypeScript + JSX support |
+| **JavaScript** | `.js`, `.jsx`, `.mjs`, `.cjs` | Functions, classes, constants, methods | Includes React/JSX support via TSX grammar |
+| **Vue** | `.vue` | Functions, constants, methods from `<script>` blocks | Supports both Options API and Composition API |
+| **Svelte** | `.svelte` | Functions, variables, reactive declarations (`$:`), module context | Full Svelte component support |
+
+### React/JSX Support Details
+- **React Components**: Function and class components automatically detected
+- **Hooks**: Custom hooks extracted as functions (e.g., `useCounter`)
+- **TypeScript + JSX**: Full support for `.tsx` files with type annotations
+- **Interfaces & Types**: Props interfaces and type definitions extracted
+
+### Vue Support Details
+- **Script Blocks**: Extracts symbols from all `<script>` sections
+- **Composition API**: Full support for `<script setup>` syntax
+- **TypeScript**: Supports `<script lang="ts">` and `<script setup lang="ts">`
+- **Parsing Method**: Line-based extraction (tree-sitter-vue incompatible with tree-sitter 0.24+)
+
+### Svelte Support Details
+- **Component Scripts**: Extracts from both regular and `context="module"` scripts
+- **Reactive Declarations**: Tracks `$:` reactive statements
+- **TypeScript**: Supports `<script lang="ts">`
+- **Parsing Method**: Line-based extraction (tree-sitter-svelte incompatible with tree-sitter 0.24+)
+
+### Planned Support (parsers not yet implemented)
+- Python (`.py`)
+- Go (`.go`)
+- Java (`.java`)
+- C (`.c`, `.h`)
+- C++ (`.cpp`, `.hpp`, `.cxx`)
+- PHP (`.php`)
+
+**Note**: Full-text trigram search works for **all file types** regardless of parser support. Symbol filtering (`symbol:` queries) requires a language parser.
+
+---
+
 ## Tech Stack
 - **Language**: Rust (Edition 2024)
 - **Core Algorithm**: Trigram-based inverted index (inspired by Zoekt/Google Code Search)

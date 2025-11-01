@@ -584,6 +584,40 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_react_component() {
+        let source = r#"
+            import React, { useState } from 'react';
+
+            interface ButtonProps {
+                label: string;
+                onClick: () => void;
+            }
+
+            const Button: React.FC<ButtonProps> = ({ label, onClick }) => {
+                return (
+                    <button onClick={onClick}>
+                        {label}
+                    </button>
+                );
+            };
+
+            function useCounter(initial: number) {
+                const [count, setCount] = React.useState(initial);
+                return { count, setCount };
+            }
+
+            export default Button;
+        "#;
+
+        let symbols = parse("Button.tsx", source, Language::TypeScript).unwrap();
+
+        // Should find interface, Button component (arrow fn), useCounter hook (function)
+        assert!(symbols.iter().any(|s| s.symbol == "ButtonProps" && matches!(s.kind, SymbolKind::Interface)));
+        assert!(symbols.iter().any(|s| s.symbol == "Button" && matches!(s.kind, SymbolKind::Function)));
+        assert!(symbols.iter().any(|s| s.symbol == "useCounter" && matches!(s.kind, SymbolKind::Function)));
+    }
+
+    #[test]
     fn test_parse_mixed_symbols() {
         let source = r#"
             interface Config {
