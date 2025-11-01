@@ -104,8 +104,16 @@ impl QueryEngine {
         }
 
         // Apply kind filter (only relevant for symbol searches)
-        if let Some(kind) = filter.kind {
-            results.retain(|r| r.kind == kind);
+        // Special case: --kind function also includes methods (methods are functions in classes)
+        if let Some(ref kind) = filter.kind {
+            results.retain(|r| {
+                if matches!(kind, SymbolKind::Function) {
+                    // When searching for functions, also include methods
+                    matches!(r.kind, SymbolKind::Function | SymbolKind::Method)
+                } else {
+                    r.kind == *kind
+                }
+            });
         }
 
         // Apply file path filter (substring match)
