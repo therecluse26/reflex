@@ -320,6 +320,30 @@ compression_level = 3  # zstd level
         Ok(())
     }
 
+    /// Batch update multiple files in a single transaction for performance
+    pub fn batch_update_files(&self, files: &[(String, String, String, usize)]) -> Result<()> {
+        let db_path = self.cache_path.join(META_DB);
+        let mut conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for batch update")?;
+
+        let now = chrono::Utc::now().timestamp();
+        let now_str = now.to_string();
+
+        // Use a transaction for batch inserts
+        let tx = conn.transaction()?;
+
+        for (path, hash, language, symbol_count) in files {
+            tx.execute(
+                "INSERT OR REPLACE INTO files (path, hash, last_indexed, language, symbol_count)
+                 VALUES (?, ?, ?, ?, ?)",
+                [path.as_str(), hash.as_str(), &now_str, language.as_str(), &symbol_count.to_string()],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Update statistics after indexing by calculating totals from database
     pub fn update_stats(&self) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);

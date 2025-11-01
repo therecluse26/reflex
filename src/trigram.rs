@@ -129,6 +129,28 @@ impl TrigramIndex {
         self.index = temp_map.into_iter().collect();
     }
 
+    /// Build index from a collection of pre-extracted trigrams (bulk operation)
+    ///
+    /// This is much more efficient than calling index_file() multiple times,
+    /// as it builds the HashMap once instead of rebuilding it for each file.
+    pub fn build_from_trigrams(&mut self, trigrams: Vec<(Trigram, FileLocation)>) {
+        let mut temp_map: HashMap<Trigram, Vec<FileLocation>> = HashMap::new();
+
+        // Group trigrams into posting lists
+        for (trigram, location) in trigrams {
+            temp_map
+                .entry(trigram)
+                .or_insert_with(Vec::new)
+                .push(location);
+        }
+
+        // Convert to sorted Vec for binary search
+        self.index = temp_map.into_iter().collect();
+
+        // Finalize immediately (sort and deduplicate)
+        self.finalize();
+    }
+
     /// Finalize the index by sorting all posting lists and the index itself
     ///
     /// Must be called after all files are indexed, before querying.

@@ -6,15 +6,29 @@
 use anyhow::{Context, Result};
 use ignore::WalkBuilder;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::cache::{CacheManager, SymbolReader, SymbolWriter, SYMBOLS_BIN};
 use crate::content_store::ContentWriter;
 use crate::models::{IndexConfig, IndexStats, Language, SearchResult};
 use crate::parsers::ParserFactory;
-use crate::trigram::TrigramIndex;
+use crate::trigram::{extract_trigrams_with_locations, FileLocation, Trigram, TrigramIndex};
+
+/// Result of processing a single file (used for parallel processing)
+struct FileProcessingResult {
+    path: PathBuf,
+    path_str: String,
+    hash: String,
+    content: String,
+    symbols: Vec<SearchResult>,
+    language: Language,
+    trigrams: Vec<(Trigram, FileLocation)>, // Pre-extracted trigrams for this file
+}
 
 /// Manages the indexing process
 pub struct Indexer {
@@ -67,6 +81,7 @@ impl Indexer {
         let mut new_hashes = HashMap::new();
         let mut all_symbols = Vec::new();
         let mut files_indexed = 0;
+        let mut file_metadata: Vec<(String, String, String, usize)> = Vec::new(); // For batch SQLite update
 
         // Initialize trigram index and content store
         let mut trigram_index = TrigramIndex::new();
@@ -98,91 +113,173 @@ impl Indexer {
             ProgressBar::hidden()
         };
 
-        let start_time = Instant::now();
+        // Atomic counter for thread-safe progress updates
+        let progress_counter = Arc::new(AtomicU64::new(0));
 
-        for (idx, file_path) in files.iter().enumerate() {
-            // Update progress bar at the start of each iteration
-            if show_progress {
-                pb.set_position((idx + 1) as u64);
-                pb.set_message(format!("{}", file_path.file_name().unwrap_or_default().to_string_lossy()));
-            }
+        let _start_time = Instant::now();
 
-            // Compute hash for incremental indexing
-            let hash = self.hash_file(&file_path)?;
-            let path_str = file_path.to_string_lossy().to_string();
-
-            // Read file content for trigram indexing
-            let content = match std::fs::read_to_string(&file_path) {
-                Ok(c) => c,
-                Err(e) => {
-                    log::warn!("Failed to read {}: {}", path_str, e);
-                    new_hashes.insert(path_str, hash);
-                    continue;
-                }
-            };
-
-            // Add file to trigram index and content store (always, not just for changed files)
-            let file_id = trigram_index.add_file(file_path.clone());
-            trigram_index.index_file(file_id, &content);
-            content_writer.add_file(file_path.clone(), &content);
-
-            // Check if file changed
-            if let Some(existing_hash) = existing_hashes.get(&path_str) {
-                if existing_hash == &hash {
-                    log::debug!("Skipping unchanged file: {}", path_str);
-                    // Preserve existing symbols from this file
-                    if let Some(symbols) = existing_symbols_by_path.get(&path_str) {
-                        all_symbols.extend(symbols.clone());
-                        log::debug!("  Preserved {} symbols from cache", symbols.len());
+        // Spawn a background thread to update progress bar during parallel processing
+        let counter_for_thread = Arc::clone(&progress_counter);
+        let pb_clone = pb.clone();
+        let progress_thread = if show_progress {
+            Some(std::thread::spawn(move || {
+                loop {
+                    let count = counter_for_thread.load(Ordering::Relaxed);
+                    pb_clone.set_position(count);
+                    if count >= total_files as u64 {
+                        break;
                     }
-                    new_hashes.insert(path_str, hash);
-                    continue;
+                    std::thread::sleep(std::time::Duration::from_millis(50));
                 }
-            }
+            }))
+        } else {
+            None
+        };
 
-            // File is new or changed - parse for symbols
-            log::debug!("Parsing file: {}", path_str);
+        // Process files in parallel using rayon
+        let counter_clone = Arc::clone(&progress_counter);
+        let results: Vec<Option<FileProcessingResult>> = files
+            .par_iter()
+            .map(|file_path| {
+                let path_str = file_path.to_string_lossy().to_string();
 
-            // Parse for symbols (Tree-sitter)
-            match self.parse_file(&file_path) {
-                Ok(symbols) => {
-                    let symbol_count = symbols.len();
+                // Read file content once (used for hashing, trigrams, and parsing)
+                let content = match std::fs::read_to_string(&file_path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        log::warn!("Failed to read {}: {}", path_str, e);
+                        // Update progress
+                        counter_clone.fetch_add(1, Ordering::Relaxed);
+                        return None;
+                    }
+                };
+
+                // Compute hash from content (no duplicate file read!)
+                let hash = self.hash_content(content.as_bytes());
+
+                // Check if file changed (skip parsing if unchanged)
+                let needs_parsing = !existing_hashes.get(&path_str)
+                    .map(|existing_hash| existing_hash == &hash)
+                    .unwrap_or(false);
+
+                let (symbols, language) = if needs_parsing {
+                    // File is new or changed - parse for symbols
+                    log::debug!("Parsing file: {}", path_str);
 
                     // Detect language
                     let ext = file_path.extension()
                         .and_then(|e| e.to_str())
                         .unwrap_or("");
-                    let language = Language::from_extension(ext);
+                    let lang = Language::from_extension(ext);
 
-                    // Update file metadata in database
-                    self.cache.update_file(
-                        &path_str,
-                        &hash,
-                        &format!("{:?}", language),
-                        symbol_count
-                    )?;
+                    // Parse for symbols (Tree-sitter)
+                    match self.parse_file(&file_path) {
+                        Ok(syms) => {
+                            log::debug!("  Extracted {} symbols from {}", syms.len(), path_str);
+                            (syms, lang)
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to parse {}: {}", path_str, e);
+                            (Vec::new(), lang)
+                        }
+                    }
+                } else {
+                    // File unchanged - preserve existing symbols
+                    log::debug!("Skipping unchanged file: {}", path_str);
+                    let syms = existing_symbols_by_path.get(&path_str)
+                        .cloned()
+                        .unwrap_or_default();
+                    log::debug!("  Preserved {} symbols from cache", syms.len());
+                    let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    (syms, Language::from_extension(ext))
+                };
 
-                    all_symbols.extend(symbols);
-                    new_hashes.insert(path_str.clone(), hash);
-                    files_indexed += 1;
-                    log::debug!("  Extracted {} symbols from {}", symbol_count, path_str);
-                }
-                Err(e) => {
-                    log::warn!("Failed to parse {}: {}", path_str, e);
-                    // Still track the file to avoid retrying
-                    new_hashes.insert(path_str, hash);
-                }
-            }
+                // Extract trigrams during parallel processing (with temporary file_id = 0)
+                let trigrams = extract_trigrams_with_locations(&content, 0);
+
+                // Update progress atomically
+                counter_clone.fetch_add(1, Ordering::Relaxed);
+
+                Some(FileProcessingResult {
+                    path: file_path.clone(),
+                    path_str,
+                    hash,
+                    content,
+                    symbols,
+                    language,
+                    trigrams,
+                })
+            })
+            .collect();
+
+        // Wait for progress thread to finish
+        if let Some(thread) = progress_thread {
+            let _ = thread.join();
         }
+
+        // Update progress bar to final count
+        if show_progress {
+            let final_count = progress_counter.load(Ordering::Relaxed);
+            pb.set_position(final_count);
+        }
+
+        // Collect results from parallel processing and build trigram index in bulk
+        let mut all_trigrams: Vec<(Trigram, FileLocation)> = Vec::new();
+
+        for result in results.into_iter().flatten() {
+            // Add file to trigram index (get file_id)
+            let file_id = trigram_index.add_file(result.path.clone());
+
+            // Update file_ids in pre-extracted trigrams and collect them
+            for (trigram, mut loc) in result.trigrams {
+                loc.file_id = file_id;
+                all_trigrams.push((trigram, loc));
+            }
+
+            // Add to content store
+            content_writer.add_file(result.path.clone(), &result.content);
+
+            // Collect symbols
+            if !result.symbols.is_empty() {
+                files_indexed += 1;
+            }
+            all_symbols.extend(result.symbols.clone());
+
+            // Prepare file metadata for batch database update
+            file_metadata.push((
+                result.path_str.clone(),
+                result.hash.clone(),
+                format!("{:?}", result.language),
+                result.symbols.len()
+            ));
+
+            new_hashes.insert(result.path_str, result.hash);
+        }
+
+        // Build trigram index from all collected trigrams at once
+        if show_progress {
+            pb.set_message("Building trigram index...".to_string());
+        }
+        trigram_index.build_from_trigrams(all_trigrams);
 
         // Update progress bar message for post-processing
         if show_progress {
-            pb.set_message("Finalizing trigram index...".to_string());
+            pb.set_message("Writing file metadata to database...".to_string());
         }
+
+        // Batch write all file metadata to SQLite in one transaction
+        if !file_metadata.is_empty() {
+            self.cache.batch_update_files(&file_metadata)
+                .context("Failed to batch update file metadata")?;
+            log::info!("Wrote metadata for {} files to database", file_metadata.len());
+        }
+
         log::info!("Parsed {} files, extracted {} symbols", files_indexed, all_symbols.len());
 
-        // Step 3: Finalize and write trigram index
-        trigram_index.finalize();
+        // Step 3: Write trigram index (already finalized by build_from_trigrams)
+        if show_progress {
+            pb.set_message("Writing trigram index...".to_string());
+        }
         let trigrams_path = self.cache.path().join("trigrams.bin");
         log::info!("Writing trigram index with {} trigrams to trigrams.bin",
                    trigram_index.trigram_count());
@@ -310,11 +407,10 @@ impl Indexer {
         Ok(symbols)
     }
 
-    /// Compute blake3 hash of a file for change detection
-    fn hash_file(&self, path: &Path) -> Result<String> {
-        let contents = std::fs::read(path)?;
-        let hash = blake3::hash(&contents);
-        Ok(hash.to_hex().to_string())
+    /// Compute blake3 hash from file contents for change detection
+    fn hash_content(&self, content: &[u8]) -> String {
+        let hash = blake3::hash(content);
+        hash.to_hex().to_string()
     }
 }
 
