@@ -10,6 +10,7 @@ pub mod rust;
 pub mod typescript;
 pub mod vue;
 pub mod svelte;
+pub mod php;
 
 use anyhow::Result;
 use crate::models::{Language, SearchResult};
@@ -42,10 +43,7 @@ impl ParserFactory {
                 // TODO: Implement Java parser
                 Ok(vec![])
             }
-            Language::PHP => {
-                // TODO: Implement PHP parser
-                Ok(vec![])
-            }
+            Language::PHP => php::parse(path, source),
             Language::C => {
                 // TODO: Implement C parser
                 Ok(vec![])

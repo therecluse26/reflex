@@ -1,6 +1,6 @@
 # RefLex TODO
 
-**Last Updated:** 2025-01-11
+**Last Updated:** 2025-01-12
 **Project Status:** Architecture Redesign - Trigram-Based Full-Text Search
 
 > **⚠️ AI Assistants:** Read the "Context Management & AI Workflow" section in `CLAUDE.md` for instructions on maintaining this file and creating RESEARCH.md documents. This TODO.md MUST be updated as you work on tasks.
@@ -51,7 +51,8 @@ RefLex is **operational as a local code search engine** with the following capab
 - ✅ **TypeScript/JavaScript** - Full symbol extraction (functions, classes, interfaces, types, enums, methods, arrow functions, React components)
 - ✅ **Vue** - Symbol extraction from `<script>` blocks (Composition API and Options API support)
 - ✅ **Svelte** - Symbol extraction from component scripts (including reactive declarations)
-- ⚠️ **Python, Go, Java, PHP, C, C++** - Grammars loaded, parsers stubbed (ready to implement)
+- ✅ **PHP** - Full symbol extraction (functions, classes, interfaces, traits, methods, properties, constants, namespaces, enums)
+- ⚠️ **Python, Go, Java, C, C++** - Grammars loaded, parsers stubbed (ready to implement)
 
 **What Works:**
 ```bash
@@ -71,7 +72,7 @@ reflex query "unwrap" --lang rust --limit 10 --json
 ### ⚠️ LIMITATIONS / TODO
 
 **Known Issues:**
-1. **Limited language support** - Rust, TypeScript/JavaScript, Vue, and Svelte fully supported; Python, Go, Java, PHP, C, C++ parsers still need implementation
+1. **Limited language support** - Rust, TypeScript/JavaScript, Vue, Svelte, and PHP fully supported; Python, Go, Java, C, C++ parsers still need implementation
 2. **HTTP server not implemented** - CLI works, serve command is stub only
 3. **AST pattern matching not implemented** - Framework exists but not functional
 
@@ -94,7 +95,8 @@ reflex query "unwrap" --lang rust --limit 10 --json
 | **TypeScript/JS Parser** | ✅ Complete | 100% |
 | **Vue Parser** | ✅ Complete | 100% |
 | **Svelte Parser** | ✅ Complete | 100% |
-| **Other Parsers** | ⚠️ Stubbed | ~45% (Python, Go, Java, PHP, C, C++ remain) |
+| **PHP Parser** | ✅ Complete | 100% |
+| **Other Parsers** | ⚠️ Stubbed | ~56% (Python, Go, Java, C, C++ remain) |
 | **CLI** | ✅ Complete | 95% (serve stub) |
 | **HTTP Server** | ⚠️ Stub | 0% |
 | **Tests** | ✅ Partial | ~40% (core modules tested) |
@@ -133,7 +135,7 @@ reflex query  →  [Query Engine] → [Mode: Full-text or Symbol-only]
 ```
 
 **Next Phase:**
-1. Implement remaining parsers (Python, Go, Java, PHP, C, C++)
+1. Implement remaining parsers (Python, Go, Java, C, C++)
 2. Add HTTP server (optional)
 3. Performance testing and optimization
 
@@ -439,9 +441,13 @@ reflex query  →  [Query Engine] → [Mode: Full-text or Symbol-only]
 - [x] Create `src/parsers/svelte.rs` - Svelte component grammar integration ✅ **FULLY IMPLEMENTED**
   - Extracts symbols from component scripts ✅
   - Supports reactive declarations (`$:`) ✅
+- [x] Create `src/parsers/php.rs` - PHP grammar integration ✅ **FULLY IMPLEMENTED**
+  - Full symbol extraction (functions, classes, interfaces, traits) ✅
+  - Methods with scope tracking (class/trait/interface) ✅
+  - Properties and constants ✅
+  - Namespaces and PHP 8.1+ enums ✅
 - [ ] Create `src/parsers/python.rs` - Python grammar integration (stub exists)
 - [ ] Create `src/parsers/go.rs` - Go grammar integration (stub exists)
-- [ ] Create `src/parsers/php.rs` - PHP grammar integration (stub exists)
 - [ ] Create `src/parsers/c.rs` - C grammar integration (stub exists)
 - [ ] Create `src/parsers/cpp.rs` - C++ grammar integration (stub exists)
 - [ ] Create `src/parsers/java.rs` - Java grammar integration (stub exists)
@@ -765,6 +771,20 @@ Tree-sitter Grammars ──────────→ AST Extraction ───�
 - [x] Line-based extraction (tree-sitter-svelte incompatible with tree-sitter 0.24+)
 - [x] Extract functions and variables
 - [x] Extract spans (line/col)
+
+### PHP Parser (COMPLETED - src/parsers/php.rs)
+- [x] Parse functions (global functions)
+- [x] Parse classes (regular, abstract, final)
+- [x] Parse interfaces
+- [x] Parse traits
+- [x] Parse methods (with class/trait/interface scope tracking)
+- [x] Parse properties (public, protected, private)
+- [x] Parse constants (class and global)
+- [x] Parse namespaces
+- [x] Parse enums (PHP 8.1+)
+- [x] Extract spans (line/col)
+- [x] Extract scope context
+- [x] Comprehensive tests (10 test cases)
 
 ### Query Engine (COMPLETED - src/query.rs)
 - [x] Load memory-mapped cache (SymbolReader, ContentReader)

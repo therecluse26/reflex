@@ -298,25 +298,23 @@ fn handle_query(
             "svelte" => Some(Language::Svelte),
             // Unsupported languages (no parser yet)
             "python" | "py" => {
-                anyhow::bail!("Language 'python' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte");
+                anyhow::bail!("Language 'python' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte, php");
             }
             "go" => {
-                anyhow::bail!("Language 'go' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte");
+                anyhow::bail!("Language 'go' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte, php");
             }
             "java" => {
-                anyhow::bail!("Language 'java' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte");
+                anyhow::bail!("Language 'java' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte, php");
             }
-            "php" => {
-                anyhow::bail!("Language 'php' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte");
-            }
+            "php" => Some(Language::PHP),
             "c" => {
-                anyhow::bail!("Language 'c' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte");
+                anyhow::bail!("Language 'c' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte, php");
             }
             "cpp" | "c++" => {
-                anyhow::bail!("Language 'c++' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte");
+                anyhow::bail!("Language 'c++' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte, php");
             }
             _ => {
-                anyhow::bail!("Unknown language '{}'. Supported languages: rust, javascript (js), typescript (ts), vue, svelte", lang_str);
+                anyhow::bail!("Unknown language '{}'. Supported languages: rust, javascript (js), typescript (ts), vue, svelte, php", lang_str);
             }
         }
     } else {

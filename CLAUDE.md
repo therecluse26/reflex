@@ -77,6 +77,7 @@ RefLex currently supports symbol extraction for the following languages and fram
 | **JavaScript** | `.js`, `.jsx`, `.mjs`, `.cjs` | Functions, classes, constants, methods | Includes React/JSX support via TSX grammar |
 | **Vue** | `.vue` | Functions, constants, methods from `<script>` blocks | Supports both Options API and Composition API |
 | **Svelte** | `.svelte` | Functions, variables, reactive declarations (`$:`), module context | Full Svelte component support |
+| **PHP** | `.php` | Functions, classes, interfaces, traits, methods, properties, constants, namespaces, enums | Full PHP support including PHP 8.1+ enums |
 
 ### React/JSX Support Details
 - **React Components**: Function and class components automatically detected
@@ -96,13 +97,23 @@ RefLex currently supports symbol extraction for the following languages and fram
 - **TypeScript**: Supports `<script lang="ts">`
 - **Parsing Method**: Line-based extraction (tree-sitter-svelte incompatible with tree-sitter 0.24+)
 
+### PHP Support Details
+- **Functions**: Global function definitions
+- **Classes**: Regular, abstract, and final classes
+- **Interfaces**: Interface declarations
+- **Traits**: PHP trait definitions and usage
+- **Methods**: With class/trait/interface scope tracking
+- **Properties**: Public, protected, private visibility
+- **Constants**: Class constants and global constants
+- **Namespaces**: Full namespace support
+- **Enums**: PHP 8.1+ enum declarations
+
 ### Planned Support (parsers not yet implemented)
 - Python (`.py`)
 - Go (`.go`)
 - Java (`.java`)
 - C (`.c`, `.h`)
 - C++ (`.cpp`, `.hpp`, `.cxx`)
-- PHP (`.php`)
 
 **Note**: Full-text trigram search works for **all file types** regardless of parser support. Symbol filtering (`symbol:` queries) requires a language parser.
 

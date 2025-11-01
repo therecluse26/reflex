@@ -106,7 +106,7 @@ impl Language {
             Language::Python => false,
             Language::Go => false,
             Language::Java => false,
-            Language::PHP => false,
+            Language::PHP => true,
             Language::C => false,
             Language::Cpp => false,
             Language::Unknown => false,
