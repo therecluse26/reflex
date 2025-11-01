@@ -181,6 +181,8 @@ pub struct IndexStats {
     pub index_size_bytes: u64,
     /// Last update timestamp
     pub last_updated: String,
+    /// File count breakdown by language
+    pub files_by_language: std::collections::HashMap<String, usize>,
 }
 
 /// Information about an indexed file

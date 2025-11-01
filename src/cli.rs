@@ -223,6 +223,28 @@ fn handle_index(path: PathBuf, force: bool, languages: Vec<String>, show_progres
     println!("  Cache size: {}", format_bytes(stats.index_size_bytes));
     println!("  Last updated: {}", stats.last_updated);
 
+    // Display language breakdown if we have indexed files
+    if !stats.files_by_language.is_empty() {
+        println!("\nFiles by language:");
+
+        // Sort languages by count (descending) for consistent output
+        let mut lang_vec: Vec<_> = stats.files_by_language.iter().collect();
+        lang_vec.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+
+        // Calculate column widths
+        let max_lang_len = lang_vec.iter().map(|(lang, _)| lang.len()).max().unwrap_or(8);
+        let lang_width = max_lang_len.max(8); // At least "Language" header width
+
+        // Print table header
+        println!("  {:<width$}  Files", "Language", width = lang_width);
+        println!("  {}  {}", "-".repeat(lang_width), "-----");
+
+        // Print rows
+        for (language, count) in lang_vec {
+            println!("  {:<width$}  {}", language, count, width = lang_width);
+        }
+    }
+
     Ok(())
 }
 

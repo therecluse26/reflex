@@ -426,6 +426,7 @@ compression_level = 3  # zstd level
                 total_symbols: 0,
                 index_size_bytes: 0,
                 last_updated: chrono::Utc::now().to_rfc3339(),
+                files_by_language: std::collections::HashMap::new(),
             });
         }
 
@@ -474,11 +475,26 @@ compression_level = 3  # zstd level
             }
         }
 
+        // Get file count breakdown by language
+        let mut files_by_language = std::collections::HashMap::new();
+        let mut stmt = conn.prepare("SELECT language, COUNT(*) FROM files GROUP BY language")?;
+        let lang_counts = stmt.query_map([], |row| {
+            let language: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            Ok((language, count as usize))
+        })?;
+
+        for result in lang_counts {
+            let (language, count) = result?;
+            files_by_language.insert(language, count);
+        }
+
         Ok(crate::models::IndexStats {
             total_files,
             total_symbols,
             index_size_bytes,
             last_updated,
+            files_by_language,
         })
     }
 }
