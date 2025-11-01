@@ -154,8 +154,9 @@ impl Indexer {
         let trigrams_path = self.cache.path().join("trigrams.bin");
         log::info!("Writing trigram index with {} trigrams to trigrams.bin",
                    trigram_index.trigram_count());
-        // TODO: Implement binary serialization for TrigramIndex
-        // For now, we'll skip writing trigrams.bin and just keep it in memory
+        trigram_index.write(&trigrams_path)
+            .context("Failed to write trigram index")?;
+        log::info!("Wrote {} files to trigrams.bin", trigram_index.file_count());
 
         // Step 4: Write content store
         let content_path = self.cache.path().join("content.bin");
@@ -176,10 +177,8 @@ impl Indexer {
             log::info!("No new symbols to write (incremental indexing skipped all files)");
         }
 
-        // Step 6: Save updated hashes
-        self.cache.save_hashes(&new_hashes)?;
-
-        // Step 7: Update SQLite statistics from database totals
+        // Step 6: Update SQLite statistics from database totals
+        // Note: Hashes are already persisted to SQLite via cache.update_file() in the loop above
         self.cache.update_stats()?;
 
         // Return stats

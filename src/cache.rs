@@ -1,11 +1,12 @@
 //! Cache management and memory-mapped I/O
 //!
 //! The cache module handles the `.reflex/` directory structure:
-//! - `meta.db`: Metadata and configuration
-//! - `symbols.bin`: Serialized symbol table
-//! - `tokens.bin`: Compressed lexical tokens
-//! - `hashes.json`: blake3 file hashes for incremental updates
-//! - `config.toml`: Index settings
+//! - `meta.db`: Metadata, file hashes, and configuration (SQLite)
+//! - `symbols.bin`: Serialized symbol table (rkyv binary)
+//! - `tokens.bin`: Compressed lexical tokens (binary)
+//! - `content.bin`: Memory-mapped file contents (binary)
+//! - `trigrams.bin`: Trigram inverted index (bincode binary)
+//! - `config.toml`: Index settings (TOML text)
 
 pub mod symbol_writer;
 pub mod symbol_reader;
@@ -61,11 +62,10 @@ impl CacheManager {
         // Create empty tokens.bin with header
         self.init_tokens_bin()?;
 
-        // Create hashes.json with empty map
-        self.init_hashes_json()?;
-
         // Create default config.toml
         self.init_config_toml()?;
+
+        // Note: hashes.json is deprecated - hashes are now stored in meta.db
 
         log::info!("Cache initialized successfully");
         Ok(())
@@ -195,6 +195,11 @@ impl CacheManager {
     }
 
     /// Initialize hashes.json with empty map
+    ///
+    /// DEPRECATED: Hashes are now stored in SQLite (meta.db).
+    /// This function is kept for backward compatibility but is not called by init().
+    #[deprecated(note = "Hashes are now stored in SQLite")]
+    #[allow(dead_code)]
     fn init_hashes_json(&self) -> Result<()> {
         let hashes_path = self.cache_path.join(HASHES_JSON);
 
@@ -267,35 +272,34 @@ compression_level = 3  # zstd level
         Ok(())
     }
 
-    /// Load file hashes for incremental indexing
+    /// Load file hashes for incremental indexing from SQLite
     pub fn load_hashes(&self) -> Result<HashMap<String, String>> {
-        let hash_path = self.cache_path.join(HASHES_JSON);
+        let db_path = self.cache_path.join(META_DB);
 
-        if !hash_path.exists() {
+        if !db_path.exists() {
             return Ok(HashMap::new());
         }
 
-        let contents = std::fs::read_to_string(&hash_path)
-            .context("Failed to read hashes.json")?;
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db")?;
 
-        let hashes: HashMap<String, String> = serde_json::from_str(&contents)
-            .context("Failed to parse hashes.json")?;
+        let mut stmt = conn.prepare("SELECT path, hash FROM files")?;
+        let hashes: HashMap<String, String> = stmt.query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<Result<HashMap<_, _>, _>>()?;
 
-        log::debug!("Loaded {} file hashes", hashes.len());
+        log::debug!("Loaded {} file hashes from SQLite", hashes.len());
         Ok(hashes)
     }
 
     /// Save file hashes for incremental indexing
-    pub fn save_hashes(&self, hashes: &HashMap<String, String>) -> Result<()> {
-        let hash_path = self.cache_path.join(HASHES_JSON);
-
-        let json = serde_json::to_string_pretty(hashes)
-            .context("Failed to serialize hashes")?;
-
-        std::fs::write(&hash_path, json)
-            .context("Failed to write hashes.json")?;
-
-        log::debug!("Saved {} file hashes", hashes.len());
+    ///
+    /// DEPRECATED: Hashes are now saved directly to SQLite via update_file().
+    /// This method is kept for backward compatibility but does nothing.
+    #[deprecated(note = "Hashes are now stored in SQLite via update_file()")]
+    pub fn save_hashes(&self, _hashes: &HashMap<String, String>) -> Result<()> {
+        // No-op: hashes are now persisted to SQLite in update_file()
         Ok(())
     }
 
@@ -436,10 +440,10 @@ compression_level = 3  # zstd level
             },
         ).unwrap_or_else(|_| chrono::Utc::now().to_rfc3339());
 
-        // Calculate total cache size
+        // Calculate total cache size (all binary files)
         let mut index_size_bytes: u64 = 0;
 
-        for file_name in [META_DB, SYMBOLS_BIN, TOKENS_BIN, HASHES_JSON, CONFIG_TOML] {
+        for file_name in [META_DB, SYMBOLS_BIN, TOKENS_BIN, CONFIG_TOML, "content.bin", "trigrams.bin"] {
             let file_path = self.cache_path.join(file_name);
             if let Ok(metadata) = std::fs::metadata(&file_path) {
                 index_size_bytes += metadata.len();

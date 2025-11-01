@@ -196,22 +196,25 @@ impl QueryEngine {
         let content_reader = ContentReader::open(&content_path)
             .context("Failed to open content store")?;
 
-        // Build trigram index from content store
-        log::debug!("Building trigram index from {} files", content_reader.file_count());
-        let mut trigram_index = TrigramIndex::new();
-
-        for file_id in 0..content_reader.file_count() {
-            let file_path = content_reader.get_file_path(file_id as u32)
-                .context("Invalid file_id")?
-                .to_path_buf();
-            let content = content_reader.get_file_content(file_id as u32)?;
-
-            let idx = trigram_index.add_file(file_path);
-            trigram_index.index_file(idx, content);
-        }
-
-        trigram_index.finalize();
-        log::debug!("Trigram index built with {} trigrams", trigram_index.trigram_count());
+        // Load trigram index from disk (or rebuild if missing)
+        let trigrams_path = self.cache.path().join("trigrams.bin");
+        let trigram_index = if trigrams_path.exists() {
+            match TrigramIndex::load(&trigrams_path) {
+                Ok(index) => {
+                    log::debug!("Loaded trigram index from disk: {} trigrams, {} files",
+                               index.trigram_count(), index.file_count());
+                    index
+                }
+                Err(e) => {
+                    log::warn!("Failed to load trigram index from disk: {}", e);
+                    log::warn!("Rebuilding trigram index from content store...");
+                    Self::rebuild_trigram_index(&content_reader)?
+                }
+            }
+        } else {
+            log::debug!("trigrams.bin not found, rebuilding from content store");
+            Self::rebuild_trigram_index(&content_reader)?
+        };
 
         // Search using trigrams
         let candidates = trigram_index.search(pattern);
@@ -273,6 +276,27 @@ impl QueryEngine {
             }
         }
         None
+    }
+
+    /// Rebuild trigram index from content store (fallback when trigrams.bin is missing)
+    fn rebuild_trigram_index(content_reader: &ContentReader) -> Result<TrigramIndex> {
+        log::debug!("Rebuilding trigram index from {} files", content_reader.file_count());
+        let mut trigram_index = TrigramIndex::new();
+
+        for file_id in 0..content_reader.file_count() {
+            let file_path = content_reader.get_file_path(file_id as u32)
+                .context("Invalid file_id")?
+                .to_path_buf();
+            let content = content_reader.get_file_content(file_id as u32)?;
+
+            let idx = trigram_index.add_file(file_path);
+            trigram_index.index_file(idx, content);
+        }
+
+        trigram_index.finalize();
+        log::debug!("Trigram index rebuilt with {} trigrams", trigram_index.trigram_count());
+
+        Ok(trigram_index)
     }
 }
 
