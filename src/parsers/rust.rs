@@ -279,13 +279,14 @@ fn node_to_span(node: &tree_sitter::Node) -> Span {
     )
 }
 
-/// Extract a preview (3-5 lines) around the symbol
+/// Extract a preview (5-7 lines) around the symbol
 fn extract_preview(source: &str, span: &Span) -> String {
     let lines: Vec<&str> = source.lines().collect();
 
-    // Extract 3 lines: the start line and 2 following lines
+    // Extract 7 lines: the start line and 6 following lines
+    // This provides enough context for AI agents to understand the code
     let start_idx = (span.start_line - 1) as usize; // Convert back to 0-indexed
-    let end_idx = (start_idx + 3).min(lines.len());
+    let end_idx = (start_idx + 7).min(lines.len());
 
     lines[start_idx..end_idx].join("\n")
 }

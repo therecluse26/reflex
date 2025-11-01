@@ -24,16 +24,19 @@ fn greet(name: &str) {
     // Initialize cache and indexer
     let cache = CacheManager::new(temp_path);
     let config = IndexConfig::default();
-    let indexer = Indexer::new(cache.clone(), config);
+    let indexer = Indexer::new(cache, config);
 
     // Index the directory
     let stats = indexer.index(temp_path).unwrap();
-    assert_eq!(stats.total_files, 0); // TODO: Update when indexer is implemented
+    assert_eq!(stats.total_files, 1); // One test.rs file
+    assert_eq!(stats.total_symbols, 2); // main and greet functions
 
-    // Query the index
+    // Query the index (create new cache instance for query engine)
+    let cache = CacheManager::new(temp_path);
     let engine = QueryEngine::new(cache);
     let results = engine.find_symbol("main").unwrap();
-    assert_eq!(results.len(), 0); // TODO: Update when query engine is implemented
+    assert_eq!(results.len(), 1); // Should find the main function
+    assert_eq!(results[0].symbol, "main");
 }
 
 #[test]

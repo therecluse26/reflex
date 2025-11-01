@@ -64,7 +64,7 @@ impl QueryEngine {
         let query_type = parse_query(pattern);
         let mut results = match query_type {
             QueryType::Symbol(name) => {
-                // Symbol name search (exact or prefix)
+                // Symbol name search (filtered to symbol names only)
                 if name.ends_with('*') {
                     // Prefix match: "get_*"
                     let prefix = name.trim_end_matches('*');
@@ -72,13 +72,21 @@ impl QueryEngine {
                 } else if name == "*" {
                     // List all symbols
                     reader.read_all()?
+                } else if name.contains('*') {
+                    // Wildcard match - treat as substring but symbol-only
+                    let substring = name.replace('*', "");
+                    reader.find_by_symbol_name_only(&substring)?
                 } else {
-                    // Exact match
-                    reader.find_by_name(&name)?
+                    // Substring match in symbol names only
+                    reader.find_by_symbol_name_only(&name)?
                 }
             }
+            QueryType::Code(text) => {
+                // Code content search (filtered to preview content only)
+                reader.find_by_preview_only(&text)?
+            }
             QueryType::Lexical(text) => {
-                // Plain text search (substring)
+                // Plain text search (searches both symbol names AND preview content)
                 reader.find_by_substring(&text)?
             }
             QueryType::Ast(_pattern) => {
@@ -147,6 +155,8 @@ impl QueryEngine {
 fn parse_query(query: &str) -> QueryType {
     if query.starts_with("symbol:") {
         QueryType::Symbol(query.strip_prefix("symbol:").unwrap().to_string())
+    } else if query.starts_with("code:") {
+        QueryType::Code(query.strip_prefix("code:").unwrap().to_string())
     } else if query.starts_with("fn ") || query.starts_with("class ") {
         QueryType::Ast(query.to_string())
     } else {
@@ -157,6 +167,7 @@ fn parse_query(query: &str) -> QueryType {
 #[derive(Debug)]
 enum QueryType {
     Symbol(String),
+    Code(String),
     Ast(String),
     Lexical(String),
 }

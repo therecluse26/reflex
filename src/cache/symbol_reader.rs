@@ -152,13 +152,33 @@ impl SymbolReader {
             .collect())
     }
 
-    /// Find symbols containing substring
+    /// Find symbols containing substring in either symbol name OR preview content
     pub fn find_by_substring(&self, substring: &str) -> Result<Vec<SearchResult>> {
         let all_symbols = self.read_all()?;
 
         Ok(all_symbols
             .into_iter()
+            .filter(|s| s.symbol.contains(substring) || s.preview.contains(substring))
+            .collect())
+    }
+
+    /// Find symbols containing substring in symbol name only (filtered search)
+    pub fn find_by_symbol_name_only(&self, substring: &str) -> Result<Vec<SearchResult>> {
+        let all_symbols = self.read_all()?;
+
+        Ok(all_symbols
+            .into_iter()
             .filter(|s| s.symbol.contains(substring))
+            .collect())
+    }
+
+    /// Find symbols containing substring in preview content only (filtered search)
+    pub fn find_by_preview_only(&self, substring: &str) -> Result<Vec<SearchResult>> {
+        let all_symbols = self.read_all()?;
+
+        Ok(all_symbols
+            .into_iter()
+            .filter(|s| s.preview.contains(substring))
             .collect())
     }
 
