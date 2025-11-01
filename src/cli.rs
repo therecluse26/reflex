@@ -82,6 +82,16 @@ pub enum Command {
         /// Maximum number of results
         #[arg(short = 'n', long)]
         limit: Option<usize>,
+
+        /// Show full symbol definition (entire function/class body)
+        /// Only applicable to symbol searches
+        #[arg(long)]
+        expand: bool,
+
+        /// Filter by file path (supports substring matching)
+        /// Example: --file math.rs or --file helpers/
+        #[arg(short = 'f', long)]
+        file: Option<String>,
     },
 
     /// Start a local HTTP API server
@@ -134,8 +144,8 @@ impl Cli {
             Command::Index { path, force, languages } => {
                 handle_index(path, force, languages)
             }
-            Command::Query { pattern, symbols, lang, kind, ast, json, limit } => {
-                handle_query(pattern, symbols, lang, kind, ast, json, limit)
+            Command::Query { pattern, symbols, lang, kind, ast, json, limit, expand, file } => {
+                handle_query(pattern, symbols, lang, kind, ast, json, limit, expand, file)
             }
             Command::Serve { port, host } => {
                 handle_serve(port, host)
@@ -210,6 +220,8 @@ fn handle_query(
     use_ast: bool,
     as_json: bool,
     limit: Option<usize>,
+    expand: bool,
+    file_pattern: Option<String>,
 ) -> Result<()> {
     log::info!("Starting query command");
 
@@ -259,6 +271,8 @@ fn handle_query(
         use_ast,
         limit,
         symbols_mode,
+        expand,
+        file_pattern,
     };
 
     let results = engine.search(&pattern, filter)?;

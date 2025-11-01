@@ -23,6 +23,10 @@ pub struct QueryFilter {
     pub limit: Option<usize>,
     /// Search symbol definitions only (vs full-text)
     pub symbols_mode: bool,
+    /// Show full symbol body (from span.start_line to span.end_line)
+    pub expand: bool,
+    /// File path filter (substring match)
+    pub file_pattern: Option<String>,
 }
 
 impl Default for QueryFilter {
@@ -33,6 +37,8 @@ impl Default for QueryFilter {
             use_ast: false,
             limit: None,
             symbols_mode: false,
+            expand: false,
+            file_pattern: None,
         }
     }
 }
@@ -97,6 +103,35 @@ impl QueryEngine {
         // Apply kind filter (only relevant for symbol searches)
         if let Some(kind) = filter.kind {
             results.retain(|r| r.kind == kind);
+        }
+
+        // Apply file path filter (substring match)
+        if let Some(ref file_pattern) = filter.file_pattern {
+            results.retain(|r| r.path.contains(file_pattern));
+        }
+
+        // Expand symbol bodies if requested
+        if filter.expand && filter.symbols_mode {
+            // Load content store to fetch full symbol bodies
+            let content_path = self.cache.path().join("content.bin");
+            if let Ok(content_reader) = ContentReader::open(&content_path) {
+                for result in &mut results {
+                    // Find the file_id for this result's path
+                    if let Some(file_id) = Self::find_file_id(&content_reader, &result.path) {
+                        // Fetch the full span content
+                        if let Ok(content) = content_reader.get_file_content(file_id) {
+                            let lines: Vec<&str> = content.lines().collect();
+                            let start_idx = (result.span.start_line as usize).saturating_sub(1);
+                            let end_idx = (result.span.end_line as usize).min(lines.len());
+
+                            if start_idx < end_idx {
+                                let full_body = lines[start_idx..end_idx].join("\n");
+                                result.preview = full_body;
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Step 4: Sort results deterministically (by path, then line number)
@@ -218,6 +253,18 @@ impl QueryEngine {
         }
 
         Ok(results)
+    }
+
+    /// Helper function to find file_id in ContentReader by matching path
+    fn find_file_id(content_reader: &ContentReader, target_path: &str) -> Option<u32> {
+        for file_id in 0..content_reader.file_count() {
+            if let Some(path) = content_reader.get_file_path(file_id as u32) {
+                if path.to_string_lossy() == target_path {
+                    return Some(file_id as u32);
+                }
+            }
+        }
+        None
     }
 }
 
