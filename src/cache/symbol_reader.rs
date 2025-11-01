@@ -187,13 +187,19 @@ impl SymbolReader {
         // Parse the kind string back to SymbolKind
         let kind = match entry.kind.as_str() {
             "Function" => SymbolKind::Function,
+            "Class" => SymbolKind::Class,
             "Struct" => SymbolKind::Struct,
             "Enum" => SymbolKind::Enum,
+            "Interface" => SymbolKind::Interface,
             "Trait" => SymbolKind::Trait,
             "Method" => SymbolKind::Method,
             "Constant" => SymbolKind::Constant,
+            "Variable" => SymbolKind::Variable,
             "Module" => SymbolKind::Module,
+            "Namespace" => SymbolKind::Namespace,
             "Type" => SymbolKind::Type,
+            "Import" => SymbolKind::Import,
+            "Export" => SymbolKind::Export,
             _ => {
                 log::warn!("Unknown symbol kind: {}", entry.kind);
                 SymbolKind::Function // Default fallback
