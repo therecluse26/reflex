@@ -8,7 +8,7 @@ use ignore::WalkBuilder;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::cache::{CacheManager, SymbolWriter, SYMBOLS_BIN};
+use crate::cache::{CacheManager, SymbolReader, SymbolWriter, SYMBOLS_BIN};
 use crate::models::{IndexConfig, IndexStats, Language, SearchResult};
 use crate::parsers::ParserFactory;
 
@@ -36,6 +36,24 @@ impl Indexer {
         let existing_hashes = self.cache.load_hashes()?;
         log::debug!("Loaded {} existing file hashes", existing_hashes.len());
 
+        // Load existing symbols to preserve them during incremental indexing
+        let symbols_path = self.cache.path().join(SYMBOLS_BIN);
+        let existing_symbols = if symbols_path.exists() {
+            match SymbolReader::open(&symbols_path) {
+                Ok(reader) => reader.read_all().unwrap_or_else(|e| {
+                    log::warn!("Failed to load existing symbols: {}", e);
+                    Vec::new()
+                }),
+                Err(e) => {
+                    log::warn!("Failed to open existing symbols: {}", e);
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+        log::debug!("Loaded {} existing symbols from cache", existing_symbols.len());
+
         // Step 1: Walk directory tree and collect files
         let files = self.discover_files(root)?;
         log::info!("Discovered {} files to index", files.len());
@@ -44,6 +62,15 @@ impl Indexer {
         let mut new_hashes = HashMap::new();
         let mut all_symbols = Vec::new();
         let mut files_indexed = 0;
+
+        // Build a map of path -> symbols from existing cache for quick lookup
+        let mut existing_symbols_by_path: HashMap<String, Vec<SearchResult>> = HashMap::new();
+        for symbol in existing_symbols {
+            existing_symbols_by_path
+                .entry(symbol.path.clone())
+                .or_insert_with(Vec::new)
+                .push(symbol);
+        }
 
         for file_path in files {
             // Compute hash for incremental indexing
@@ -54,6 +81,11 @@ impl Indexer {
             if let Some(existing_hash) = existing_hashes.get(&path_str) {
                 if existing_hash == &hash {
                     log::debug!("Skipping unchanged file: {}", path_str);
+                    // Preserve existing symbols from this file
+                    if let Some(symbols) = existing_symbols_by_path.get(&path_str) {
+                        all_symbols.extend(symbols.clone());
+                        log::debug!("  Preserved {} symbols from cache", symbols.len());
+                    }
                     new_hashes.insert(path_str, hash);
                     continue;
                 }
