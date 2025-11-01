@@ -1,6 +1,6 @@
 # RefLex TODO
 
-**Last Updated:** 2025-11-01
+**Last Updated:** 2025-01-11
 **Project Status:** Architecture Redesign - Trigram-Based Full-Text Search
 
 > **⚠️ AI Assistants:** Read the "Context Management & AI Workflow" section in `CLAUDE.md` for instructions on maintaining this file and creating RESEARCH.md documents. This TODO.md MUST be updated as you work on tasks.
@@ -48,7 +48,10 @@ RefLex is **operational as a local code search engine** with the following capab
 
 **Supported Languages (for indexing):**
 - ✅ **Rust** - Full symbol extraction (functions, structs, enums, traits, impls, methods, constants, modules, type aliases)
-- ⚠️ **Python, JavaScript, TypeScript, Go, Java, PHP, C, C++** - Grammars loaded, parsers stubbed (ready to implement)
+- ✅ **TypeScript/JavaScript** - Full symbol extraction (functions, classes, interfaces, types, enums, methods, arrow functions, React components)
+- ✅ **Vue** - Symbol extraction from `<script>` blocks (Composition API and Options API support)
+- ✅ **Svelte** - Symbol extraction from component scripts (including reactive declarations)
+- ⚠️ **Python, Go, Java, PHP, C, C++** - Grammars loaded, parsers stubbed (ready to implement)
 
 **What Works:**
 ```bash
@@ -68,13 +71,13 @@ reflex query "unwrap" --lang rust --limit 10 --json
 ### ⚠️ LIMITATIONS / TODO
 
 **Known Issues:**
-1. **Only Rust parser implemented** - Other languages need parser implementations
+1. **Limited language support** - Rust, TypeScript/JavaScript, Vue, and Svelte fully supported; Python, Go, Java, PHP, C, C++ parsers still need implementation
 2. **HTTP server not implemented** - CLI works, serve command is stub only
 3. **AST pattern matching not implemented** - Framework exists but not functional
 
 **Performance Note:**
 - Queries are fast for symbol-only search (memory-mapped symbols.bin)
-- Full-text search loads persisted trigram index from trigrams.bin (bincode deserialization ~7ms)
+- Full-text search uses persisted trigram index from trigrams.bin (rkyv zero-copy deserialization via memory-mapping for instant access)
 
 ### 📊 Implementation Progress
 
@@ -88,7 +91,10 @@ reflex query "unwrap" --lang rust --limit 10 --json
 | **Content Store** | ✅ Complete | 100% |
 | **Symbol Storage** | ✅ Complete | 100% |
 | **Rust Parser** | ✅ Complete | 100% |
-| **Other Parsers** | ⚠️ Stubbed | 10% (grammars loaded) |
+| **TypeScript/JS Parser** | ✅ Complete | 100% |
+| **Vue Parser** | ✅ Complete | 100% |
+| **Svelte Parser** | ✅ Complete | 100% |
+| **Other Parsers** | ⚠️ Stubbed | ~45% (Python, Go, Java, PHP, C, C++ remain) |
 | **CLI** | ✅ Complete | 95% (serve stub) |
 | **HTTP Server** | ⚠️ Stub | 0% |
 | **Tests** | ✅ Partial | ~40% (core modules tested) |
@@ -127,9 +133,9 @@ reflex query  →  [Query Engine] → [Mode: Full-text or Symbol-only]
 ```
 
 **Next Phase:**
-1. Persist trigram index to trigrams.bin
-2. Implement parsers for Python, TypeScript, Go, etc.
-3. Add HTTP server (optional)
+1. Implement remaining parsers (Python, Go, Java, PHP, C, C++)
+2. Add HTTP server (optional)
+3. Performance testing and optimization
 
 ---
 
@@ -424,8 +430,16 @@ reflex query  →  [Query Engine] → [Mode: Full-text or Symbol-only]
 #### Implementation Checklist ⚠️ PARTIALLY COMPLETE
 - [x] Create `src/parsers/mod.rs` module ✅
 - [x] Create `src/parsers/rust.rs` - Rust grammar integration ✅ **FULLY IMPLEMENTED**
+- [x] Create `src/parsers/typescript.rs` - TS/JS grammar integration ✅ **FULLY IMPLEMENTED**
+  - Shared TypeScript parser handles both .ts and .js files ✅
+  - Full React/JSX support via TSX grammar ✅
+- [x] Create `src/parsers/vue.rs` - Vue SFC grammar integration ✅ **FULLY IMPLEMENTED**
+  - Supports both Options API and Composition API ✅
+  - Handles TypeScript in `<script lang="ts">` blocks ✅
+- [x] Create `src/parsers/svelte.rs` - Svelte component grammar integration ✅ **FULLY IMPLEMENTED**
+  - Extracts symbols from component scripts ✅
+  - Supports reactive declarations (`$:`) ✅
 - [ ] Create `src/parsers/python.rs` - Python grammar integration (stub exists)
-- [ ] Create `src/parsers/typescript.rs` - TS/JS grammar integration (stub exists)
 - [ ] Create `src/parsers/go.rs` - Go grammar integration (stub exists)
 - [ ] Create `src/parsers/php.rs` - PHP grammar integration (stub exists)
 - [ ] Create `src/parsers/c.rs` - C grammar integration (stub exists)
@@ -433,7 +447,8 @@ reflex query  →  [Query Engine] → [Mode: Full-text or Symbol-only]
 - [ ] Create `src/parsers/java.rs` - Java grammar integration (stub exists)
 - [x] Implement parser factory (select parser by Language enum) ✅
 - [x] Write unit tests for Rust parser (7 tests) ✅
-- [ ] Write unit tests for other parsers (when implemented)
+- [ ] Write unit tests for TypeScript/Vue/Svelte parsers
+- [ ] Write unit tests for remaining parsers (when implemented)
 - [ ] Document query patterns for each language
 
 ---
@@ -455,9 +470,9 @@ reflex query  →  [Query Engine] → [Mode: Full-text or Symbol-only]
 
 - [x] **Design trigrams.bin format** ✅ COMPLETED
   - Binary format with header (magic, version, counts, offsets) ✅
-  - Posting lists serialized with bincode (compact, fast) ✅
+  - Posting lists serialized with rkyv (zero-copy deserialization) ✅
   - File list with paths ✅
-  - Achieves 17x speedup vs rebuild (7ms vs 120ms queries) ✅
+  - Memory-mapped for instant access (vs. rebuilding index on every query) ✅
 
 - [x] **Design meta.db schema** (cache.rs:74-139)
   - **Decision:** SQLite (easier, more flexible) ✅
@@ -720,6 +735,36 @@ Tree-sitter Grammars ──────────→ AST Extraction ───�
 - [x] Extract spans (line/col)
 - [x] Extract scope context
 - [x] Comprehensive tests (7 test cases)
+
+### TypeScript/JavaScript Parser (COMPLETED - src/parsers/typescript.rs)
+- [x] Parse functions and arrow functions
+- [x] Parse classes and methods
+- [x] Parse interfaces and types
+- [x] Parse enums
+- [x] Parse React components (function and class)
+- [x] Parse constants and variables
+- [x] Shared parser for .ts, .tsx, .js, .jsx files
+- [x] Full JSX/TSX support
+- [x] Extract spans (line/col)
+- [x] Extract scope context
+
+### Vue Parser (COMPLETED - src/parsers/vue.rs)
+- [x] Extract symbols from `<script>` blocks
+- [x] Support both Options API and Composition API
+- [x] Handle `<script setup>` syntax
+- [x] Support TypeScript in `<script lang="ts">`
+- [x] Line-based extraction (tree-sitter-vue incompatible with tree-sitter 0.24+)
+- [x] Extract functions, constants, and methods
+- [x] Extract spans (line/col)
+
+### Svelte Parser (COMPLETED - src/parsers/svelte.rs)
+- [x] Extract symbols from component scripts
+- [x] Support reactive declarations (`$:`)
+- [x] Handle module context (`context="module"`)
+- [x] Support TypeScript in `<script lang="ts">`
+- [x] Line-based extraction (tree-sitter-svelte incompatible with tree-sitter 0.24+)
+- [x] Extract functions and variables
+- [x] Extract spans (line/col)
 
 ### Query Engine (COMPLETED - src/query.rs)
 - [x] Load memory-mapped cache (SymbolReader, ContentReader)
