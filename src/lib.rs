@@ -35,5 +35,5 @@ pub mod query;
 // Re-export commonly used types
 pub use cache::CacheManager;
 pub use indexer::Indexer;
-pub use models::{IndexConfig, Language, SearchResult, Span, SymbolKind};
+pub use models::{IndexConfig, IndexStats, IndexedFile, Language, SearchResult, Span, SymbolKind};
 pub use query::{QueryEngine, QueryFilter};

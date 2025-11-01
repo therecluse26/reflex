@@ -3,10 +3,10 @@
 //! The query engine loads the memory-mapped cache and executes
 //! deterministic searches based on lexical, structural, or symbol patterns.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::Path;
 
-use crate::cache::CacheManager;
+use crate::cache::{CacheManager, SymbolReader, SYMBOLS_BIN};
 use crate::models::{Language, SearchResult, SymbolKind};
 
 /// Query filter options
@@ -55,19 +55,58 @@ impl QueryEngine {
             );
         }
 
-        // TODO: Implement query execution:
-        // 1. Load memory-mapped cache files (symbols.bin, tokens.bin)
-        // 2. Parse query pattern:
-        //    - "symbol:name" -> symbol name search
-        //    - "fn :name(...)" -> AST pattern search (if use_ast=true)
-        //    - Plain text -> lexical token search
-        // 3. Apply filters (language, kind, etc.)
-        // 4. Rank results deterministically (e.g., by file path + line number)
-        // 5. Apply limit if specified
-        // 6. Return SearchResults with context
+        // Step 1: Load symbol reader
+        let symbols_path = self.cache.path().join(SYMBOLS_BIN);
+        let reader = SymbolReader::open(&symbols_path)
+            .context("Failed to open symbols cache")?;
 
-        // Placeholder: return empty results
-        let results = vec![];
+        // Step 2: Parse query pattern and execute search
+        let query_type = parse_query(pattern);
+        let mut results = match query_type {
+            QueryType::Symbol(name) => {
+                // Symbol name search (exact or prefix)
+                if name.ends_with('*') {
+                    // Prefix match: "get_*"
+                    let prefix = name.trim_end_matches('*');
+                    reader.find_by_prefix(prefix)?
+                } else if name == "*" {
+                    // List all symbols
+                    reader.read_all()?
+                } else {
+                    // Exact match
+                    reader.find_by_name(&name)?
+                }
+            }
+            QueryType::Lexical(text) => {
+                // Plain text search (substring)
+                reader.find_by_substring(&text)?
+            }
+            QueryType::Ast(_pattern) => {
+                // AST pattern matching - not yet implemented
+                log::warn!("AST pattern matching not yet implemented");
+                vec![]
+            }
+        };
+
+        // Step 3: Apply filters
+        if let Some(lang) = filter.language {
+            results.retain(|r| r.lang == lang);
+        }
+
+        if let Some(kind) = filter.kind {
+            results.retain(|r| r.kind == kind);
+        }
+
+        // Step 4: Sort results deterministically (by path, then line number)
+        results.sort_by(|a, b| {
+            a.path.cmp(&b.path)
+                .then_with(|| a.span.start_line.cmp(&b.span.start_line))
+        });
+
+        // Step 5: Apply limit
+        if let Some(limit) = filter.limit {
+            results.truncate(limit);
+        }
 
         log::info!("Query returned {} results", results.len());
 

@@ -162,3 +162,16 @@ pub struct IndexStats {
     /// Last update timestamp
     pub last_updated: String,
 }
+
+/// Information about an indexed file
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexedFile {
+    /// File path
+    pub path: String,
+    /// Detected language
+    pub language: String,
+    /// Number of symbols in this file
+    pub symbol_count: usize,
+    /// Last indexed timestamp
+    pub last_indexed: String,
+}

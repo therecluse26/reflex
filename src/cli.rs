@@ -91,6 +91,13 @@ pub enum Command {
         #[arg(short, long)]
         yes: bool,
     },
+
+    /// List all indexed files
+    ListFiles {
+        /// Output format as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 impl Cli {
@@ -121,6 +128,9 @@ impl Cli {
             }
             Command::Clear { yes } => {
                 handle_clear(yes)
+            }
+            Command::ListFiles { json } => {
+                handle_list_files(json)
             }
         }
     }
@@ -306,6 +316,36 @@ fn handle_clear(skip_confirm: bool) -> Result<()> {
 
     cache.clear()?;
     println!("Cache cleared successfully.");
+
+    Ok(())
+}
+
+/// Handle the `list-files` subcommand
+fn handle_list_files(as_json: bool) -> Result<()> {
+    let cache = CacheManager::new(".");
+
+    if !cache.exists() {
+        anyhow::bail!("No index found. Run 'reflex index' first.");
+    }
+
+    let files = cache.list_files()?;
+
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&files)?);
+    } else {
+        if files.is_empty() {
+            println!("No files indexed yet.");
+        } else {
+            println!("Indexed Files ({} total):", files.len());
+            println!();
+            for file in files {
+                println!("  {} ({} - {} symbols)",
+                         file.path,
+                         file.language,
+                         file.symbol_count);
+            }
+        }
+    }
 
     Ok(())
 }

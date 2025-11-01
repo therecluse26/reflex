@@ -7,12 +7,20 @@
 //! - `hashes.json`: blake3 file hashes for incremental updates
 //! - `config.toml`: Index settings
 
+pub mod symbol_writer;
+pub mod symbol_reader;
+
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+use crate::models::IndexedFile;
+
+pub use symbol_writer::SymbolWriter;
+pub use symbol_reader::SymbolReader;
 
 /// Default cache directory name
 pub const CACHE_DIR: &str = ".reflex";
@@ -289,6 +297,94 @@ compression_level = 3  # zstd level
 
         log::debug!("Saved {} file hashes", hashes.len());
         Ok(())
+    }
+
+    /// Update file metadata in the files table
+    pub fn update_file(&self, path: &str, hash: &str, language: &str, symbol_count: usize) -> Result<()> {
+        let db_path = self.cache_path.join(META_DB);
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for file update")?;
+
+        let now = chrono::Utc::now().timestamp();
+
+        conn.execute(
+            "INSERT OR REPLACE INTO files (path, hash, last_indexed, language, symbol_count)
+             VALUES (?, ?, ?, ?, ?)",
+            [path, hash, &now.to_string(), language, &symbol_count.to_string()],
+        )?;
+
+        Ok(())
+    }
+
+    /// Update statistics after indexing by calculating totals from database
+    pub fn update_stats(&self) -> Result<()> {
+        let db_path = self.cache_path.join(META_DB);
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for stats update")?;
+
+        // Count total files from files table
+        let total_files: usize = conn.query_row(
+            "SELECT COUNT(*) FROM files",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(0);
+
+        // Sum total symbols from files table
+        let total_symbols: usize = conn.query_row(
+            "SELECT SUM(symbol_count) FROM files",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(0);
+
+        let now = chrono::Utc::now().timestamp();
+
+        conn.execute(
+            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            ["total_files", &total_files.to_string(), &now.to_string()],
+        )?;
+
+        conn.execute(
+            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            ["total_symbols", &total_symbols.to_string(), &now.to_string()],
+        )?;
+
+        log::debug!("Updated statistics: {} files, {} symbols", total_files, total_symbols);
+        Ok(())
+    }
+
+    /// Get list of all indexed files
+    pub fn list_files(&self) -> Result<Vec<IndexedFile>> {
+        let db_path = self.cache_path.join(META_DB);
+
+        if !db_path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db")?;
+
+        let mut stmt = conn.prepare(
+            "SELECT path, language, symbol_count, last_indexed FROM files ORDER BY path"
+        )?;
+
+        let files = stmt.query_map([], |row| {
+            let path: String = row.get(0)?;
+            let language: String = row.get(1)?;
+            let symbol_count: i64 = row.get(2)?;
+            let last_indexed: i64 = row.get(3)?;
+
+            Ok(IndexedFile {
+                path,
+                language,
+                symbol_count: symbol_count as usize,
+                last_indexed: chrono::DateTime::from_timestamp(last_indexed, 0)
+                    .unwrap_or_else(chrono::Utc::now)
+                    .to_rfc3339(),
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(files)
     }
 
     /// Get statistics about the current cache
