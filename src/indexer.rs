@@ -28,6 +28,7 @@ struct FileProcessingResult {
     symbols: Vec<SearchResult>,
     language: Language,
     trigrams: Vec<(Trigram, FileLocation)>, // Pre-extracted trigrams for this file
+    line_count: usize,
 }
 
 /// Manages the indexing process
@@ -81,7 +82,7 @@ impl Indexer {
         let mut new_hashes = HashMap::new();
         let mut all_symbols = Vec::new();
         let mut files_indexed = 0;
-        let mut file_metadata: Vec<(String, String, String, usize)> = Vec::new(); // For batch SQLite update
+        let mut file_metadata: Vec<(String, String, String, usize, usize)> = Vec::new(); // For batch SQLite update
 
         // Initialize trigram index and content store
         let mut trigram_index = TrigramIndex::new();
@@ -197,6 +198,9 @@ impl Indexer {
                 // Extract trigrams during parallel processing (with temporary file_id = 0)
                 let trigrams = extract_trigrams_with_locations(&content, 0);
 
+                // Count lines in the file
+                let line_count = content.lines().count();
+
                 // Update progress atomically
                 counter_clone.fetch_add(1, Ordering::Relaxed);
 
@@ -208,6 +212,7 @@ impl Indexer {
                     symbols,
                     language,
                     trigrams,
+                    line_count,
                 })
             })
             .collect();
@@ -263,7 +268,8 @@ impl Indexer {
                 result.path_str.clone(),
                 result.hash.clone(),
                 format!("{:?}", result.language),
-                result.symbols.len()
+                result.symbols.len(),
+                result.line_count
             ));
 
             new_hashes.insert(result.path_str, result.hash);

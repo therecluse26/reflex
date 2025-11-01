@@ -92,7 +92,8 @@ impl CacheManager {
                 last_indexed INTEGER NOT NULL,
                 language TEXT NOT NULL,
                 symbol_count INTEGER DEFAULT 0,
-                token_count INTEGER DEFAULT 0
+                token_count INTEGER DEFAULT 0,
+                line_count INTEGER DEFAULT 0
             )",
             [],
         )?;
@@ -304,7 +305,7 @@ compression_level = 3  # zstd level
     }
 
     /// Update file metadata in the files table
-    pub fn update_file(&self, path: &str, hash: &str, language: &str, symbol_count: usize) -> Result<()> {
+    pub fn update_file(&self, path: &str, hash: &str, language: &str, symbol_count: usize, line_count: usize) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
         let conn = Connection::open(&db_path)
             .context("Failed to open meta.db for file update")?;
@@ -312,16 +313,16 @@ compression_level = 3  # zstd level
         let now = chrono::Utc::now().timestamp();
 
         conn.execute(
-            "INSERT OR REPLACE INTO files (path, hash, last_indexed, language, symbol_count)
-             VALUES (?, ?, ?, ?, ?)",
-            [path, hash, &now.to_string(), language, &symbol_count.to_string()],
+            "INSERT OR REPLACE INTO files (path, hash, last_indexed, language, symbol_count, line_count)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            [path, hash, &now.to_string(), language, &symbol_count.to_string(), &line_count.to_string()],
         )?;
 
         Ok(())
     }
 
     /// Batch update multiple files in a single transaction for performance
-    pub fn batch_update_files(&self, files: &[(String, String, String, usize)]) -> Result<()> {
+    pub fn batch_update_files(&self, files: &[(String, String, String, usize, usize)]) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
         let mut conn = Connection::open(&db_path)
             .context("Failed to open meta.db for batch update")?;
@@ -332,11 +333,11 @@ compression_level = 3  # zstd level
         // Use a transaction for batch inserts
         let tx = conn.transaction()?;
 
-        for (path, hash, language, symbol_count) in files {
+        for (path, hash, language, symbol_count, line_count) in files {
             tx.execute(
-                "INSERT OR REPLACE INTO files (path, hash, last_indexed, language, symbol_count)
-                 VALUES (?, ?, ?, ?, ?)",
-                [path.as_str(), hash.as_str(), &now_str, language.as_str(), &symbol_count.to_string()],
+                "INSERT OR REPLACE INTO files (path, hash, last_indexed, language, symbol_count, line_count)
+                 VALUES (?, ?, ?, ?, ?, ?)",
+                [path.as_str(), hash.as_str(), &now_str, language.as_str(), &symbol_count.to_string(), &line_count.to_string()],
             )?;
         }
 
@@ -427,6 +428,8 @@ compression_level = 3  # zstd level
                 index_size_bytes: 0,
                 last_updated: chrono::Utc::now().to_rfc3339(),
                 files_by_language: std::collections::HashMap::new(),
+                symbols_by_language: std::collections::HashMap::new(),
+                lines_by_language: std::collections::HashMap::new(),
             });
         }
 
@@ -489,12 +492,42 @@ compression_level = 3  # zstd level
             files_by_language.insert(language, count);
         }
 
+        // Get symbol count breakdown by language
+        let mut symbols_by_language = std::collections::HashMap::new();
+        let mut stmt = conn.prepare("SELECT language, SUM(symbol_count) FROM files GROUP BY language")?;
+        let symbol_counts = stmt.query_map([], |row| {
+            let language: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            Ok((language, count as usize))
+        })?;
+
+        for result in symbol_counts {
+            let (language, count) = result?;
+            symbols_by_language.insert(language, count);
+        }
+
+        // Get line count breakdown by language
+        let mut lines_by_language = std::collections::HashMap::new();
+        let mut stmt = conn.prepare("SELECT language, SUM(line_count) FROM files GROUP BY language")?;
+        let line_counts = stmt.query_map([], |row| {
+            let language: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            Ok((language, count as usize))
+        })?;
+
+        for result in line_counts {
+            let (language, count) = result?;
+            lines_by_language.insert(language, count);
+        }
+
         Ok(crate::models::IndexStats {
             total_files,
             total_symbols,
             index_size_bytes,
             last_updated,
             files_by_language,
+            symbols_by_language,
+            lines_by_language,
         })
     }
 }

@@ -237,12 +237,16 @@ fn handle_index(path: PathBuf, force: bool, languages: Vec<String>, show_progres
         let lang_width = max_lang_len.max(8); // At least "Language" header width
 
         // Print table header
-        println!("  {:<width$}  Files", "Language", width = lang_width);
-        println!("  {}  {}", "-".repeat(lang_width), "-----");
+        println!("  {:<width$}  Files  Lines    Symbols", "Language", width = lang_width);
+        println!("  {}  -----  -------  -------", "-".repeat(lang_width));
 
         // Print rows
-        for (language, count) in lang_vec {
-            println!("  {:<width$}  {}", language, count, width = lang_width);
+        for (language, file_count) in lang_vec {
+            let line_count = stats.lines_by_language.get(language).copied().unwrap_or(0);
+            let symbol_count = stats.symbols_by_language.get(language).copied().unwrap_or(0);
+            println!("  {:<width$}  {:5}  {:7}  {:7}",
+                language, file_count, line_count, symbol_count,
+                width = lang_width);
         }
     }
 

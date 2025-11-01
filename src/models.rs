@@ -195,6 +195,10 @@ pub struct IndexStats {
     pub last_updated: String,
     /// File count breakdown by language
     pub files_by_language: std::collections::HashMap<String, usize>,
+    /// Symbol count breakdown by language
+    pub symbols_by_language: std::collections::HashMap<String, usize>,
+    /// Line count breakdown by language
+    pub lines_by_language: std::collections::HashMap<String, usize>,
 }
 
 /// Information about an indexed file
