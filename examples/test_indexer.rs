@@ -59,7 +59,7 @@ pub enum Status {
 
     // Run indexing
     println!("2️⃣  Running indexer...");
-    let stats = indexer.index(temp.path())?;
+    let stats = indexer.index(temp.path(), false)?;
 
     println!("   ✅ Indexing complete\n");
 
@@ -82,7 +82,7 @@ pub enum Status {
 
     // Test incremental indexing
     println!("\n4️⃣  Testing incremental indexing...");
-    let stats2 = indexer.index(temp.path())?;
+    let stats2 = indexer.index(temp.path(), false)?;
     println!("   ✅ Incremental indexing complete (should skip unchanged files)");
     println!("   - Files indexed: {}", stats2.total_files);
 

@@ -660,4 +660,107 @@ mod tests {
         assert!(kinds.contains(&&SymbolKind::Method));
         assert!(kinds.contains(&&SymbolKind::Function));
     }
+
+    #[test]
+    fn test_parse_async_class_methods() {
+        let source = r#"
+            export class CentralUsersModule {
+                async getAllUsers(params) {
+                    return await this.call('get', `/users`, params)
+                }
+
+                async getUser(userId) {
+                    return await this.call('get', `/users/${userId}`)
+                }
+
+                deleteUser(userId) {
+                    return this.call('delete', `/user/${userId}`)
+                }
+            }
+        "#;
+
+        let symbols = parse("test.ts", source, Language::TypeScript).unwrap();
+
+        // Debug: Print all symbols
+        println!("\nAll symbols found:");
+        for symbol in &symbols {
+            println!("  {:?} - {}", symbol.kind, symbol.symbol);
+        }
+
+        // Should find: class + 3 methods (2 async, 1 regular)
+        let class_symbols: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Class))
+            .collect();
+        assert_eq!(class_symbols.len(), 1);
+        assert_eq!(class_symbols[0].symbol, "CentralUsersModule");
+
+        let method_symbols: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Method))
+            .collect();
+
+        // All three should be detected as methods, not variables
+        assert_eq!(method_symbols.len(), 3, "Expected 3 methods, found {}", method_symbols.len());
+        assert!(method_symbols.iter().any(|s| s.symbol == "getAllUsers"));
+        assert!(method_symbols.iter().any(|s| s.symbol == "getUser"));
+        assert!(method_symbols.iter().any(|s| s.symbol == "deleteUser"));
+
+        // Verify no async methods are misclassified as variables
+        let variable_symbols: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Constant) || matches!(s.kind, SymbolKind::Variable))
+            .collect();
+        assert_eq!(variable_symbols.len(), 0, "Async methods should not be classified as variables");
+
+        // Check scope
+        for method in method_symbols {
+            assert_eq!(method.scope.as_ref().unwrap(), "class CentralUsersModule");
+        }
+    }
+
+    #[test]
+    fn test_parse_user_exact_code() {
+        // User's exact code with TypeScript types
+        let source = r#"
+export class CentralUsersModule extends HttpFactory<WatchHookMap, WatchEvents> {
+  protected $events = {
+    //
+  }
+
+  async checkAuthenticated() {
+    return await this.call('get', '/check')
+  }
+
+  async getUser(userId: CentralUser['id']) {
+    return await this.call<CentralUser>('get', `/users/${userId}`)
+  }
+
+  async getAllUsers(params?: PaginatedParams & SortableParams & SearchableParams) {
+    return await this.call<CentralUser[]>('get', `/users`, params)
+  }
+
+  async deleteUser(userId: CentralUser['id']) {
+    return await this.call<void>('delete', `/user/${userId}`)
+  }
+}
+        "#;
+
+        let symbols = parse("test.ts", source, Language::TypeScript).unwrap();
+
+        // Debug: Print all symbols
+        println!("\nAll symbols found in user code:");
+        for symbol in &symbols {
+            println!("  {:?} - {}", symbol.kind, symbol.symbol);
+        }
+
+        // Verify getAllUsers is a Method, not a Variable
+        let getAllUsers_symbols: Vec<_> = symbols.iter()
+            .filter(|s| s.symbol == "getAllUsers")
+            .collect();
+
+        assert_eq!(getAllUsers_symbols.len(), 1, "Should find exactly one getAllUsers");
+        assert!(
+            matches!(getAllUsers_symbols[0].kind, SymbolKind::Method),
+            "getAllUsers should be a Method, not {:?}",
+            getAllUsers_symbols[0].kind
+        );
+    }
 }

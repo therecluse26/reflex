@@ -27,7 +27,7 @@ fn greet(name: &str) {
     let indexer = Indexer::new(cache, config);
 
     // Index the directory
-    let stats = indexer.index(temp_path).unwrap();
+    let stats = indexer.index(temp_path, false).unwrap();
     assert_eq!(stats.total_files, 1); // One test.rs file
     assert_eq!(stats.total_symbols, 2); // main and greet functions
 

@@ -20,7 +20,7 @@
 //! let cache = CacheManager::new(".");
 //! let config = IndexConfig::default();
 //! let indexer = Indexer::new(cache, config);
-//! let stats = indexer.index(".").unwrap();
+//! let stats = indexer.index(".", false).unwrap();
 //!
 //! println!("Indexed {} symbols", stats.total_symbols);
 //! ```

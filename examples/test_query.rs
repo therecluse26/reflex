@@ -61,7 +61,7 @@ pub enum Status {
     let indexer = Indexer::new(cache, config);
 
     println!("2️⃣  Indexing files...");
-    let stats = indexer.index(temp.path())?;
+    let stats = indexer.index(temp.path(), false)?;
     println!("   ✅ Indexed {} files, {} symbols\n", stats.total_files, stats.total_symbols);
 
     // Create query engine

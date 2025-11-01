@@ -196,6 +196,11 @@ impl QueryEngine {
         let content_reader = ContentReader::open(&content_path)
             .context("Failed to open content store")?;
 
+        // Load symbol reader to get actual symbol kinds
+        let symbols_path = self.cache.path().join(SYMBOLS_BIN);
+        let symbol_reader = SymbolReader::open(&symbols_path)
+            .context("Failed to open symbols cache")?;
+
         // Load trigram index from disk (or rebuild if missing)
         let trigrams_path = self.cache.path().join("trigrams.bin");
         let trigram_index = if trigrams_path.exists() {
@@ -220,6 +225,9 @@ impl QueryEngine {
         let candidates = trigram_index.search(pattern);
         log::debug!("Found {} candidate locations", candidates.len());
 
+        // Get all symbols for matching against locations
+        let all_symbols = symbol_reader.read_all()?;
+
         // Verify matches and build results
         let mut results = Vec::new();
 
@@ -232,6 +240,7 @@ impl QueryEngine {
             for (line_idx, line) in content.lines().enumerate() {
                 if line.contains(pattern) {
                     let line_no = line_idx + 1;
+                    let file_path_str = file_path.to_string_lossy().to_string();
 
                     // Detect language from file extension
                     let ext = file_path.extension()
@@ -239,20 +248,34 @@ impl QueryEngine {
                         .unwrap_or("");
                     let lang = Language::from_extension(ext);
 
-                    results.push(SearchResult {
-                        path: file_path.to_string_lossy().to_string(),
-                        lang,
-                        kind: SymbolKind::Variable, // Use Variable as placeholder for text matches
-                        symbol: pattern.to_string(),
-                        span: Span {
-                            start_line: line_no,
-                            end_line: line_no,
-                            start_col: 0,
-                            end_col: 0,
-                        },
-                        scope: None,
-                        preview: line.to_string(),
+                    // Try to find a matching symbol at this location
+                    let matching_symbol = all_symbols.iter().find(|sym| {
+                        sym.path == file_path_str &&
+                        line_no >= sym.span.start_line &&
+                        line_no <= sym.span.end_line &&
+                        line.contains(&sym.symbol)
                     });
+
+                    if let Some(symbol) = matching_symbol {
+                        // Use the actual symbol information
+                        results.push(symbol.clone());
+                    } else {
+                        // Fallback: create a generic text match result
+                        results.push(SearchResult {
+                            path: file_path_str,
+                            lang,
+                            kind: SymbolKind::Unknown("text_match".to_string()),
+                            symbol: pattern.to_string(),
+                            span: Span {
+                                start_line: line_no,
+                                end_line: line_no,
+                                start_col: 0,
+                                end_col: 0,
+                            },
+                            scope: None,
+                            preview: line.to_string(),
+                        });
+                    }
                 }
             }
         }
