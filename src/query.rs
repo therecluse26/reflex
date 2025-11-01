@@ -27,6 +27,8 @@ pub struct QueryFilter {
     pub expand: bool,
     /// File path filter (substring match)
     pub file_pattern: Option<String>,
+    /// Exact symbol name match (no substring matching)
+    pub exact: bool,
 }
 
 impl Default for QueryFilter {
@@ -39,6 +41,7 @@ impl Default for QueryFilter {
             symbols_mode: false,
             expand: false,
             file_pattern: None,
+            exact: false,
         }
     }
 }
@@ -108,6 +111,11 @@ impl QueryEngine {
         // Apply file path filter (substring match)
         if let Some(ref file_pattern) = filter.file_pattern {
             results.retain(|r| r.path.contains(file_pattern));
+        }
+
+        // Apply exact name filter (only for symbol searches)
+        if filter.exact && filter.symbols_mode {
+            results.retain(|r| r.symbol == pattern);
         }
 
         // Expand symbol bodies if requested

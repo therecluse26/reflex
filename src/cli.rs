@@ -92,6 +92,11 @@ pub enum Command {
         /// Example: --file math.rs or --file helpers/
         #[arg(short = 'f', long)]
         file: Option<String>,
+
+        /// Exact symbol name match (no substring matching)
+        /// Only applicable to symbol searches
+        #[arg(long)]
+        exact: bool,
     },
 
     /// Start a local HTTP API server
@@ -132,9 +137,10 @@ impl Cli {
     pub fn execute(self) -> Result<()> {
         // Setup logging based on verbosity
         let log_level = match self.verbose {
-            0 => "info",
-            1 => "debug",
-            _ => "trace",
+            0 => "warn",   // Default: only warnings and errors
+            1 => "info",   // -v: show info messages
+            2 => "debug",  // -vv: show debug messages
+            _ => "trace",  // -vvv: show trace messages
         };
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level))
             .init();
@@ -144,8 +150,8 @@ impl Cli {
             Command::Index { path, force, languages } => {
                 handle_index(path, force, languages)
             }
-            Command::Query { pattern, symbols, lang, kind, ast, json, limit, expand, file } => {
-                handle_query(pattern, symbols, lang, kind, ast, json, limit, expand, file)
+            Command::Query { pattern, symbols, lang, kind, ast, json, limit, expand, file, exact } => {
+                handle_query(pattern, symbols, lang, kind, ast, json, limit, expand, file, exact)
             }
             Command::Serve { port, host } => {
                 handle_serve(port, host)
@@ -222,6 +228,7 @@ fn handle_query(
     limit: Option<usize>,
     expand: bool,
     file_pattern: Option<String>,
+    exact: bool,
 ) -> Result<()> {
     log::info!("Starting query command");
 
@@ -273,6 +280,7 @@ fn handle_query(
         symbols_mode,
         expand,
         file_pattern,
+        exact,
     };
 
     let results = engine.search(&pattern, filter)?;
