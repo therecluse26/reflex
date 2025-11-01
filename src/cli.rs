@@ -300,25 +300,24 @@ fn handle_query(
         _ => None,
     });
 
-    let kind = kind_str.as_deref().and_then(|s| match s.to_lowercase().as_str() {
-        "function" | "fn" | "func" => Some(crate::models::SymbolKind::Function),
-        "class" => Some(crate::models::SymbolKind::Class),
-        "struct" => Some(crate::models::SymbolKind::Struct),
-        "enum" => Some(crate::models::SymbolKind::Enum),
-        "interface" => Some(crate::models::SymbolKind::Interface),
-        "trait" => Some(crate::models::SymbolKind::Trait),
-        "constant" | "const" => Some(crate::models::SymbolKind::Constant),
-        "variable" | "var" => Some(crate::models::SymbolKind::Variable),
-        "method" => Some(crate::models::SymbolKind::Method),
-        "module" | "mod" => Some(crate::models::SymbolKind::Module),
-        "namespace" | "ns" => Some(crate::models::SymbolKind::Namespace),
-        "type" => Some(crate::models::SymbolKind::Type),
-        "import" => Some(crate::models::SymbolKind::Import),
-        "export" => Some(crate::models::SymbolKind::Export),
-        _ => {
-            log::warn!("Unknown symbol kind: {}", s);
-            None
-        }
+    // Parse symbol kind - try exact match first (case-insensitive), then treat as Unknown
+    let kind = kind_str.as_deref().and_then(|s| {
+        // Try parsing with proper case (PascalCase for SymbolKind)
+        let capitalized = {
+            let mut chars = s.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().chain(chars.flat_map(|c| c.to_lowercase())).collect(),
+            }
+        };
+
+        capitalized.parse::<crate::models::SymbolKind>()
+            .ok()
+            .or_else(|| {
+                // If not a known kind, treat as Unknown for flexibility
+                log::debug!("Treating '{}' as unknown symbol kind for filtering", s);
+                Some(crate::models::SymbolKind::Unknown(s.to_string()))
+            })
     });
 
     // Smart behavior: --kind implies --symbols

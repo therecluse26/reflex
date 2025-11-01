@@ -4,6 +4,7 @@
 //! that RefLex provides to AI agents and other programmatic consumers.
 
 use serde::{Deserialize, Serialize};
+use strum::{EnumString, Display};
 
 /// Represents a source code location span (line:col range)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -30,8 +31,8 @@ impl Span {
 }
 
 /// Type of symbol found in code
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, EnumString, Display)]
+#[strum(serialize_all = "PascalCase")]
 pub enum SymbolKind {
     Function,
     Class,
@@ -47,6 +48,11 @@ pub enum SymbolKind {
     Type,
     Import,
     Export,
+    /// Catch-all for symbol kinds not yet explicitly supported.
+    /// This ensures no data loss when encountering new tree-sitter node types.
+    /// The string contains the original kind name from the parser.
+    #[strum(default)]
+    Unknown(String),
 }
 
 /// Programming language identifier

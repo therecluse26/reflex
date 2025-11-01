@@ -184,27 +184,10 @@ impl SymbolReader {
 
     /// Convert SymbolEntry to SearchResult
     fn entry_to_result(&self, entry: &SymbolEntry) -> Result<SearchResult> {
-        // Parse the kind string back to SymbolKind
-        let kind = match entry.kind.as_str() {
-            "Function" => SymbolKind::Function,
-            "Class" => SymbolKind::Class,
-            "Struct" => SymbolKind::Struct,
-            "Enum" => SymbolKind::Enum,
-            "Interface" => SymbolKind::Interface,
-            "Trait" => SymbolKind::Trait,
-            "Method" => SymbolKind::Method,
-            "Constant" => SymbolKind::Constant,
-            "Variable" => SymbolKind::Variable,
-            "Module" => SymbolKind::Module,
-            "Namespace" => SymbolKind::Namespace,
-            "Type" => SymbolKind::Type,
-            "Import" => SymbolKind::Import,
-            "Export" => SymbolKind::Export,
-            _ => {
-                log::warn!("Unknown symbol kind: {}", entry.kind);
-                SymbolKind::Function // Default fallback
-            }
-        };
+        // Parse the kind string back to SymbolKind using strum
+        // Unknown kinds automatically map to SymbolKind::Unknown(String)
+        let kind = entry.kind.parse::<SymbolKind>()
+            .unwrap_or_else(|_| SymbolKind::Unknown(entry.kind.clone()));
 
         // Detect language from file extension
         let lang = if let Some(ext) = Path::new(&entry.path).extension() {

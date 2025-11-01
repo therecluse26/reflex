@@ -243,6 +243,19 @@ impl Indexer {
             if !result.symbols.is_empty() {
                 files_indexed += 1;
             }
+
+            // Log unknown symbol kinds for visibility
+            for symbol in &result.symbols {
+                if matches!(symbol.kind, crate::models::SymbolKind::Unknown(_)) {
+                    log::info!(
+                        "Found unknown symbol kind in {}: {:?} (symbol: {})",
+                        result.path_str,
+                        symbol.kind,
+                        symbol.symbol
+                    );
+                }
+            }
+
             all_symbols.extend(result.symbols.clone());
 
             // Prepare file metadata for batch database update
