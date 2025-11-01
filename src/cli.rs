@@ -98,6 +98,10 @@ pub enum Command {
         /// Only applicable to symbol searches
         #[arg(long)]
         exact: bool,
+
+        /// Only show count and timing, not the actual results
+        #[arg(short, long)]
+        count: bool,
     },
 
     /// Start a local HTTP API server
@@ -151,8 +155,8 @@ impl Cli {
             Command::Index { path, force, languages } => {
                 handle_index(path, force, languages)
             }
-            Command::Query { pattern, symbols, lang, kind, ast, json, limit, expand, file, exact } => {
-                handle_query(pattern, symbols, lang, kind, ast, json, limit, expand, file, exact)
+            Command::Query { pattern, symbols, lang, kind, ast, json, limit, expand, file, exact, count } => {
+                handle_query(pattern, symbols, lang, kind, ast, json, limit, expand, file, exact, count)
             }
             Command::Serve { port, host } => {
                 handle_serve(port, host)
@@ -212,10 +216,30 @@ fn handle_index(path: PathBuf, force: bool, languages: Vec<String>) -> Result<()
     println!("Indexing complete!");
     println!("  Files indexed: {}", stats.total_files);
     println!("  Symbols found: {}", stats.total_symbols);
-    println!("  Cache size: {} bytes", stats.index_size_bytes);
+    println!("  Cache size: {}", format_bytes(stats.index_size_bytes));
     println!("  Last updated: {}", stats.last_updated);
 
     Ok(())
+}
+
+/// Format bytes into human-readable size (KB, MB, GB, etc.)
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    const TB: u64 = GB * 1024;
+
+    if bytes >= TB {
+        format!("{:.2} TB", bytes as f64 / TB as f64)
+    } else if bytes >= GB {
+        format!("{:.2} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.2} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.2} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} bytes", bytes)
+    }
 }
 
 /// Handle the `query` subcommand
@@ -230,6 +254,7 @@ fn handle_query(
     expand: bool,
     file_pattern: Option<String>,
     exact: bool,
+    count_only: bool,
 ) -> Result<()> {
     log::info!("Starting query command");
 
@@ -295,6 +320,12 @@ fn handle_query(
     } else {
         format!("{}ms", elapsed.as_millis())
     };
+
+    // Count-only mode: just show the count and timing
+    if count_only {
+        println!("Found {} results in {}", results.len(), timing_str);
+        return Ok(());
+    }
 
     if as_json {
         println!("{}", serde_json::to_string_pretty(&results)?);

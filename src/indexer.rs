@@ -5,8 +5,10 @@
 
 use anyhow::{Context, Result};
 use ignore::WalkBuilder;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use crate::cache::{CacheManager, SymbolReader, SymbolWriter, SYMBOLS_BIN};
 use crate::content_store::ContentWriter;
@@ -58,7 +60,8 @@ impl Indexer {
 
         // Step 1: Walk directory tree and collect files
         let files = self.discover_files(root)?;
-        log::info!("Discovered {} files to index", files.len());
+        let total_files = files.len();
+        log::info!("Discovered {} files to index", total_files);
 
         // Step 2: Parse files and extract symbols + build trigram index
         let mut new_hashes = HashMap::new();
@@ -78,7 +81,18 @@ impl Indexer {
                 .push(symbol);
         }
 
-        for file_path in files {
+        // Create progress bar
+        let pb = ProgressBar::new(total_files as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} files ({percent}%) ETA: {eta}")
+                .unwrap()
+                .progress_chars("=>-")
+        );
+
+        let start_time = Instant::now();
+
+        for (idx, file_path) in files.iter().enumerate() {
             // Compute hash for incremental indexing
             let hash = self.hash_file(&file_path)?;
             let path_str = file_path.to_string_lossy().to_string();
@@ -145,8 +159,12 @@ impl Indexer {
                     new_hashes.insert(path_str, hash);
                 }
             }
+
+            // Update progress bar
+            pb.set_position((idx + 1) as u64);
         }
 
+        pb.finish_with_message("Indexing complete");
         log::info!("Parsed {} files, extracted {} symbols", files_indexed, all_symbols.len());
 
         // Step 3: Finalize and write trigram index

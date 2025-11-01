@@ -15,7 +15,7 @@
 
 use anyhow::{Context, Result};
 use memmap2::Mmap;
-use serde::{Deserialize, Serialize};
+use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -31,7 +31,7 @@ const VERSION: u32 = 1;
 const HEADER_SIZE: usize = 36;
 
 /// Location of a trigram occurrence in the codebase
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Archive, Serialize, Deserialize)]
 pub struct FileLocation {
     /// File ID (index into file list)
     pub file_id: u32,
@@ -51,13 +51,23 @@ impl FileLocation {
     }
 }
 
+/// Serializable trigram data (for rkyv zero-copy serialization)
+#[derive(Archive, Serialize, Deserialize)]
+struct TrigramData {
+    /// Inverted index: trigram → sorted locations
+    index: Vec<(Trigram, Vec<FileLocation>)>,
+    /// File ID to file path mapping
+    files: Vec<String>,
+}
+
 /// Trigram-based inverted index
 ///
 /// Maps each trigram to a sorted list of locations where it appears.
 /// Posting lists are kept sorted by (file_id, line_no) for efficient intersection.
+/// The index itself is kept sorted by trigram for O(log n) binary search.
 pub struct TrigramIndex {
-    /// Inverted index: trigram → sorted locations
-    index: HashMap<Trigram, Vec<FileLocation>>,
+    /// Inverted index: sorted Vec of (trigram, locations) for binary search
+    index: Vec<(Trigram, Vec<FileLocation>)>,
     /// File ID to file path mapping
     files: Vec<PathBuf>,
 }
@@ -66,7 +76,7 @@ impl TrigramIndex {
     /// Create a new empty trigram index
     pub fn new() -> Self {
         Self {
-            index: HashMap::new(),
+            index: Vec::new(),
             files: Vec::new(),
         }
     }
@@ -99,22 +109,38 @@ impl TrigramIndex {
     pub fn index_file(&mut self, file_id: u32, content: &str) {
         let trigrams = extract_trigrams_with_locations(content, file_id);
 
+        // Use a temporary HashMap during indexing for efficiency
+        let mut temp_map: HashMap<Trigram, Vec<FileLocation>> = HashMap::new();
+
+        // Convert existing index to HashMap for merging
+        for (trigram, locations) in &self.index {
+            temp_map.insert(*trigram, locations.clone());
+        }
+
+        // Add new trigrams
         for (trigram, location) in trigrams {
-            self.index
+            temp_map
                 .entry(trigram)
                 .or_insert_with(Vec::new)
                 .push(location);
         }
+
+        // Convert back to Vec
+        self.index = temp_map.into_iter().collect();
     }
 
-    /// Finalize the index by sorting all posting lists
+    /// Finalize the index by sorting all posting lists and the index itself
     ///
     /// Must be called after all files are indexed, before querying.
     pub fn finalize(&mut self) {
-        for list in self.index.values_mut() {
+        // Sort posting lists
+        for (_, list) in self.index.iter_mut() {
             list.sort_unstable();
             list.dedup(); // Remove duplicates (same trigram appearing multiple times on same line)
         }
+
+        // Sort the index by trigram for binary search
+        self.index.sort_unstable_by_key(|(trigram, _)| *trigram);
     }
 
     /// Search for a plain text pattern
@@ -135,10 +161,15 @@ impl TrigramIndex {
             return vec![];
         }
 
-        // Get posting lists for each trigram
+        // Get posting lists for each trigram using binary search
         let mut posting_lists: Vec<&Vec<FileLocation>> = trigrams
             .iter()
-            .filter_map(|t| self.index.get(t))
+            .filter_map(|t| {
+                self.index
+                    .binary_search_by_key(t, |(trigram, _)| *trigram)
+                    .ok()
+                    .map(|idx| &self.index[idx].1)
+            })
             .collect();
 
         if posting_lists.is_empty() {
@@ -160,15 +191,17 @@ impl TrigramIndex {
 
     /// Get posting list for a specific trigram (for debugging)
     pub fn get_posting_list(&self, trigram: Trigram) -> Option<&Vec<FileLocation>> {
-        self.index.get(&trigram)
+        self.index
+            .binary_search_by_key(&trigram, |(t, _)| *t)
+            .ok()
+            .map(|idx| &self.index[idx].1)
     }
 
     /// Write the trigram index to disk
     ///
     /// Binary format:
-    /// - Header (36 bytes): magic, version, num_trigrams, num_files, file_list_offset, reserved
-    /// - Posting lists: bincode-serialized HashMap<Trigram, Vec<FileLocation>>
-    /// - File list: for each file, path_len (u32) + path (UTF-8)
+    /// - Header (36 bytes): magic, version, num_trigrams, num_files, data_len, reserved
+    /// - Trigram data: rkyv-serialized TrigramData (zero-copy format)
     pub fn write(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
         let mut file = OpenOptions::new()
@@ -178,35 +211,38 @@ impl TrigramIndex {
             .open(path)
             .with_context(|| format!("Failed to create {}", path.display()))?;
 
-        // Serialize posting lists with bincode (binary format for speed)
-        let posting_data = bincode::serialize(&self.index)
-            .context("Failed to serialize trigram index")?;
-        log::debug!("Serialized {} bytes of posting data", posting_data.len());
+        // Index is already a sorted Vec - just clone it for serialization
+        let index_vec = self.index.clone();
 
-        // Calculate file list offset (after header + posting data)
-        let file_list_offset = HEADER_SIZE as u64 + posting_data.len() as u64;
+        let files_vec: Vec<String> = self.files.iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+
+        let data = TrigramData {
+            index: index_vec,
+            files: files_vec,
+        };
+
+        // Serialize with rkyv
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&data)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize trigram index: {}", e))?;
+
+        log::debug!("Serialized {} bytes of trigram data", bytes.len());
 
         // Write header
         file.write_all(MAGIC)?;
         file.write_all(&VERSION.to_le_bytes())?;
         file.write_all(&(self.index.len() as u64).to_le_bytes())?; // num_trigrams
         file.write_all(&(self.files.len() as u64).to_le_bytes())?; // num_files
-        file.write_all(&file_list_offset.to_le_bytes())?;
+        file.write_all(&(bytes.len() as u64).to_le_bytes())?; // data_len
         file.write_all(&[0u8; 4])?; // reserved
 
-        // Write posting lists
-        file.write_all(&posting_data)?;
-
-        // Write file list
-        for file_path in &self.files {
-            let path_str = file_path.to_string_lossy();
-            let path_bytes = path_str.as_bytes();
-            file.write_all(&(path_bytes.len() as u32).to_le_bytes())?;
-            file.write_all(path_bytes)?;
-        }
+        // Write rkyv data
+        file.write_all(&bytes)?;
 
         file.flush()?;
-        file.sync_all()?; // Ensure data is written to disk before returning
+        file.sync_all()?;
+
         log::debug!(
             "Wrote trigram index: {} trigrams, {} files to {:?}",
             self.index.len(),
@@ -217,7 +253,7 @@ impl TrigramIndex {
         Ok(())
     }
 
-    /// Load trigram index from disk using memory mapping
+    /// Load trigram index from disk using memory mapping (zero-copy with rkyv)
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
 
@@ -246,54 +282,33 @@ impl TrigramIndex {
         let num_trigrams = u64::from_le_bytes([
             mmap[8], mmap[9], mmap[10], mmap[11],
             mmap[12], mmap[13], mmap[14], mmap[15],
-        ]);
+        ]) as usize;
 
         let num_files = u64::from_le_bytes([
             mmap[16], mmap[17], mmap[18], mmap[19],
             mmap[20], mmap[21], mmap[22], mmap[23],
-        ]);
+        ]) as usize;
 
-        let file_list_offset = u64::from_le_bytes([
+        let data_len = u64::from_le_bytes([
             mmap[24], mmap[25], mmap[26], mmap[27],
             mmap[28], mmap[29], mmap[30], mmap[31],
         ]) as usize;
 
-        // Deserialize posting lists with bincode (binary format)
-        let posting_data = &mmap[HEADER_SIZE..file_list_offset];
-        log::debug!("Deserializing {} bytes of posting data (file_list_offset={})",
-                   posting_data.len(), file_list_offset);
+        // Deserialize rkyv data
+        let data_bytes = &mmap[HEADER_SIZE..HEADER_SIZE + data_len];
+        log::debug!("Loading {} bytes of trigram data (rkyv zero-copy)", data_bytes.len());
 
-        let index: HashMap<Trigram, Vec<FileLocation>> = bincode::deserialize(posting_data)
-            .with_context(|| format!("Failed to deserialize trigram posting lists (data_len={}, expected_trigrams={})",
-                                    posting_data.len(), num_trigrams))?;
+        // Deserialize the archived data
+        let data: TrigramData = rkyv::from_bytes::<_, rkyv::rancor::Error>(data_bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize trigram data: {}", e))?;
 
-        // Read file list
-        let mut files = Vec::new();
-        let mut pos = file_list_offset;
+        // Use the sorted Vec directly - no HashMap construction needed!
+        let index = data.index;
 
-        for _ in 0..num_files {
-            if pos + 4 > mmap.len() {
-                anyhow::bail!("Truncated file list at position {}", pos);
-            }
-
-            let path_len = u32::from_le_bytes([
-                mmap[pos],
-                mmap[pos + 1],
-                mmap[pos + 2],
-                mmap[pos + 3],
-            ]) as usize;
-            pos += 4;
-
-            if pos + path_len > mmap.len() {
-                anyhow::bail!("Truncated file path at position {}", pos);
-            }
-
-            let path_bytes = &mmap[pos..pos + path_len];
-            let path_str = std::str::from_utf8(path_bytes)
-                .context("Invalid UTF-8 in file path")?;
-            files.push(PathBuf::from(path_str));
-            pos += path_len;
-        }
+        // Convert file paths
+        let files: Vec<PathBuf> = data.files.iter()
+            .map(|s| PathBuf::from(s))
+            .collect();
 
         log::debug!(
             "Loaded trigram index: {} trigrams, {} files from {:?}",
