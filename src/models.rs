@@ -80,6 +80,26 @@ impl Language {
             _ => Language::Unknown,
         }
     }
+
+    /// Check if this language has a parser implementation
+    ///
+    /// Returns true only for languages with working Tree-sitter parsers.
+    /// This determines which files will be indexed by RefLex.
+    pub fn is_supported(&self) -> bool {
+        match self {
+            Language::Rust => true,
+            Language::TypeScript => true,
+            Language::JavaScript => true,
+            // Languages below do not have parser implementations yet
+            Language::Python => false,
+            Language::Go => false,
+            Language::Java => false,
+            Language::PHP => false,
+            Language::C => false,
+            Language::Cpp => false,
+            Language::Unknown => false,
+        }
+    }
 }
 
 /// A search result representing a symbol or code location

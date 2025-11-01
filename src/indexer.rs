@@ -368,7 +368,13 @@ impl Indexer {
         };
 
         let lang = Language::from_extension(&ext);
-        if matches!(lang, Language::Unknown) {
+
+        // Only index files for languages with parser implementations
+        if !lang.is_supported() {
+            if !matches!(lang, Language::Unknown) {
+                log::debug!("Skipping {} ({:?} parser not yet implemented)",
+                           path.display(), lang);
+            }
             return false;
         }
 
@@ -382,7 +388,7 @@ impl Indexer {
         }
 
         // TODO: Check include/exclude patterns when glob support is added
-        // For now, accept all files with known language extensions
+        // For now, accept all files with supported language extensions
 
         true
     }

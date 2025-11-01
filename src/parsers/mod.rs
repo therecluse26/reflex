@@ -7,6 +7,7 @@
 //! source code and returns a vector of symbols.
 
 pub mod rust;
+pub mod typescript;
 
 use anyhow::Result;
 use crate::models::{Language, SearchResult};
@@ -23,16 +24,10 @@ impl ParserFactory {
     ) -> Result<Vec<SearchResult>> {
         match language {
             Language::Rust => rust::parse(path, source),
+            Language::TypeScript => typescript::parse(path, source, language),
+            Language::JavaScript => typescript::parse(path, source, language),
             Language::Python => {
                 // TODO: Implement Python parser
-                Ok(vec![])
-            }
-            Language::JavaScript => {
-                // TODO: Implement JavaScript parser
-                Ok(vec![])
-            }
-            Language::TypeScript => {
-                // TODO: Implement TypeScript parser
                 Ok(vec![])
             }
             Language::Go => {
