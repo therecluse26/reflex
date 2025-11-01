@@ -21,9 +21,26 @@ serde_json = "1.0"
 
 # Parsing
 tree-sitter = "0.24"
+streaming-iterator = "0.1"
+
+# Tree-sitter grammars (using latest available versions)
+tree-sitter-rust = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-go = "0.23"
+tree-sitter-php = "0.23"
+tree-sitter-c = "0.23"
+tree-sitter-cpp = "0.23"
+tree-sitter-java = "0.23"
 
 # Hashing
 blake3 = "1.5"
+
+# Serialization
+rkyv = "0.8"
+memmap2 = "0.9"
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 # HTTP server
 axum = "0.7"

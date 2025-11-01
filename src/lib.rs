@@ -29,6 +29,7 @@ pub mod cache;
 pub mod cli;
 pub mod indexer;
 pub mod models;
+pub mod parsers;
 pub mod query;
 
 // Re-export commonly used types
