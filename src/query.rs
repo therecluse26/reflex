@@ -429,7 +429,7 @@ impl QueryEngine {
         regex: &Regex,
         file_path: &std::path::Path,
         content: &str,
-        _all_symbols: &[SearchResult],
+        all_symbols: &[SearchResult],
         results: &mut Vec<SearchResult>,
     ) -> Result<()> {
         let file_path_str = file_path.to_string_lossy().to_string();
@@ -445,30 +445,52 @@ impl QueryEngine {
             if regex.is_match(line) {
                 let line_no = line_idx + 1;
 
-                // For regex matches, always create a text match result
-                // Don't use symbol information because:
-                // 1. Regex may match inside a larger symbol (e.g., method inside class)
-                // 2. We want to show the specific line that matched, not the enclosing symbol
+                // Try to find a symbol whose definition is on this exact line
+                // This ensures --kind function returns only function definitions, not calls
+                let matching_symbol = all_symbols.iter()
+                    .find(|sym| {
+                        sym.path == file_path_str &&
+                        sym.span.start_line == line_no
+                    });
 
                 // Extract the actual matched portion
                 let matched_text = regex.find(line)
                     .map(|m| m.as_str().to_string())
                     .unwrap_or_else(|| line.to_string());
 
-                results.push(SearchResult {
-                    path: file_path_str.clone(),
-                    lang: lang.clone(),
-                    kind: SymbolKind::Unknown("regex_match".to_string()),
-                    symbol: matched_text,
-                    span: Span {
-                        start_line: line_no,
-                        end_line: line_no,
-                        start_col: 0,
-                        end_col: 0,
-                    },
-                    scope: None,
-                    preview: line.to_string(),
-                });
+                if let Some(symbol) = matching_symbol {
+                    // Found a symbol - use its kind but the matched line's info
+                    results.push(SearchResult {
+                        path: file_path_str.clone(),
+                        lang: lang.clone(),
+                        kind: symbol.kind.clone(),
+                        symbol: matched_text,
+                        span: Span {
+                            start_line: line_no,
+                            end_line: line_no,
+                            start_col: 0,
+                            end_col: 0,
+                        },
+                        scope: symbol.scope.clone(),
+                        preview: line.to_string(),
+                    });
+                } else {
+                    // No symbol found - create generic text match
+                    results.push(SearchResult {
+                        path: file_path_str.clone(),
+                        lang: lang.clone(),
+                        kind: SymbolKind::Unknown("regex_match".to_string()),
+                        symbol: matched_text,
+                        span: Span {
+                            start_line: line_no,
+                            end_line: line_no,
+                            start_col: 0,
+                            end_col: 0,
+                        },
+                        scope: None,
+                        preview: line.to_string(),
+                    });
+                }
             }
         }
 
