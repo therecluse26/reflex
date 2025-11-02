@@ -73,6 +73,44 @@ impl QueryEngine {
             );
         }
 
+        // Validate branch state (if in git repo)
+        let root = std::env::current_dir()?;
+        if crate::git::is_git_repo(&root) {
+            let current_branch = crate::git::get_current_branch(&root)?;
+            let current_commit = crate::git::get_current_commit(&root)?;
+            let is_dirty = crate::git::has_uncommitted_changes(&root)?;
+
+            // Check if branch exists in index
+            if !self.cache.branch_exists(&current_branch)? {
+                eprintln!("\n⚠️  Index not found for branch '{}'", current_branch);
+                eprintln!("   Run 'reflex index' to index this branch, or switch to an indexed branch.\n");
+                anyhow::bail!("Branch '{}' not indexed", current_branch);
+            }
+
+            // Check if branch state has changed
+            match self.cache.get_branch_info(&current_branch) {
+                Ok(branch_info) => {
+                    if branch_info.commit_sha != current_commit || is_dirty {
+                        let reason = if branch_info.commit_sha != current_commit {
+                            format!("commit changed (indexed: {}, current: {})",
+                                    &branch_info.commit_sha[..7],
+                                    &current_commit[..7])
+                        } else {
+                            "uncommitted changes detected".to_string()
+                        };
+
+                        eprintln!("\n⚠️  Index is stale for '{}' ({})", current_branch, reason);
+                        eprintln!("   Run 'reflex index' to update the index.\n");
+                        anyhow::bail!("Index stale for branch '{}'", current_branch);
+                    }
+                }
+                Err(_) => {
+                    // Branch exists in file_branches but not in branches table (shouldn't happen)
+                    log::warn!("Branch '{}' has file entries but no metadata", current_branch);
+                }
+            }
+        }
+
         // Step 1: Load symbol reader
         let symbols_path = self.cache.path().join(SYMBOLS_BIN);
         let reader = SymbolReader::open(&symbols_path)

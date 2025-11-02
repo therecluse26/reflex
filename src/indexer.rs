@@ -48,6 +48,24 @@ impl Indexer {
         let root = root.as_ref();
         log::info!("Indexing directory: {:?}", root);
 
+        // Get git state (if in git repo)
+        let git_state = crate::git::get_git_state_optional(root)?;
+        let branch = git_state
+            .as_ref()
+            .map(|s| s.branch.clone())
+            .unwrap_or_else(|| "_default".to_string());
+
+        if let Some(ref state) = git_state {
+            log::info!(
+                "Git state: branch='{}', commit='{}', dirty={}",
+                state.branch,
+                state.commit,
+                state.dirty
+            );
+        } else {
+            log::info!("Not a git repository, using default branch");
+        }
+
         // Configure thread pool for parallel processing
         // 0 = auto (use 80% of available cores to avoid locking the system)
         let num_threads = if self.config.parallel_threads == 0 {
@@ -316,6 +334,34 @@ impl Indexer {
                 .context("Failed to batch update file metadata")?;
             log::info!("Wrote metadata for {} files to database", file_metadata.len());
         }
+
+        // Record files for this branch (for branch-aware indexing)
+        if show_progress {
+            pb.set_message("Recording branch files...".to_string());
+        }
+
+        // Prepare data for batch recording
+        let branch_files: Vec<(String, String)> = file_metadata
+            .iter()
+            .map(|(path, hash, _, _, _)| (path.clone(), hash.clone()))
+            .collect();
+
+        // Batch record all files in a single transaction
+        if !branch_files.is_empty() {
+            self.cache.batch_record_branch_files(
+                &branch_files,
+                &branch,
+                git_state.as_ref().map(|s| s.commit.as_str()),
+            )?;
+        }
+
+        // Update branch metadata
+        self.cache.update_branch_metadata(
+            &branch,
+            git_state.as_ref().map(|s| s.commit.as_str()),
+            file_metadata.len(),
+            git_state.as_ref().map(|s| s.dirty).unwrap_or(false),
+        )?;
 
         log::info!("Parsed {} files, extracted {} symbols", files_indexed, all_symbols.len());
 

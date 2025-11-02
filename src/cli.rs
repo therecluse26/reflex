@@ -446,6 +446,40 @@ fn handle_stats(as_json: bool) -> Result<()> {
     } else {
         println!("RefLex Index Statistics");
         println!("=======================");
+
+        // Show git branch info if in git repo
+        let root = std::env::current_dir()?;
+        if crate::git::is_git_repo(&root) {
+            match crate::git::get_git_state(&root) {
+                Ok(git_state) => {
+                    let dirty_indicator = if git_state.dirty { " (uncommitted changes)" } else { " (clean)" };
+                    println!("Branch:         {}@{}{}",
+                             git_state.branch,
+                             &git_state.commit[..7],
+                             dirty_indicator);
+
+                    // Check if current branch is indexed
+                    match cache.get_branch_info(&git_state.branch) {
+                        Ok(branch_info) => {
+                            if branch_info.commit_sha != git_state.commit {
+                                println!("                ⚠️  Index commit mismatch (indexed: {})",
+                                         &branch_info.commit_sha[..7]);
+                            }
+                            if git_state.dirty && !branch_info.is_dirty {
+                                println!("                ⚠️  Uncommitted changes not indexed");
+                            }
+                        }
+                        Err(_) => {
+                            println!("                ⚠️  Branch not indexed");
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("Failed to get git state: {}", e);
+                }
+            }
+        }
+
         println!("Files indexed:  {}", stats.total_files);
         println!("Symbols found:  {}", stats.total_symbols);
         println!("Index size:     {} bytes", stats.index_size_bytes);

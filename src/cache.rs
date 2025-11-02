@@ -12,7 +12,7 @@ pub mod symbol_writer;
 pub mod symbol_reader;
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
@@ -131,6 +131,41 @@ impl CacheManager {
             "CREATE TABLE IF NOT EXISTS config (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        // Create branch tracking tables for git-aware indexing
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS file_branches (
+                path TEXT NOT NULL,
+                branch TEXT NOT NULL,
+                hash TEXT NOT NULL,
+                commit_sha TEXT,
+                last_indexed INTEGER NOT NULL,
+                PRIMARY KEY (path, branch)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_branch_lookup ON file_branches(branch, path)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hash_lookup ON file_branches(hash)",
+            [],
+        )?;
+
+        // Create branches metadata table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS branches (
+                branch TEXT PRIMARY KEY,
+                commit_sha TEXT NOT NULL,
+                last_indexed INTEGER NOT NULL,
+                file_count INTEGER DEFAULT 0,
+                is_dirty INTEGER DEFAULT 0
             )",
             [],
         )?;
@@ -530,6 +565,216 @@ compression_level = 3  # zstd level
             lines_by_language,
         })
     }
+
+    // ===== Branch-aware indexing methods =====
+
+    /// Record a file's hash for a specific branch
+    pub fn record_branch_file(
+        &self,
+        path: &str,
+        branch: &str,
+        hash: &str,
+        commit_sha: Option<&str>,
+    ) -> Result<()> {
+        let db_path = self.cache_path.join(META_DB);
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for branch file recording")?;
+
+        let now = chrono::Utc::now().timestamp();
+
+        conn.execute(
+            "INSERT OR REPLACE INTO file_branches (path, branch, hash, commit_sha, last_indexed)
+             VALUES (?, ?, ?, ?, ?)",
+            [
+                path,
+                branch,
+                hash,
+                commit_sha.unwrap_or(""),
+                &now.to_string(),
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Batch record multiple files for a specific branch in a single transaction
+    pub fn batch_record_branch_files(
+        &self,
+        files: &[(String, String)],  // (path, hash)
+        branch: &str,
+        commit_sha: Option<&str>,
+    ) -> Result<()> {
+        let db_path = self.cache_path.join(META_DB);
+        let mut conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for batch branch recording")?;
+
+        let now = chrono::Utc::now().timestamp();
+        let now_str = now.to_string();
+        let commit = commit_sha.unwrap_or("");
+
+        // Use a transaction for batch inserts
+        let tx = conn.transaction()?;
+
+        for (path, hash) in files {
+            tx.execute(
+                "INSERT OR REPLACE INTO file_branches (path, branch, hash, commit_sha, last_indexed)
+                 VALUES (?, ?, ?, ?, ?)",
+                [path.as_str(), branch, hash.as_str(), commit, &now_str],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Get all files indexed for a specific branch
+    ///
+    /// Returns a HashMap of path → hash for all files in the branch.
+    pub fn get_branch_files(&self, branch: &str) -> Result<HashMap<String, String>> {
+        let db_path = self.cache_path.join(META_DB);
+
+        if !db_path.exists() {
+            return Ok(HashMap::new());
+        }
+
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db")?;
+
+        let mut stmt = conn.prepare("SELECT path, hash FROM file_branches WHERE branch = ?")?;
+        let files: HashMap<String, String> = stmt
+            .query_map([branch], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<HashMap<_, _>, _>>()?;
+
+        log::debug!(
+            "Loaded {} files for branch '{}' from file_branches table",
+            files.len(),
+            branch
+        );
+        Ok(files)
+    }
+
+    /// Check if a branch has any indexed files
+    ///
+    /// Fast existence check using LIMIT 1 for O(1) performance.
+    pub fn branch_exists(&self, branch: &str) -> Result<bool> {
+        let db_path = self.cache_path.join(META_DB);
+
+        if !db_path.exists() {
+            return Ok(false);
+        }
+
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db")?;
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_branches WHERE branch = ? LIMIT 1",
+                [branch],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        Ok(count > 0)
+    }
+
+    /// Get branch metadata (commit, last_indexed, file_count, dirty status)
+    pub fn get_branch_info(&self, branch: &str) -> Result<BranchInfo> {
+        let db_path = self.cache_path.join(META_DB);
+
+        if !db_path.exists() {
+            anyhow::bail!("Database not initialized");
+        }
+
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db")?;
+
+        let info = conn.query_row(
+            "SELECT commit_sha, last_indexed, file_count, is_dirty FROM branches WHERE branch = ?",
+            [branch],
+            |row| {
+                Ok(BranchInfo {
+                    branch: branch.to_string(),
+                    commit_sha: row.get(0)?,
+                    last_indexed: row.get(1)?,
+                    file_count: row.get(2)?,
+                    is_dirty: row.get::<_, i64>(3)? != 0,
+                })
+            },
+        )?;
+
+        Ok(info)
+    }
+
+    /// Update branch metadata after indexing
+    pub fn update_branch_metadata(
+        &self,
+        branch: &str,
+        commit_sha: Option<&str>,
+        file_count: usize,
+        is_dirty: bool,
+    ) -> Result<()> {
+        let db_path = self.cache_path.join(META_DB);
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for branch metadata update")?;
+
+        let now = chrono::Utc::now().timestamp();
+
+        conn.execute(
+            "INSERT OR REPLACE INTO branches (branch, commit_sha, last_indexed, file_count, is_dirty)
+             VALUES (?, ?, ?, ?, ?)",
+            [
+                branch,
+                commit_sha.unwrap_or("unknown"),
+                &now.to_string(),
+                &file_count.to_string(),
+                &(if is_dirty { 1 } else { 0 }).to_string(),
+            ],
+        )?;
+
+        log::debug!(
+            "Updated branch metadata for '{}': commit={}, files={}, dirty={}",
+            branch,
+            commit_sha.unwrap_or("unknown"),
+            file_count,
+            is_dirty
+        );
+        Ok(())
+    }
+
+    /// Find a file with a specific hash (for symbol reuse optimization)
+    ///
+    /// Returns the path and branch where this hash was first seen,
+    /// enabling reuse of parsed symbols across branches.
+    pub fn find_file_with_hash(&self, hash: &str) -> Result<Option<(String, String)>> {
+        let db_path = self.cache_path.join(META_DB);
+
+        if !db_path.exists() {
+            return Ok(None);
+        }
+
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db")?;
+
+        let result = conn
+            .query_row(
+                "SELECT path, branch FROM file_branches WHERE hash = ? LIMIT 1",
+                [hash],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+
+        Ok(result)
+    }
+}
+
+/// Branch metadata information
+#[derive(Debug, Clone)]
+pub struct BranchInfo {
+    pub branch: String,
+    pub commit_sha: String,
+    pub last_indexed: i64,
+    pub file_count: usize,
+    pub is_dirty: bool,
 }
 
 // TODO: Implement memory-mapped readers for:
