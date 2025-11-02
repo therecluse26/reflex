@@ -226,12 +226,15 @@ impl TrigramIndex {
     /// - Trigram data: rkyv-serialized TrigramData (zero-copy format)
     pub fn write(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
-        let mut file = OpenOptions::new()
+        let file = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
             .open(path)
             .with_context(|| format!("Failed to create {}", path.display()))?;
+
+        // Use a large buffer (8MB) for better write performance
+        let mut writer = std::io::BufWriter::with_capacity(8 * 1024 * 1024, file);
 
         // Index is already a sorted Vec - just clone it for serialization
         let index_vec = self.index.clone();
@@ -252,18 +255,22 @@ impl TrigramIndex {
         log::debug!("Serialized {} bytes of trigram data", bytes.len());
 
         // Write header
-        file.write_all(MAGIC)?;
-        file.write_all(&VERSION.to_le_bytes())?;
-        file.write_all(&(self.index.len() as u64).to_le_bytes())?; // num_trigrams
-        file.write_all(&(self.files.len() as u64).to_le_bytes())?; // num_files
-        file.write_all(&(bytes.len() as u64).to_le_bytes())?; // data_len
-        file.write_all(&[0u8; 4])?; // reserved
+        writer.write_all(MAGIC)?;
+        writer.write_all(&VERSION.to_le_bytes())?;
+        writer.write_all(&(self.index.len() as u64).to_le_bytes())?; // num_trigrams
+        writer.write_all(&(self.files.len() as u64).to_le_bytes())?; // num_files
+        writer.write_all(&(bytes.len() as u64).to_le_bytes())?; // data_len
+        writer.write_all(&[0u8; 4])?; // reserved
 
         // Write rkyv data
-        file.write_all(&bytes)?;
+        writer.write_all(&bytes)?;
 
-        file.flush()?;
-        file.sync_all()?;
+        // Flush buffer to ensure all data is written
+        writer.flush()?;
+
+        // Sync to disk (this is the slow part, but necessary for durability)
+        // Note: We get the underlying file reference to sync
+        writer.get_ref().sync_all()?;
 
         log::debug!(
             "Wrote trigram index: {} trigrams, {} files to {:?}",

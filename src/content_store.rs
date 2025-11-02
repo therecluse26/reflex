@@ -90,38 +90,41 @@ impl ContentWriter {
     /// Write the content store to disk
     pub fn write(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
-        let mut file = OpenOptions::new()
+        let file = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
             .open(path)
             .with_context(|| format!("Failed to create {}", path.display()))?;
 
+        // Use a large buffer (8MB) for better write performance
+        let mut writer = std::io::BufWriter::with_capacity(8 * 1024 * 1024, file);
+
         // Calculate index offset (after header + content)
         let index_offset = HEADER_SIZE as u64 + self.content.len() as u64;
 
         // Write header
-        file.write_all(MAGIC)?;
-        file.write_all(&VERSION.to_le_bytes())?;
-        file.write_all(&(self.files.len() as u64).to_le_bytes())?;
-        file.write_all(&index_offset.to_le_bytes())?;
-        file.write_all(&[0u8; 8])?; // reserved
+        writer.write_all(MAGIC)?;
+        writer.write_all(&VERSION.to_le_bytes())?;
+        writer.write_all(&(self.files.len() as u64).to_le_bytes())?;
+        writer.write_all(&index_offset.to_le_bytes())?;
+        writer.write_all(&[0u8; 8])?; // reserved
 
         // Write file contents
-        file.write_all(&self.content)?;
+        writer.write_all(&self.content)?;
 
         // Write file index
         for entry in &self.files {
             let path_str = entry.path.to_string_lossy();
             let path_bytes = path_str.as_bytes();
 
-            file.write_all(&(path_bytes.len() as u32).to_le_bytes())?;
-            file.write_all(path_bytes)?;
-            file.write_all(&entry.offset.to_le_bytes())?;
-            file.write_all(&entry.length.to_le_bytes())?;
+            writer.write_all(&(path_bytes.len() as u32).to_le_bytes())?;
+            writer.write_all(path_bytes)?;
+            writer.write_all(&entry.offset.to_le_bytes())?;
+            writer.write_all(&entry.length.to_le_bytes())?;
         }
 
-        file.flush()?;
+        writer.flush()?;
         Ok(())
     }
 

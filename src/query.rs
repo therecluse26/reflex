@@ -290,8 +290,18 @@ impl QueryEngine {
         let candidates = trigram_index.search(pattern);
         log::debug!("Found {} candidate locations", candidates.len());
 
-        // Get all symbols for matching against locations
+        // Get all symbols and build lookup index by path for O(1) access
         let all_symbols = symbol_reader.read_all()?;
+
+        // Build a HashMap: file_path -> Vec<Symbol> for faster lookup
+        use std::collections::HashMap;
+        let mut symbols_by_path: HashMap<String, Vec<&SearchResult>> = HashMap::new();
+        for symbol in &all_symbols {
+            symbols_by_path
+                .entry(symbol.path.clone())
+                .or_insert_with(Vec::new)
+                .push(symbol);
+        }
 
         // Verify matches and build results
         let mut results = Vec::new();
@@ -300,35 +310,39 @@ impl QueryEngine {
             let file_path = trigram_index.get_file(loc.file_id)
                 .context("Invalid file_id from trigram search")?;
             let content = content_reader.get_file_content(loc.file_id)?;
+            let file_path_str = file_path.to_string_lossy().to_string();
+
+            // Detect language from file extension (once per file)
+            let ext = file_path.extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            let lang = Language::from_extension(ext);
+
+            // Get symbols for this file (if any)
+            let file_symbols = symbols_by_path.get(&file_path_str);
 
             // Find all occurrences of the pattern in this file
             for (line_idx, line) in content.lines().enumerate() {
                 if line.contains(pattern) {
                     let line_no = line_idx + 1;
-                    let file_path_str = file_path.to_string_lossy().to_string();
 
-                    // Detect language from file extension
-                    let ext = file_path.extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("");
-                    let lang = Language::from_extension(ext);
-
-                    // Try to find a matching symbol at this location
-                    let matching_symbol = all_symbols.iter().find(|sym| {
-                        sym.path == file_path_str &&
-                        line_no >= sym.span.start_line &&
-                        line_no <= sym.span.end_line &&
-                        line.contains(&sym.symbol)
+                    // Try to find a matching symbol at this location (using pre-filtered file symbols)
+                    let matching_symbol = file_symbols.and_then(|syms| {
+                        syms.iter().find(|sym| {
+                            line_no >= sym.span.start_line &&
+                            line_no <= sym.span.end_line &&
+                            line.contains(&sym.symbol)
+                        })
                     });
 
                     if let Some(symbol) = matching_symbol {
                         // Use the actual symbol information
-                        results.push(symbol.clone());
+                        results.push((*symbol).clone());
                     } else {
                         // Fallback: create a generic text match result
                         results.push(SearchResult {
-                            path: file_path_str,
-                            lang,
+                            path: file_path_str.clone(),
+                            lang: lang.clone(),
                             kind: SymbolKind::Unknown("text_match".to_string()),
                             symbol: pattern.to_string(),
                             span: Span {
@@ -497,6 +511,11 @@ impl QueryEngine {
             .unwrap_or("");
         let lang = Language::from_extension(ext);
 
+        // Pre-filter symbols for this file only (optimization)
+        let file_symbols: Vec<&SearchResult> = all_symbols.iter()
+            .filter(|sym| sym.path == file_path_str)
+            .collect();
+
         // Find all regex matches line by line
         for (line_idx, line) in content.lines().enumerate() {
             if regex.is_match(line) {
@@ -506,9 +525,8 @@ impl QueryEngine {
                 // AND whose symbol name matches the regex (not just the line content)
                 // This ensures --kind function returns only function definitions, not calls
                 // and that we only match symbols whose names match the pattern
-                let matching_symbol = all_symbols.iter()
+                let matching_symbol = file_symbols.iter()
                     .find(|sym| {
-                        sym.path == file_path_str &&
                         sym.span.start_line == line_no &&
                         regex.is_match(&sym.symbol)  // Symbol name must match regex
                     });
