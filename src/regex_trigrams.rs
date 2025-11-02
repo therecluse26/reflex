@@ -25,6 +25,7 @@
 //! - `fn\s+test_.*` → extracts "test_" → searches files containing "test_"
 //! - `(class|function)` → extracts ["class", "function"] → searches files with class OR function
 //! - `class.*Controller` → extracts ["class", "Controller"] → searches files with class OR Controller
+//! - `(?i)test` → case-insensitive → triggers full scan (no literals)
 //! - `.*` → no literals → fall back to full scan
 //!
 //! # References
@@ -105,6 +106,12 @@ pub fn extract_trigrams_from_regex(pattern: &str) -> Vec<Trigram> {
 /// - Escapes: `\` (followed by special char)
 /// - Quantifiers: `{` `}`
 ///
+/// # Case-Insensitive Patterns
+///
+/// Patterns with case-insensitive flags like `(?i)` return an empty vector,
+/// forcing a full scan. This is because we cannot reliably extract trigrams
+/// for case-insensitive matching (would need all case variations).
+///
 /// # Examples
 ///
 /// ```
@@ -113,16 +120,106 @@ pub fn extract_trigrams_from_regex(pattern: &str) -> Vec<Trigram> {
 /// assert_eq!(extract_literal_sequences("hello"), vec!["hello"]);
 /// assert_eq!(extract_literal_sequences("fn.*test"), vec!["test"]);
 /// assert_eq!(extract_literal_sequences("class.*Controller"), vec!["class", "Controller"]);
+///
+/// // Case-insensitive patterns return empty (triggers full scan)
+/// assert_eq!(extract_literal_sequences("(?i)test"), Vec::<String>::new());
 /// ```
 pub fn extract_literal_sequences(pattern: &str) -> Vec<String> {
     let mut sequences = Vec::new();
     let mut current = String::new();
     let mut chars = pattern.chars().peekable();
+    let mut has_case_insensitive_flag = false;
 
     while let Some(ch) = chars.next() {
         match ch {
             // Regex metacharacters - break the literal sequence
-            '.' | '*' | '+' | '?' | '|' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' => {
+            '.' | '*' | '+' | '?' | '|' | '[' | ']' | '^' | '$' => {
+                if current.len() >= 3 {
+                    sequences.push(current.clone());
+                }
+                current.clear();
+            }
+
+            // Opening parenthesis - check for inline flags
+            '(' => {
+                // Save current sequence before clearing
+                if current.len() >= 3 {
+                    sequences.push(current.clone());
+                }
+                current.clear();
+
+                // Check if this is an inline flag like (?i), (?m), (?s), (?x), or (?:...)
+                if chars.peek() == Some(&'?') {
+                    chars.next(); // consume '?'
+
+                    // Peek at the next character to determine the type of group
+                    if let Some(&flag_ch) = chars.peek() {
+                        match flag_ch {
+                            // Non-capturing group (?:...) - only skip the ?: part, not the contents
+                            ':' => {
+                                chars.next(); // consume ':'
+                                // The contents of (?:...) are processed normally
+                            }
+                            // Inline flags: (?i) (?m) (?s) (?x) (?i-m) etc.
+                            // These are standalone modifiers, consume until ')'
+                            'i' | 'm' | 's' | 'x' | '-' => {
+                                // Check if 'i' flag is present (case-insensitive)
+                                if flag_ch == 'i' {
+                                    has_case_insensitive_flag = true;
+                                }
+
+                                // Consume flag characters and closing ')'
+                                while let Some(&next_ch) = chars.peek() {
+                                    if next_ch == 'i' {
+                                        has_case_insensitive_flag = true;
+                                    }
+                                    chars.next();
+                                    if next_ch == ')' {
+                                        break;
+                                    }
+                                }
+                            }
+                            // Other special groups (lookahead, lookbehind, etc.) - skip entirely
+                            _ => {
+                                // Consume until closing ')'
+                                while let Some(&next_ch) = chars.peek() {
+                                    chars.next();
+                                    if next_ch == ')' {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Closing parenthesis
+            ')' => {
+                if current.len() >= 3 {
+                    sequences.push(current.clone());
+                }
+                current.clear();
+            }
+
+            // Opening brace - quantifier, consume until closing brace
+            '{' => {
+                if current.len() >= 3 {
+                    sequences.push(current.clone());
+                }
+                current.clear();
+
+                // Consume quantifier contents to avoid treating "2,3" as a literal
+                while let Some(&next_ch) = chars.peek() {
+                    chars.next();
+                    if next_ch == '}' {
+                        break;
+                    }
+                }
+            }
+
+            // Closing brace
+            '}' => {
                 if current.len() >= 3 {
                     sequences.push(current.clone());
                 }
@@ -167,6 +264,13 @@ pub fn extract_literal_sequences(pattern: &str) -> Vec<String> {
     // Don't forget the last sequence
     if current.len() >= 3 {
         sequences.push(current);
+    }
+
+    // If case-insensitive flag detected, return empty to force full scan
+    // Cannot reliably extract trigrams for case-insensitive matching
+    if has_case_insensitive_flag {
+        log::debug!("Case-insensitive flag detected in pattern, cannot use trigram optimization");
+        return vec![];
     }
 
     sequences
@@ -269,5 +373,66 @@ mod tests {
         // Three-way alternation
         let sequences = extract_literal_sequences("(Indexer|QueryEngine|CacheManager)");
         assert_eq!(sequences, vec!["Indexer", "QueryEngine", "CacheManager"]);
+    }
+
+    #[test]
+    fn test_extract_literal_sequences_case_insensitive_flag() {
+        // Case-insensitive flag should trigger full scan (return empty)
+        let sequences = extract_literal_sequences("(?i)queryengine");
+        assert_eq!(sequences, Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_extract_literal_sequences_multiline_flag() {
+        // Multiline flag should be skipped
+        let sequences = extract_literal_sequences("(?m)^test");
+        assert_eq!(sequences, vec!["test"]);
+    }
+
+    #[test]
+    fn test_extract_literal_sequences_non_capturing_group() {
+        // Non-capturing group (?:...) should not extract flag chars
+        let sequences = extract_literal_sequences("(?:test|func)");
+        assert_eq!(sequences, vec!["test", "func"]);
+    }
+
+    #[test]
+    fn test_extract_literal_sequences_quantifier_no_false_literal() {
+        // Quantifier contents should NOT become a literal
+        let sequences = extract_literal_sequences("a{2,3}test");
+        assert_eq!(sequences, vec!["test"]);
+
+        // Ensure "2,3" is NOT extracted
+        assert!(!sequences.contains(&"2,3".to_string()));
+    }
+
+    #[test]
+    fn test_extract_literal_sequences_quantifier_range() {
+        // Test various quantifier formats
+        let sequences = extract_literal_sequences("test{1,5}word");
+        assert_eq!(sequences, vec!["test", "word"]);
+        assert!(!sequences.contains(&"1,5".to_string()));
+    }
+
+    #[test]
+    fn test_extract_literal_sequences_quantifier_exact() {
+        // Exact quantifier {n}
+        let sequences = extract_literal_sequences("test{3}word");
+        assert_eq!(sequences, vec!["test", "word"]);
+        assert!(!sequences.contains(&"3".to_string()));
+    }
+
+    #[test]
+    fn test_extract_literal_sequences_combined_flags() {
+        // Multiple inline flags including 'i' should trigger full scan
+        let sequences = extract_literal_sequences("(?im)test");
+        assert_eq!(sequences, Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_extract_literal_sequences_flag_before_literal() {
+        // Flag with 'i' at start should trigger full scan
+        let sequences = extract_literal_sequences("(?i)test.*function");
+        assert_eq!(sequences, Vec::<String>::new());
     }
 }

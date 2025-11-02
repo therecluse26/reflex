@@ -65,6 +65,10 @@ reflex query "extract_symbols"  # Finds: definitions + call sites
 # Symbol-only search (definitions only)
 reflex query "parse" --symbols --kind function
 
+# Regex search (with trigram optimization)
+reflex query "fn.*test" --regex  # or -r
+reflex query "(class|function)" --regex
+
 # With filters
 reflex query "unwrap" --lang rust --limit 10 --json
 ```
@@ -75,6 +79,14 @@ reflex query "unwrap" --lang rust --limit 10 --json
 1. **Limited language support** - Rust, TypeScript/JavaScript, Vue, Svelte, and PHP fully supported; Python, Go, Java, C, C++ parsers still need implementation
 2. **HTTP server not implemented** - CLI works, serve command is stub only
 3. **AST pattern matching not implemented** - Framework exists but not functional
+
+**Recently Completed (Not Yet Marked):**
+1. **Regex support** - FULLY IMPLEMENTED ✅
+   - Regex pattern matching with trigram optimization (src/regex_trigrams.rs)
+   - Literal extraction from regex patterns (≥3 chars)
+   - Union-based file selection for correctness
+   - Integration with query engine via --regex flag
+   - Comprehensive test coverage (13 test cases)
 
 **Performance Note:**
 - Queries are fast for symbol-only search (memory-mapped symbols.bin)
@@ -89,6 +101,7 @@ reflex query "unwrap" --lang rust --limit 10 --json
 | **Indexer** | ✅ Complete | 100% |
 | **Query Engine** | ✅ Complete | 95% (AST patterns missing) |
 | **Trigram Search** | ✅ Complete | 100% |
+| **Regex Search** | ✅ Complete | 100% |
 | **Content Store** | ✅ Complete | 100% |
 | **Symbol Storage** | ✅ Complete | 100% |
 | **Rust Parser** | ✅ Complete | 100% |
@@ -154,7 +167,7 @@ reflex query  →  [Query Engine] → [Mode: Full-text or Symbol-only]
 
 - [ ] **Goal 1:** <100 ms per query on 100k+ files (warm path, OS cache)
 - [ ] **Goal 2:** Accurate symbol-level and scope-aware retrieval for Rust, TS/JS, Go, Python, PHP, C, C++, and Java
-- [ ] **Goal 3:** Fully offline; no daemon required (per-request invocation loads mmap'd cache)
+- [ ] **Goal 3:** Fully offline; no daemon required (per-request invocation)
 - [ ] **Goal 4:** Clean, stable JSON API suitable for LLM tools and editor integrations
 - [ ] **Goal 5:** Optional on-save incremental indexing
 
@@ -375,9 +388,15 @@ reflex query  →  [Query Engine] → [Mode: Full-text or Symbol-only]
   - Include full symbol body with `--expand` flag ✅
   - Format as clean, readable snippet ✅
 
-#### P2: Advanced Query Features
-- [ ] Support regex patterns
-- [ ] Support wildcard patterns (`*`, `?`)
+#### P2: Advanced Query Features ✅ REGEX COMPLETE
+- [x] Support regex patterns (src/regex_trigrams.rs, query.rs:search_with_regex) ✅
+  - Literal extraction from regex (≥3 chars)
+  - Trigram-based candidate narrowing
+  - Union-based file selection for correctness
+  - Falls back to full scan when no literals found
+  - CLI: `--regex` or `-r` flag
+  - Comprehensive test coverage (13 tests)
+- [x] Support wildcard patterns (`*`, `?`) - implemented via regex ✅
 - [ ] Implement query result caching
 - [ ] Add relevance scoring (optional, with deterministic tie-breaking)
 
@@ -691,6 +710,19 @@ Tree-sitter Grammars ──────────→ AST Extraction ───�
 - [x] File-based candidate search
 - [x] Comprehensive tests (11 test cases)
 - [x] Integration with indexer and query engine
+- [x] Persistence to trigrams.bin (rkyv zero-copy serialization) ✅
+- [x] Memory-mapped loading for instant access ✅
+
+### Regex Trigram Support (COMPLETED - src/regex_trigrams.rs)
+- [x] Extract literal sequences from regex patterns (≥3 chars)
+- [x] Generate trigrams from extracted literals
+- [x] Union-based file selection (correctness over performance)
+- [x] Fallback to full scan when no literals present
+- [x] Handle regex metacharacters and escapes
+- [x] Support for alternation, quantifiers, groups
+- [x] Case-insensitive flag detection (triggers full scan)
+- [x] Comprehensive tests (13 test cases)
+- [x] Integration with query engine (search_with_regex)
 
 ### Content Store (COMPLETED - src/content_store.rs)
 - [x] Binary format design (magic bytes, header, index)
@@ -800,13 +832,14 @@ Tree-sitter Grammars ──────────→ AST Extraction ───�
 - [x] Expand mode for full symbol bodies (--expand)
 
 ### CLI (MOSTLY COMPLETE - src/cli.rs)
-- [x] index command (with --force, --languages)
-- [x] query command (with all filters: --symbols, --lang, --kind, --json, --limit, --expand, --file, --exact)
+- [x] index command (with --force, --languages, --progress)
+- [x] query command (with all filters: --symbols, --lang, --kind, --json, --limit, --expand, --file, --exact, --regex/-r, --count)
 - [x] stats command (with --json)
 - [x] clear command (with --yes)
 - [x] list-files command (with --json)
 - [x] Verbose logging (-v, -vv, -vvv)
 - [x] JSON output support across commands
+- [x] Regex search support (--regex/-r flag) ✅
 
 ---
 
