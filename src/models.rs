@@ -216,3 +216,51 @@ pub struct IndexedFile {
     /// Last indexed timestamp
     pub last_indexed: String,
 }
+
+/// Index status for query responses
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexStatus {
+    /// Index is fresh and up-to-date
+    Fresh,
+    /// Branch not indexed
+    BranchNotIndexed,
+    /// Commit changed since indexing
+    CommitChanged,
+    /// Files modified since indexing
+    FilesModified,
+}
+
+/// Metadata about index freshness (for JSON output)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexMetadata {
+    /// Status of the index
+    pub status: IndexStatus,
+    /// Human-readable reason (if stale)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Current branch (if in git repo)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_branch: Option<String>,
+    /// Indexed branch (if in git repo)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indexed_branch: Option<String>,
+    /// Current commit SHA (if in git repo)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_commit: Option<String>,
+    /// Indexed commit SHA (if in git repo)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indexed_commit: Option<String>,
+    /// Suggested action to fix staleness
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_required: Option<String>,
+}
+
+/// Query response with results and metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryResponse {
+    /// Index metadata (freshness status)
+    pub metadata: IndexMetadata,
+    /// Search results
+    pub results: Vec<SearchResult>,
+}

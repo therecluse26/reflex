@@ -367,26 +367,38 @@ fn handle_query(
 
     // Measure query time
     let start = Instant::now();
-    let results = engine.search(&pattern, filter)?;
-    let elapsed = start.elapsed();
-
-    // Format timing string
-    let timing_str = if elapsed.as_millis() < 1 {
-        format!("{:.1}ms", elapsed.as_secs_f64() * 1000.0)
-    } else {
-        format!("{}ms", elapsed.as_millis())
-    };
-
-    // Count-only mode: just show the count and timing
-    if count_only {
-        println!("Found {} results in {}", results.len(), timing_str);
-        return Ok(());
-    }
 
     if as_json {
-        println!("{}", serde_json::to_string_pretty(&results)?);
-        eprintln!("Found {} results in {}", results.len(), timing_str);
+        // Use metadata-aware search for JSON output
+        let response = engine.search_with_metadata(&pattern, filter)?;
+        let elapsed = start.elapsed();
+
+        // Format timing string
+        let timing_str = if elapsed.as_millis() < 1 {
+            format!("{:.1}ms", elapsed.as_secs_f64() * 1000.0)
+        } else {
+            format!("{}ms", elapsed.as_millis())
+        };
+
+        println!("{}", serde_json::to_string_pretty(&response)?);
+        eprintln!("Found {} results in {}", response.results.len(), timing_str);
     } else {
+        // Use standard search with stderr warnings
+        let results = engine.search(&pattern, filter)?;
+        let elapsed = start.elapsed();
+
+        // Format timing string
+        let timing_str = if elapsed.as_millis() < 1 {
+            format!("{:.1}ms", elapsed.as_secs_f64() * 1000.0)
+        } else {
+            format!("{}ms", elapsed.as_millis())
+        };
+
+        // Count-only mode: just show the count and timing
+        if count_only {
+            println!("Found {} results in {}", results.len(), timing_str);
+            return Ok(());
+        }
         if results.is_empty() {
             println!("No results found (searched in {}).", timing_str);
         } else {

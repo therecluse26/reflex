@@ -8,7 +8,9 @@ use regex::Regex;
 
 use crate::cache::{CacheManager, SymbolReader, SYMBOLS_BIN};
 use crate::content_store::ContentReader;
-use crate::models::{Language, SearchResult, Span, SymbolKind};
+use crate::models::{
+    IndexMetadata, IndexStatus, Language, QueryResponse, SearchResult, Span, SymbolKind,
+};
 use crate::regex_trigrams::extract_trigrams_from_regex;
 use crate::trigram::TrigramIndex;
 
@@ -62,7 +64,33 @@ impl QueryEngine {
         Self { cache }
     }
 
-    /// Execute a query and return matching results
+    /// Execute a query and return matching results with index metadata
+    ///
+    /// This is the preferred method for programmatic/JSON output as it includes
+    /// index freshness information that AI agents can use to decide whether to re-index.
+    pub fn search_with_metadata(&self, pattern: &str, filter: QueryFilter) -> Result<QueryResponse> {
+        log::info!("Executing query with metadata: pattern='{}', filter={:?}", pattern, filter);
+
+        // Ensure cache exists
+        if !self.cache.exists() {
+            anyhow::bail!(
+                "Index not found. Run 'reflex index' to build the cache first."
+            );
+        }
+
+        // Get index metadata (without printing warnings to stderr)
+        let metadata = self.get_index_metadata()?;
+
+        // Execute the search
+        let results = self.search_internal(pattern, filter)?;
+
+        Ok(QueryResponse { metadata, results })
+    }
+
+    /// Execute a query and return matching results (legacy method)
+    ///
+    /// This method prints warnings to stderr and returns just the results.
+    /// For programmatic use, prefer `search_with_metadata()`.
     pub fn search(&self, pattern: &str, filter: QueryFilter) -> Result<Vec<SearchResult>> {
         log::info!("Executing query: pattern='{}', filter={:?}", pattern, filter);
 
@@ -75,6 +103,13 @@ impl QueryEngine {
 
         // Show non-blocking warnings about branch state and staleness
         self.check_index_freshness()?;
+
+        // Execute the search
+        self.search_internal(pattern, filter)
+    }
+
+    /// Internal search implementation (used by both search methods)
+    fn search_internal(&self, pattern: &str, filter: QueryFilter) -> Result<Vec<SearchResult>> {
 
         // Step 1: Load symbol reader
         let symbols_path = self.cache.path().join(SYMBOLS_BIN);
@@ -533,6 +568,117 @@ impl QueryEngine {
         log::debug!("Trigram index rebuilt with {} trigrams", trigram_index.trigram_count());
 
         Ok(trigram_index)
+    }
+
+    /// Get index metadata for programmatic use (doesn't print warnings)
+    ///
+    /// This returns structured metadata about index freshness that can be
+    /// included in JSON output for AI agents to decide whether to re-index.
+    fn get_index_metadata(&self) -> Result<IndexMetadata> {
+        let root = std::env::current_dir()?;
+
+        // Check git state if in a git repo
+        if crate::git::is_git_repo(&root) {
+            if let Ok(current_branch) = crate::git::get_current_branch(&root) {
+                // Check if we're on a different branch than what was indexed
+                if !self.cache.branch_exists(&current_branch).unwrap_or(false) {
+                    return Ok(IndexMetadata {
+                        status: IndexStatus::BranchNotIndexed,
+                        reason: Some(format!("Branch '{}' has not been indexed", current_branch)),
+                        current_branch: Some(current_branch),
+                        indexed_branch: None,
+                        current_commit: None,
+                        indexed_commit: None,
+                        action_required: Some("reflex index".to_string()),
+                    });
+                }
+
+                // Branch exists - check if commit changed
+                if let (Ok(current_commit), Ok(branch_info)) =
+                    (crate::git::get_current_commit(&root), self.cache.get_branch_info(&current_branch)) {
+
+                    if branch_info.commit_sha != current_commit {
+                        return Ok(IndexMetadata {
+                            status: IndexStatus::CommitChanged,
+                            reason: Some(format!(
+                                "Commit changed from {} to {}",
+                                &branch_info.commit_sha[..7],
+                                &current_commit[..7]
+                            )),
+                            current_branch: Some(current_branch.clone()),
+                            indexed_branch: Some(current_branch),
+                            current_commit: Some(current_commit),
+                            indexed_commit: Some(branch_info.commit_sha),
+                            action_required: Some("reflex index".to_string()),
+                        });
+                    }
+
+                    // If commits match, do a quick file freshness check
+                    if let Ok(branch_files) = self.cache.get_branch_files(&current_branch) {
+                        let mut checked = 0;
+                        let mut changed = 0;
+                        const SAMPLE_SIZE: usize = 10;
+
+                        for (path, indexed_hash) in branch_files.iter().take(SAMPLE_SIZE) {
+                            checked += 1;
+                            let file_path = std::path::Path::new(path);
+
+                            if let Ok(metadata) = std::fs::metadata(file_path) {
+                                if let Ok(modified) = metadata.modified() {
+                                    let indexed_time = branch_info.last_indexed;
+                                    let file_time = modified.duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs() as i64;
+
+                                    if file_time > indexed_time {
+                                        if let Ok(content) = std::fs::read(file_path) {
+                                            let current_hash = blake3::hash(&content).to_hex().to_string();
+                                            if &current_hash != indexed_hash {
+                                                changed += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if changed > 0 {
+                            return Ok(IndexMetadata {
+                                status: IndexStatus::FilesModified,
+                                reason: Some(format!("{} of {} sampled files modified", changed, checked)),
+                                current_branch: Some(current_branch.clone()),
+                                indexed_branch: Some(current_branch),
+                                current_commit: Some(current_commit),
+                                indexed_commit: Some(branch_info.commit_sha),
+                                action_required: Some("reflex index".to_string()),
+                            });
+                        }
+                    }
+
+                    // All checks passed - index is fresh
+                    return Ok(IndexMetadata {
+                        status: IndexStatus::Fresh,
+                        reason: None,
+                        current_branch: Some(current_branch.clone()),
+                        indexed_branch: Some(current_branch),
+                        current_commit: Some(current_commit),
+                        indexed_commit: Some(branch_info.commit_sha),
+                        action_required: None,
+                    });
+                }
+            }
+        }
+
+        // Not in a git repo or couldn't get git info - assume fresh
+        Ok(IndexMetadata {
+            status: IndexStatus::Fresh,
+            reason: None,
+            current_branch: None,
+            indexed_branch: None,
+            current_commit: None,
+            indexed_commit: None,
+            action_required: None,
+        })
     }
 
     /// Check index freshness and show non-blocking warnings
