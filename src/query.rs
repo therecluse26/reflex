@@ -73,43 +73,8 @@ impl QueryEngine {
             );
         }
 
-        // Validate branch state (if in git repo)
-        let root = std::env::current_dir()?;
-        if crate::git::is_git_repo(&root) {
-            let current_branch = crate::git::get_current_branch(&root)?;
-            let current_commit = crate::git::get_current_commit(&root)?;
-            let is_dirty = crate::git::has_uncommitted_changes(&root)?;
-
-            // Check if branch exists in index
-            if !self.cache.branch_exists(&current_branch)? {
-                eprintln!("\n⚠️  Index not found for branch '{}'", current_branch);
-                eprintln!("   Run 'reflex index' to index this branch, or switch to an indexed branch.\n");
-                anyhow::bail!("Branch '{}' not indexed", current_branch);
-            }
-
-            // Check if branch state has changed
-            match self.cache.get_branch_info(&current_branch) {
-                Ok(branch_info) => {
-                    if branch_info.commit_sha != current_commit || is_dirty {
-                        let reason = if branch_info.commit_sha != current_commit {
-                            format!("commit changed (indexed: {}, current: {})",
-                                    &branch_info.commit_sha[..7],
-                                    &current_commit[..7])
-                        } else {
-                            "uncommitted changes detected".to_string()
-                        };
-
-                        eprintln!("\n⚠️  Index is stale for '{}' ({})", current_branch, reason);
-                        eprintln!("   Run 'reflex index' to update the index.\n");
-                        anyhow::bail!("Index stale for branch '{}'", current_branch);
-                    }
-                }
-                Err(_) => {
-                    // Branch exists in file_branches but not in branches table (shouldn't happen)
-                    log::warn!("Branch '{}' has file entries but no metadata", current_branch);
-                }
-            }
-        }
+        // Show non-blocking warnings about branch state and staleness
+        self.check_index_freshness()?;
 
         // Step 1: Load symbol reader
         let symbols_path = self.cache.path().join(SYMBOLS_BIN);
@@ -568,6 +533,78 @@ impl QueryEngine {
         log::debug!("Trigram index rebuilt with {} trigrams", trigram_index.trigram_count());
 
         Ok(trigram_index)
+    }
+
+    /// Check index freshness and show non-blocking warnings
+    ///
+    /// This performs lightweight checks to warn users if their index might be stale:
+    /// 1. Branch mismatch: indexed different branch
+    /// 2. Commit changed: HEAD moved since indexing
+    /// 3. File changes: quick mtime check on sample of files (if available)
+    fn check_index_freshness(&self) -> Result<()> {
+        let root = std::env::current_dir()?;
+
+        // Check git state if in a git repo
+        if crate::git::is_git_repo(&root) {
+            if let Ok(current_branch) = crate::git::get_current_branch(&root) {
+                // Check if we're on a different branch than what was indexed
+                if !self.cache.branch_exists(&current_branch).unwrap_or(false) {
+                    eprintln!("ℹ️  Index not found for branch '{}'. Run 'reflex index' to index this branch.", current_branch);
+                    return Ok(());
+                }
+
+                // Branch exists - check if commit changed
+                if let (Ok(current_commit), Ok(branch_info)) =
+                    (crate::git::get_current_commit(&root), self.cache.get_branch_info(&current_branch)) {
+
+                    if branch_info.commit_sha != current_commit {
+                        eprintln!("ℹ️  Index may be stale (commit changed: {} → {}). Consider running 'reflex index'.",
+                                 &branch_info.commit_sha[..7], &current_commit[..7]);
+                        return Ok(());
+                    }
+
+                    // If commits match, do a quick file freshness check
+                    // Sample up to 10 files to check for modifications (cheap mtime check)
+                    if let Ok(branch_files) = self.cache.get_branch_files(&current_branch) {
+                        let mut checked = 0;
+                        let mut changed = 0;
+                        const SAMPLE_SIZE: usize = 10;
+
+                        for (path, indexed_hash) in branch_files.iter().take(SAMPLE_SIZE) {
+                            checked += 1;
+                            let file_path = std::path::Path::new(path);
+
+                            // Check if file exists and has been modified (mtime/size heuristic)
+                            if let Ok(metadata) = std::fs::metadata(file_path) {
+                                if let Ok(modified) = metadata.modified() {
+                                    let indexed_time = branch_info.last_indexed;
+                                    let file_time = modified.duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs() as i64;
+
+                                    // If file modified after indexing, it might be stale
+                                    if file_time > indexed_time {
+                                        // Verify with hash to avoid false positives from touch/tools
+                                        if let Ok(content) = std::fs::read(file_path) {
+                                            let current_hash = blake3::hash(&content).to_hex().to_string();
+                                            if &current_hash != indexed_hash {
+                                                changed += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if changed > 0 {
+                            eprintln!("ℹ️  {} of {} sampled files changed since indexing. Consider running 'reflex index'.", changed, checked);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
