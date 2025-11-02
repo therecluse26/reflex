@@ -136,22 +136,26 @@ impl QueryEngine {
         }
 
         // Expand symbol bodies if requested
-        if filter.expand && filter.symbols_mode {
+        // Works for both symbol-mode and regex searches (if regex matched a symbol definition)
+        if filter.expand {
             // Load content store to fetch full symbol bodies
             let content_path = self.cache.path().join("content.bin");
             if let Ok(content_reader) = ContentReader::open(&content_path) {
                 for result in &mut results {
-                    // Find the file_id for this result's path
-                    if let Some(file_id) = Self::find_file_id(&content_reader, &result.path) {
-                        // Fetch the full span content
-                        if let Ok(content) = content_reader.get_file_content(file_id) {
-                            let lines: Vec<&str> = content.lines().collect();
-                            let start_idx = (result.span.start_line as usize).saturating_sub(1);
-                            let end_idx = (result.span.end_line as usize).min(lines.len());
+                    // Only expand if the result has a meaningful span (not just a single line)
+                    if result.span.start_line < result.span.end_line {
+                        // Find the file_id for this result's path
+                        if let Some(file_id) = Self::find_file_id(&content_reader, &result.path) {
+                            // Fetch the full span content
+                            if let Ok(content) = content_reader.get_file_content(file_id) {
+                                let lines: Vec<&str> = content.lines().collect();
+                                let start_idx = (result.span.start_line as usize).saturating_sub(1);
+                                let end_idx = (result.span.end_line as usize).min(lines.len());
 
-                            if start_idx < end_idx {
-                                let full_body = lines[start_idx..end_idx].join("\n");
-                                result.preview = full_body;
+                                if start_idx < end_idx {
+                                    let full_body = lines[start_idx..end_idx].join("\n");
+                                    result.preview = full_body;
+                                }
                             }
                         }
                     }
@@ -446,11 +450,14 @@ impl QueryEngine {
                 let line_no = line_idx + 1;
 
                 // Try to find a symbol whose definition is on this exact line
+                // AND whose symbol name matches the regex (not just the line content)
                 // This ensures --kind function returns only function definitions, not calls
+                // and that we only match symbols whose names match the pattern
                 let matching_symbol = all_symbols.iter()
                     .find(|sym| {
                         sym.path == file_path_str &&
-                        sym.span.start_line == line_no
+                        sym.span.start_line == line_no &&
+                        regex.is_match(&sym.symbol)  // Symbol name must match regex
                     });
 
                 // Extract the actual matched portion
@@ -459,18 +466,13 @@ impl QueryEngine {
                     .unwrap_or_else(|| line.to_string());
 
                 if let Some(symbol) = matching_symbol {
-                    // Found a symbol - use its kind but the matched line's info
+                    // Found a symbol - use its kind and full span (for --expand support)
                     results.push(SearchResult {
                         path: file_path_str.clone(),
                         lang: lang.clone(),
                         kind: symbol.kind.clone(),
                         symbol: matched_text,
-                        span: Span {
-                            start_line: line_no,
-                            end_line: line_no,
-                            start_col: 0,
-                            end_col: 0,
-                        },
+                        span: symbol.span.clone(),  // Use symbol's full span
                         scope: symbol.scope.clone(),
                         preview: line.to_string(),
                     });
