@@ -117,8 +117,9 @@ fn extract_class_methods(
         (enum_declaration
             name: (identifier) @enum_name
             body: (enum_body
-                (method_declaration
-                    name: (identifier) @method_name))) @enum
+                (enum_body_declarations
+                    (method_declaration
+                        name: (identifier) @method_name)))) @enum
     "#;
 
     let query = Query::new(language, query_str)
@@ -200,9 +201,10 @@ fn extract_fields(
         (enum_declaration
             name: (identifier) @enum_name
             body: (enum_body
-                (field_declaration
-                    declarator: (variable_declarator
-                        name: (identifier) @field_name)))) @enum
+                (enum_body_declarations
+                    (field_declaration
+                        declarator: (variable_declarator
+                            name: (identifier) @field_name))))) @enum
     "#;
 
     let query = Query::new(language, query_str)
@@ -343,10 +345,68 @@ fn extract_interface_methods(
     root: &tree_sitter::Node,
     language: &tree_sitter::Language,
 ) -> Result<Vec<SearchResult>> {
-    // Interface methods don't have bodies in the Tree-sitter grammar
-    // They're simply declaration nodes, so we'll skip them for now
-    // as they're less useful for code search than actual implementations
-    Ok(vec![])
+    let query_str = r#"
+        (interface_declaration
+            name: (identifier) @interface_name
+            body: (interface_body
+                (method_declaration
+                    name: (identifier) @method_name))) @interface
+    "#;
+
+    let query = Query::new(language, query_str)
+        .context("Failed to create interface method query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut symbols = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut interface_name = None;
+        let mut method_name = None;
+        let mut method_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "interface_name" => {
+                    interface_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                }
+                "method_name" => {
+                    method_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    // Find the parent method_declaration node
+                    let mut current = capture.node;
+                    while let Some(parent) = current.parent() {
+                        if parent.kind() == "method_declaration" {
+                            method_node = Some(parent);
+                            break;
+                        }
+                        current = parent;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(interface_name), Some(method_name), Some(node)) =
+            (interface_name, method_name, method_node) {
+            let scope = format!("interface {}", interface_name);
+            let span = node_to_span(&node);
+            let preview = extract_preview(source, &span);
+
+            symbols.push(SearchResult::new(
+                String::new(),
+                Language::Java,
+                SymbolKind::Method,
+                method_name,
+                span,
+                Some(scope),
+                preview,
+            ));
+        }
+    }
+
+    Ok(symbols)
 }
 
 /// Generic symbol extraction helper
