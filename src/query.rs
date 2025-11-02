@@ -549,7 +549,7 @@ impl QueryEngine {
             if let Ok(current_branch) = crate::git::get_current_branch(&root) {
                 // Check if we're on a different branch than what was indexed
                 if !self.cache.branch_exists(&current_branch).unwrap_or(false) {
-                    eprintln!("ℹ️  Index not found for branch '{}'. Run 'reflex index' to index this branch.", current_branch);
+                    eprintln!("⚠️  WARNING: Index not found for branch '{}'. Run 'reflex index' to index this branch.", current_branch);
                     return Ok(());
                 }
 
@@ -558,7 +558,7 @@ impl QueryEngine {
                     (crate::git::get_current_commit(&root), self.cache.get_branch_info(&current_branch)) {
 
                     if branch_info.commit_sha != current_commit {
-                        eprintln!("ℹ️  Index may be stale (commit changed: {} → {}). Consider running 'reflex index'.",
+                        eprintln!("⚠️  WARNING: Index may be stale (commit changed: {} → {}). Consider running 'reflex index'.",
                                  &branch_info.commit_sha[..7], &current_commit[..7]);
                         return Ok(());
                     }
@@ -597,7 +597,7 @@ impl QueryEngine {
                         }
 
                         if changed > 0 {
-                            eprintln!("ℹ️  {} of {} sampled files changed since indexing. Consider running 'reflex index'.", changed, checked);
+                            eprintln!("⚠️  WARNING: {} of {} sampled files changed since indexing. Consider running 'reflex index'.", changed, checked);
                         }
                     }
                 }
