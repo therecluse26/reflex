@@ -17,7 +17,7 @@ use crate::cache::{CacheManager, SymbolReader, SymbolWriter, SYMBOLS_BIN};
 use crate::content_store::ContentWriter;
 use crate::models::{IndexConfig, IndexStats, Language, SearchResult};
 use crate::parsers::ParserFactory;
-use crate::trigram::{extract_trigrams_with_locations, FileLocation, Trigram, TrigramIndex};
+use crate::trigram::TrigramIndex;
 
 /// Result of processing a single file (used for parallel processing)
 struct FileProcessingResult {
@@ -27,7 +27,6 @@ struct FileProcessingResult {
     content: String,
     symbols: Vec<SearchResult>,
     language: Language,
-    trigrams: Vec<(Trigram, FileLocation)>, // Pre-extracted trigrams for this file
     line_count: usize,
 }
 
@@ -177,12 +176,23 @@ impl Indexer {
             .build()
             .context("Failed to create thread pool")?;
 
-        // Process files in parallel using rayon with custom thread pool
-        let counter_clone = Arc::clone(&progress_counter);
-        let results: Vec<Option<FileProcessingResult>> = pool.install(|| {
-            files
-                .par_iter()
-                .map(|file_path| {
+        // Process files in batches to avoid OOM on huge codebases
+        // Batch size: process 5000 files at a time to limit memory usage
+        const BATCH_SIZE: usize = 5000;
+        let num_batches = (total_files + BATCH_SIZE - 1) / BATCH_SIZE;
+        log::info!("Processing {} files in {} batches of up to {} files",
+                   total_files, num_batches, BATCH_SIZE);
+
+        for (batch_idx, batch_files) in files.chunks(BATCH_SIZE).enumerate() {
+            log::info!("Processing batch {}/{} ({} files)",
+                       batch_idx + 1, num_batches, batch_files.len());
+
+            // Process files in parallel using rayon with custom thread pool
+            let counter_clone = Arc::clone(&progress_counter);
+            let results: Vec<Option<FileProcessingResult>> = pool.install(|| {
+                batch_files
+                    .par_iter()
+                    .map(|file_path| {
                 let path_str = file_path.to_string_lossy().to_string();
 
                 // Read file content once (used for hashing, trigrams, and parsing)
@@ -236,9 +246,6 @@ impl Indexer {
                     (syms, Language::from_extension(ext))
                 };
 
-                // Extract trigrams during parallel processing (with temporary file_id = 0)
-                let trigrams = extract_trigrams_with_locations(&content, 0);
-
                 // Count lines in the file
                 let line_count = content.lines().count();
 
@@ -252,12 +259,54 @@ impl Indexer {
                     content,
                     symbols,
                     language,
-                    trigrams,
                     line_count,
                 })
-            })
-            .collect()
-        });
+                })
+                .collect()
+            });
+
+            // Process batch results immediately (streaming approach to minimize memory)
+            for result in results.into_iter().flatten() {
+                // Add file to trigram index (get file_id)
+                let file_id = trigram_index.add_file(result.path.clone());
+
+                // Index file content directly (avoid accumulating all trigrams)
+                trigram_index.index_file(file_id, &result.content);
+
+                // Add to content store
+                content_writer.add_file(result.path.clone(), &result.content);
+
+                // Collect symbols
+                if !result.symbols.is_empty() {
+                    files_indexed += 1;
+                }
+
+                // Log unknown symbol kinds for visibility
+                for symbol in &result.symbols {
+                    if matches!(symbol.kind, crate::models::SymbolKind::Unknown(_)) {
+                        log::info!(
+                            "Found unknown symbol kind in {}: {:?} (symbol: {})",
+                            result.path_str,
+                            symbol.kind,
+                            symbol.symbol
+                        );
+                    }
+                }
+
+                all_symbols.extend(result.symbols.clone());
+
+                // Prepare file metadata for batch database update
+                file_metadata.push((
+                    result.path_str.clone(),
+                    result.hash.clone(),
+                    format!("{:?}", result.language),
+                    result.symbols.len(),
+                    result.line_count
+                ));
+
+                new_hashes.insert(result.path_str, result.hash);
+            }
+        }
 
         // Wait for progress thread to finish
         if let Some(thread) = progress_thread {
@@ -270,58 +319,11 @@ impl Indexer {
             pb.set_position(final_count);
         }
 
-        // Collect results from parallel processing and build trigram index in bulk
-        let mut all_trigrams: Vec<(Trigram, FileLocation)> = Vec::new();
-
-        for result in results.into_iter().flatten() {
-            // Add file to trigram index (get file_id)
-            let file_id = trigram_index.add_file(result.path.clone());
-
-            // Update file_ids in pre-extracted trigrams and collect them
-            for (trigram, mut loc) in result.trigrams {
-                loc.file_id = file_id;
-                all_trigrams.push((trigram, loc));
-            }
-
-            // Add to content store
-            content_writer.add_file(result.path.clone(), &result.content);
-
-            // Collect symbols
-            if !result.symbols.is_empty() {
-                files_indexed += 1;
-            }
-
-            // Log unknown symbol kinds for visibility
-            for symbol in &result.symbols {
-                if matches!(symbol.kind, crate::models::SymbolKind::Unknown(_)) {
-                    log::info!(
-                        "Found unknown symbol kind in {}: {:?} (symbol: {})",
-                        result.path_str,
-                        symbol.kind,
-                        symbol.symbol
-                    );
-                }
-            }
-
-            all_symbols.extend(result.symbols.clone());
-
-            // Prepare file metadata for batch database update
-            file_metadata.push((
-                result.path_str.clone(),
-                result.hash.clone(),
-                format!("{:?}", result.language),
-                result.symbols.len(),
-                result.line_count
-            ));
-
-            new_hashes.insert(result.path_str, result.hash);
-        }
-
-        // Build trigram index from all collected trigrams at once
+        // Finalize trigram index (sort and deduplicate posting lists)
         if show_progress {
-            pb.set_message("Building trigram index...".to_string());
+            pb.set_message("Finalizing trigram index...".to_string());
         }
-        trigram_index.build_from_trigrams(all_trigrams);
+        trigram_index.finalize();
 
         // Update progress bar message for post-processing
         if show_progress {

@@ -14,7 +14,6 @@
 //! See `.context/TRIGRAM_RESEARCH.md` for detailed algorithm documentation.
 
 use anyhow::{Context, Result};
-use memmap2::Mmap;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -27,8 +26,9 @@ pub type Trigram = u32;
 // Binary format constants for trigrams.bin
 const MAGIC: &[u8; 4] = b"RFTG"; // ReFlex TriGrams
 const VERSION: u32 = 1;
-// Header: magic(4) + version(4) + num_trigrams(8) + num_files(8) + file_list_offset(8) + reserved(4) = 36 bytes
-const HEADER_SIZE: usize = 36;
+// Header: magic(4) + version(4) + num_trigrams(8) + num_files(8) = 24 bytes
+#[allow(dead_code)]
+const HEADER_SIZE: usize = 24;
 
 /// Location of a trigram occurrence in the codebase
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Archive, Serialize, Deserialize)]
@@ -70,6 +70,8 @@ pub struct TrigramIndex {
     index: Vec<(Trigram, Vec<FileLocation>)>,
     /// File ID to file path mapping
     files: Vec<PathBuf>,
+    /// Temporary HashMap used during batch indexing (None when finalized)
+    temp_index: Option<HashMap<Trigram, Vec<FileLocation>>>,
 }
 
 impl TrigramIndex {
@@ -78,6 +80,7 @@ impl TrigramIndex {
         Self {
             index: Vec::new(),
             files: Vec::new(),
+            temp_index: Some(HashMap::new()),
         }
     }
 
@@ -106,27 +109,21 @@ impl TrigramIndex {
     /// Index a file's content
     ///
     /// Extracts all trigrams from the content and adds them to the inverted index.
+    /// Must call finalize() after indexing all files to prepare for searching.
     pub fn index_file(&mut self, file_id: u32, content: &str) {
         let trigrams = extract_trigrams_with_locations(content, file_id);
 
-        // Use a temporary HashMap during indexing for efficiency
-        let mut temp_map: HashMap<Trigram, Vec<FileLocation>> = HashMap::new();
-
-        // Convert existing index to HashMap for merging
-        for (trigram, locations) in &self.index {
-            temp_map.insert(*trigram, locations.clone());
+        // Use the persistent HashMap for O(1) updates during batch processing
+        if let Some(ref mut temp_map) = self.temp_index {
+            for (trigram, location) in trigrams {
+                temp_map
+                    .entry(trigram)
+                    .or_insert_with(Vec::new)
+                    .push(location);
+            }
+        } else {
+            panic!("Cannot call index_file() after finalize(). Index is read-only.");
         }
-
-        // Add new trigrams
-        for (trigram, location) in trigrams {
-            temp_map
-                .entry(trigram)
-                .or_insert_with(Vec::new)
-                .push(location);
-        }
-
-        // Convert back to Vec
-        self.index = temp_map.into_iter().collect();
     }
 
     /// Build index from a collection of pre-extracted trigrams (bulk operation)
@@ -147,6 +144,9 @@ impl TrigramIndex {
         // Convert to sorted Vec for binary search
         self.index = temp_map.into_iter().collect();
 
+        // Clear temp_index since we're using the Vec directly
+        self.temp_index = None;
+
         // Finalize immediately (sort and deduplicate)
         self.finalize();
     }
@@ -154,7 +154,13 @@ impl TrigramIndex {
     /// Finalize the index by sorting all posting lists and the index itself
     ///
     /// Must be called after all files are indexed, before querying.
+    /// Converts the HashMap to a sorted Vec for fast binary search.
     pub fn finalize(&mut self) {
+        // Convert HashMap to Vec if we have a temp index
+        if let Some(temp_map) = self.temp_index.take() {
+            self.index = temp_map.into_iter().collect();
+        }
+
         // Sort posting lists
         for (_, list) in self.index.iter_mut() {
             list.sort_unstable();
@@ -221,9 +227,15 @@ impl TrigramIndex {
 
     /// Write the trigram index to disk
     ///
-    /// Binary format:
-    /// - Header (36 bytes): magic, version, num_trigrams, num_files, data_len, reserved
-    /// - Trigram data: rkyv-serialized TrigramData (zero-copy format)
+    /// Binary format (streaming, memory-efficient):
+    /// - Header (24 bytes): magic, version, num_trigrams, num_files
+    /// - For each (trigram, locations) pair:
+    ///   - trigram: u32
+    ///   - num_locations: u32
+    ///   - locations: [FileLocation; num_locations] (12 bytes each)
+    /// - For each file path:
+    ///   - path_len: u32
+    ///   - path_bytes: [u8; path_len]
     pub fn write(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
         let file = OpenOptions::new()
@@ -233,43 +245,40 @@ impl TrigramIndex {
             .open(path)
             .with_context(|| format!("Failed to create {}", path.display()))?;
 
-        // Use a large buffer (8MB) for better write performance
-        let mut writer = std::io::BufWriter::with_capacity(8 * 1024 * 1024, file);
-
-        // Index is already a sorted Vec - just clone it for serialization
-        let index_vec = self.index.clone();
-
-        let files_vec: Vec<String> = self.files.iter()
-            .map(|p| p.to_string_lossy().to_string())
-            .collect();
-
-        let data = TrigramData {
-            index: index_vec,
-            files: files_vec,
-        };
-
-        // Serialize with rkyv
-        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&data)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize trigram index: {}", e))?;
-
-        log::debug!("Serialized {} bytes of trigram data", bytes.len());
+        // Use a large buffer (16MB) for streaming writes
+        let mut writer = std::io::BufWriter::with_capacity(16 * 1024 * 1024, file);
 
         // Write header
         writer.write_all(MAGIC)?;
         writer.write_all(&VERSION.to_le_bytes())?;
         writer.write_all(&(self.index.len() as u64).to_le_bytes())?; // num_trigrams
         writer.write_all(&(self.files.len() as u64).to_le_bytes())?; // num_files
-        writer.write_all(&(bytes.len() as u64).to_le_bytes())?; // data_len
-        writer.write_all(&[0u8; 4])?; // reserved
 
-        // Write rkyv data
-        writer.write_all(&bytes)?;
+        // Stream write trigram index (no memory spike)
+        for (trigram, locations) in &self.index {
+            writer.write_all(&trigram.to_le_bytes())?;
+            writer.write_all(&(locations.len() as u32).to_le_bytes())?;
 
-        // Flush buffer to ensure all data is written
+            // Write locations as raw bytes (3x u32 per location = 12 bytes)
+            for loc in locations {
+                writer.write_all(&loc.file_id.to_le_bytes())?;
+                writer.write_all(&loc.line_no.to_le_bytes())?;
+                writer.write_all(&loc.byte_offset.to_le_bytes())?;
+            }
+        }
+
+        // Stream write file paths
+        for file_path in &self.files {
+            let path_str = file_path.to_string_lossy();
+            let path_bytes = path_str.as_bytes();
+            writer.write_all(&(path_bytes.len() as u32).to_le_bytes())?;
+            writer.write_all(path_bytes)?;
+        }
+
+        // Flush buffer
         writer.flush()?;
 
-        // Sync to disk (this is the slow part, but necessary for durability)
-        // Note: We get the underlying file reference to sync
+        // Sync to disk
         writer.get_ref().sync_all()?;
 
         log::debug!(
@@ -282,15 +291,19 @@ impl TrigramIndex {
         Ok(())
     }
 
-    /// Load trigram index from disk using memory mapping (zero-copy with rkyv)
+    /// Load trigram index from disk using memory-mapped I/O
+    ///
+    /// Uses mmap for zero-copy reads (much faster than buffered reading).
+    /// Reads the streaming binary format written by write().
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
 
         let file = File::open(path)
             .with_context(|| format!("Failed to open {}", path.display()))?;
 
+        // Memory-map the file for zero-copy access
         let mmap = unsafe {
-            Mmap::map(&file)
+            memmap2::Mmap::map(&file)
                 .with_context(|| format!("Failed to mmap {}", path.display()))?
         };
 
@@ -318,35 +331,102 @@ impl TrigramIndex {
             mmap[20], mmap[21], mmap[22], mmap[23],
         ]) as usize;
 
-        let data_len = u64::from_le_bytes([
-            mmap[24], mmap[25], mmap[26], mmap[27],
-            mmap[28], mmap[29], mmap[30], mmap[31],
-        ]) as usize;
+        log::debug!("Loading trigram index: {} trigrams, {} files", num_trigrams, num_files);
 
-        // Deserialize rkyv data
-        let data_bytes = &mmap[HEADER_SIZE..HEADER_SIZE + data_len];
-        log::debug!("Loading {} bytes of trigram data (rkyv zero-copy)", data_bytes.len());
+        // Read trigram index from mmap
+        let mut index = Vec::with_capacity(num_trigrams);
+        let mut pos = HEADER_SIZE;
 
-        // Deserialize the archived data
-        let data: TrigramData = rkyv::from_bytes::<_, rkyv::rancor::Error>(data_bytes)
-            .map_err(|e| anyhow::anyhow!("Failed to deserialize trigram data: {}", e))?;
+        for _ in 0..num_trigrams {
+            if pos + 8 > mmap.len() {
+                anyhow::bail!("Truncated trigram index at pos={}", pos);
+            }
 
-        // Use the sorted Vec directly - no HashMap construction needed!
-        let index = data.index;
+            let trigram = u32::from_le_bytes([
+                mmap[pos],
+                mmap[pos + 1],
+                mmap[pos + 2],
+                mmap[pos + 3],
+            ]);
+            pos += 4;
 
-        // Convert file paths
-        let files: Vec<PathBuf> = data.files.iter()
-            .map(|s| PathBuf::from(s))
-            .collect();
+            let num_locations = u32::from_le_bytes([
+                mmap[pos],
+                mmap[pos + 1],
+                mmap[pos + 2],
+                mmap[pos + 3],
+            ]) as usize;
+            pos += 4;
 
-        log::debug!(
-            "Loaded trigram index: {} trigrams, {} files from {:?}",
-            num_trigrams,
-            num_files,
-            path
-        );
+            if pos + num_locations * 12 > mmap.len() {
+                anyhow::bail!("Truncated location list at pos={}", pos);
+            }
 
-        Ok(Self { index, files })
+            let mut locations = Vec::with_capacity(num_locations);
+            for _ in 0..num_locations {
+                let file_id = u32::from_le_bytes([
+                    mmap[pos],
+                    mmap[pos + 1],
+                    mmap[pos + 2],
+                    mmap[pos + 3],
+                ]);
+                pos += 4;
+
+                let line_no = u32::from_le_bytes([
+                    mmap[pos],
+                    mmap[pos + 1],
+                    mmap[pos + 2],
+                    mmap[pos + 3],
+                ]);
+                pos += 4;
+
+                let byte_offset = u32::from_le_bytes([
+                    mmap[pos],
+                    mmap[pos + 1],
+                    mmap[pos + 2],
+                    mmap[pos + 3],
+                ]);
+                pos += 4;
+
+                locations.push(FileLocation {
+                    file_id,
+                    line_no,
+                    byte_offset,
+                });
+            }
+
+            index.push((trigram, locations));
+        }
+
+        // Read file paths from mmap
+        let mut files = Vec::with_capacity(num_files);
+        for _ in 0..num_files {
+            if pos + 4 > mmap.len() {
+                anyhow::bail!("Truncated file path list at pos={}", pos);
+            }
+
+            let path_len = u32::from_le_bytes([
+                mmap[pos],
+                mmap[pos + 1],
+                mmap[pos + 2],
+                mmap[pos + 3],
+            ]) as usize;
+            pos += 4;
+
+            if pos + path_len > mmap.len() {
+                anyhow::bail!("Truncated file path at pos={}", pos);
+            }
+
+            let path_bytes = &mmap[pos..pos + path_len];
+            let path_str = std::str::from_utf8(path_bytes)
+                .context("Invalid UTF-8 in file path")?;
+            files.push(PathBuf::from(path_str));
+            pos += path_len;
+        }
+
+        log::debug!("Loaded trigram index from {:?}", path);
+
+        Ok(Self { index, files, temp_index: None })
     }
 }
 
