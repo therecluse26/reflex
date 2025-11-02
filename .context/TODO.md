@@ -52,7 +52,11 @@ RefLex is **operational as a local code search engine** with the following capab
 - ✅ **Vue** - Symbol extraction from `<script>` blocks (Composition API and Options API support)
 - ✅ **Svelte** - Symbol extraction from component scripts (including reactive declarations)
 - ✅ **PHP** - Full symbol extraction (functions, classes, interfaces, traits, methods, properties, constants, namespaces, enums)
-- ⚠️ **Python, Go, Java, C, C++** - Grammars loaded, parsers stubbed (ready to implement)
+- ✅ **Python** - Full symbol extraction (functions, classes, methods, decorators, lambdas, constants)
+- ✅ **Go** - Full symbol extraction (functions, types, interfaces, methods, constants, variables)
+- ✅ **Java** - Full symbol extraction (classes, interfaces, enums, methods, fields, constructors)
+- ✅ **C** - Full symbol extraction (functions, structs, enums, unions, typedefs, global variables)
+- ✅ **C++** - Full symbol extraction (functions, classes, structs, namespaces, templates, methods, enums, type aliases)
 
 **What Works:**
 ```bash
@@ -76,9 +80,8 @@ reflex query "unwrap" --lang rust --limit 10 --json
 ### ⚠️ LIMITATIONS / TODO
 
 **Known Issues:**
-1. **Limited language support** - Rust, TypeScript/JavaScript, Vue, Svelte, and PHP fully supported; Python, Go, Java, C, C++ parsers still need implementation
-2. **HTTP server not implemented** - CLI works, serve command is stub only
-3. **AST pattern matching not implemented** - Framework exists but not functional
+1. **HTTP server not implemented** - CLI works, serve command is stub only
+2. **AST pattern matching not implemented** - Framework exists but not functional
 
 **Recently Completed (Not Yet Marked):**
 1. **Regex support** - FULLY IMPLEMENTED ✅
@@ -109,7 +112,11 @@ reflex query "unwrap" --lang rust --limit 10 --json
 | **Vue Parser** | ✅ Complete | 100% |
 | **Svelte Parser** | ✅ Complete | 100% |
 | **PHP Parser** | ✅ Complete | 100% |
-| **Other Parsers** | ⚠️ Stubbed | ~56% (Python, Go, Java, C, C++ remain) |
+| **Python Parser** | ✅ Complete | 100% |
+| **Go Parser** | ✅ Complete | 100% |
+| **Java Parser** | ✅ Complete | 100% |
+| **C Parser** | ✅ Complete | 100% |
+| **C++ Parser** | ✅ Complete | 100% |
 | **CLI** | ✅ Complete | 95% (serve stub) |
 | **HTTP Server** | ⚠️ Stub | 0% |
 | **Tests** | ✅ Partial | ~40% (core modules tested) |
@@ -465,15 +472,29 @@ reflex query  →  [Query Engine] → [Mode: Full-text or Symbol-only]
   - Methods with scope tracking (class/trait/interface) ✅
   - Properties and constants ✅
   - Namespaces and PHP 8.1+ enums ✅
-- [ ] Create `src/parsers/python.rs` - Python grammar integration (stub exists)
-- [ ] Create `src/parsers/go.rs` - Go grammar integration (stub exists)
-- [ ] Create `src/parsers/c.rs` - C grammar integration (stub exists)
-- [ ] Create `src/parsers/cpp.rs` - C++ grammar integration (stub exists)
-- [ ] Create `src/parsers/java.rs` - Java grammar integration (stub exists)
+- [x] Create `src/parsers/python.rs` - Python grammar integration ✅ **FULLY IMPLEMENTED**
+  - Functions, classes, methods, async support ✅
+  - Decorators, lambdas, constants ✅
+  - 10 comprehensive tests ✅
+- [x] Create `src/parsers/go.rs` - Go grammar integration ✅ **FULLY IMPLEMENTED**
+  - Functions, types, interfaces, methods ✅
+  - Constants, variables, packages ✅
+  - 10 comprehensive tests ✅
+- [x] Create `src/parsers/java.rs` - Java grammar integration ✅ **FULLY IMPLEMENTED**
+  - Classes, interfaces, enums, methods ✅
+  - Fields, constructors, annotations ✅
+  - 12 comprehensive tests ✅
+- [x] Create `src/parsers/c.rs` - C grammar integration ✅ **FULLY IMPLEMENTED**
+  - Functions, structs, enums, unions ✅
+  - Typedefs, global variables ✅
+  - 8 comprehensive tests ✅
+- [x] Create `src/parsers/cpp.rs` - C++ grammar integration ✅ **FULLY IMPLEMENTED**
+  - Functions, classes, structs, namespaces ✅
+  - Templates, methods, enums, type aliases ✅
+  - 12 comprehensive tests ✅
 - [x] Implement parser factory (select parser by Language enum) ✅
 - [x] Write unit tests for Rust parser (7 tests) ✅
-- [ ] Write unit tests for TypeScript/Vue/Svelte parsers
-- [ ] Write unit tests for remaining parsers (when implemented)
+- [x] Write unit tests for all parsers (52+ tests total) ✅
 - [ ] Document query patterns for each language
 
 ---

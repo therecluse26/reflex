@@ -11,6 +11,11 @@ pub mod typescript;
 pub mod vue;
 pub mod svelte;
 pub mod php;
+pub mod python;
+pub mod go;
+pub mod java;
+pub mod c;
+pub mod cpp;
 
 use anyhow::Result;
 use crate::models::{Language, SearchResult};
@@ -31,27 +36,12 @@ impl ParserFactory {
             Language::JavaScript => typescript::parse(path, source, language),
             Language::Vue => vue::parse(path, source),
             Language::Svelte => svelte::parse(path, source),
-            Language::Python => {
-                // TODO: Implement Python parser
-                Ok(vec![])
-            }
-            Language::Go => {
-                // TODO: Implement Go parser
-                Ok(vec![])
-            }
-            Language::Java => {
-                // TODO: Implement Java parser
-                Ok(vec![])
-            }
+            Language::Python => python::parse(path, source),
+            Language::Go => go::parse(path, source),
+            Language::Java => java::parse(path, source),
             Language::PHP => php::parse(path, source),
-            Language::C => {
-                // TODO: Implement C parser
-                Ok(vec![])
-            }
-            Language::Cpp => {
-                // TODO: Implement C++ parser
-                Ok(vec![])
-            }
+            Language::C => c::parse(path, source),
+            Language::Cpp => cpp::parse(path, source),
             Language::Unknown => {
                 log::warn!("Unknown language for file: {}", path);
                 Ok(vec![])

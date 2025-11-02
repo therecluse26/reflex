@@ -102,13 +102,12 @@ impl Language {
             Language::JavaScript => true,
             Language::Vue => true,
             Language::Svelte => true,
-            // Languages below do not have parser implementations yet
-            Language::Python => false,
-            Language::Go => false,
-            Language::Java => false,
+            Language::Python => true,
+            Language::Go => true,
+            Language::Java => true,
             Language::PHP => true,
-            Language::C => false,
-            Language::Cpp => false,
+            Language::C => true,
+            Language::Cpp => true,
             Language::Unknown => false,
         }
     }
