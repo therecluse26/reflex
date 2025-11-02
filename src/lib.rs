@@ -40,7 +40,7 @@ pub mod trigram;
 pub use cache::CacheManager;
 pub use indexer::Indexer;
 pub use models::{
-    IndexConfig, IndexMetadata, IndexStats, IndexStatus, IndexedFile, Language, QueryResponse,
-    SearchResult, Span, SymbolKind,
+    IndexConfig, IndexStats, IndexStatus, IndexWarning, IndexWarningDetails, IndexedFile,
+    Language, QueryResponse, SearchResult, Span, SymbolKind,
 };
 pub use query::{QueryEngine, QueryFilter};

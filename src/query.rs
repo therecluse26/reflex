@@ -9,7 +9,8 @@ use regex::Regex;
 use crate::cache::{CacheManager, SymbolReader, SYMBOLS_BIN};
 use crate::content_store::ContentReader;
 use crate::models::{
-    IndexMetadata, IndexStatus, Language, QueryResponse, SearchResult, Span, SymbolKind,
+    IndexStatus, IndexWarning, IndexWarningDetails, Language, QueryResponse, SearchResult, Span,
+    SymbolKind,
 };
 use crate::regex_trigrams::extract_trigrams_from_regex;
 use crate::trigram::TrigramIndex;
@@ -78,13 +79,18 @@ impl QueryEngine {
             );
         }
 
-        // Get index metadata (without printing warnings to stderr)
-        let metadata = self.get_index_metadata()?;
+        // Get index status and warning (without printing warnings to stderr)
+        let (status, can_trust_results, warning) = self.get_index_status()?;
 
         // Execute the search
         let results = self.search_internal(pattern, filter)?;
 
-        Ok(QueryResponse { metadata, results })
+        Ok(QueryResponse {
+            status,
+            can_trust_results,
+            warning,
+            results,
+        })
     }
 
     /// Execute a query and return matching results (legacy method)
@@ -570,11 +576,11 @@ impl QueryEngine {
         Ok(trigram_index)
     }
 
-    /// Get index metadata for programmatic use (doesn't print warnings)
+    /// Get index status for programmatic use (doesn't print warnings)
     ///
-    /// This returns structured metadata about index freshness that can be
-    /// included in JSON output for AI agents to decide whether to re-index.
-    fn get_index_metadata(&self) -> Result<IndexMetadata> {
+    /// Returns (status, can_trust_results, warning) tuple for JSON output.
+    /// This is optimized for AI agents to detect staleness and auto-reindex.
+    fn get_index_status(&self) -> Result<(IndexStatus, bool, Option<IndexWarning>)> {
         let root = std::env::current_dir()?;
 
         // Check git state if in a git repo
@@ -582,15 +588,17 @@ impl QueryEngine {
             if let Ok(current_branch) = crate::git::get_current_branch(&root) {
                 // Check if we're on a different branch than what was indexed
                 if !self.cache.branch_exists(&current_branch).unwrap_or(false) {
-                    return Ok(IndexMetadata {
-                        status: IndexStatus::BranchNotIndexed,
-                        reason: Some(format!("Branch '{}' has not been indexed", current_branch)),
-                        current_branch: Some(current_branch),
-                        indexed_branch: None,
-                        current_commit: None,
-                        indexed_commit: None,
-                        action_required: Some("reflex index".to_string()),
-                    });
+                    let warning = IndexWarning {
+                        reason: format!("Branch '{}' has not been indexed", current_branch),
+                        action_required: "reflex index".to_string(),
+                        details: Some(IndexWarningDetails {
+                            current_branch: Some(current_branch),
+                            indexed_branch: None,
+                            current_commit: None,
+                            indexed_commit: None,
+                        }),
+                    };
+                    return Ok((IndexStatus::Stale, false, Some(warning)));
                 }
 
                 // Branch exists - check if commit changed
@@ -598,19 +606,21 @@ impl QueryEngine {
                     (crate::git::get_current_commit(&root), self.cache.get_branch_info(&current_branch)) {
 
                     if branch_info.commit_sha != current_commit {
-                        return Ok(IndexMetadata {
-                            status: IndexStatus::CommitChanged,
-                            reason: Some(format!(
+                        let warning = IndexWarning {
+                            reason: format!(
                                 "Commit changed from {} to {}",
                                 &branch_info.commit_sha[..7],
                                 &current_commit[..7]
-                            )),
-                            current_branch: Some(current_branch.clone()),
-                            indexed_branch: Some(current_branch),
-                            current_commit: Some(current_commit),
-                            indexed_commit: Some(branch_info.commit_sha),
-                            action_required: Some("reflex index".to_string()),
-                        });
+                            ),
+                            action_required: "reflex index".to_string(),
+                            details: Some(IndexWarningDetails {
+                                current_branch: Some(current_branch.clone()),
+                                indexed_branch: Some(current_branch.clone()),
+                                current_commit: Some(current_commit.clone()),
+                                indexed_commit: Some(branch_info.commit_sha.clone()),
+                            }),
+                        };
+                        return Ok((IndexStatus::Stale, false, Some(warning)));
                     }
 
                     // If commits match, do a quick file freshness check
@@ -643,42 +653,28 @@ impl QueryEngine {
                         }
 
                         if changed > 0 {
-                            return Ok(IndexMetadata {
-                                status: IndexStatus::FilesModified,
-                                reason: Some(format!("{} of {} sampled files modified", changed, checked)),
-                                current_branch: Some(current_branch.clone()),
-                                indexed_branch: Some(current_branch),
-                                current_commit: Some(current_commit),
-                                indexed_commit: Some(branch_info.commit_sha),
-                                action_required: Some("reflex index".to_string()),
-                            });
+                            let warning = IndexWarning {
+                                reason: format!("{} of {} sampled files modified", changed, checked),
+                                action_required: "reflex index".to_string(),
+                                details: Some(IndexWarningDetails {
+                                    current_branch: Some(current_branch.clone()),
+                                    indexed_branch: Some(branch_info.branch.clone()),
+                                    current_commit: Some(current_commit.clone()),
+                                    indexed_commit: Some(branch_info.commit_sha.clone()),
+                                }),
+                            };
+                            return Ok((IndexStatus::Stale, false, Some(warning)));
                         }
                     }
 
                     // All checks passed - index is fresh
-                    return Ok(IndexMetadata {
-                        status: IndexStatus::Fresh,
-                        reason: None,
-                        current_branch: Some(current_branch.clone()),
-                        indexed_branch: Some(current_branch),
-                        current_commit: Some(current_commit),
-                        indexed_commit: Some(branch_info.commit_sha),
-                        action_required: None,
-                    });
+                    return Ok((IndexStatus::Fresh, true, None));
                 }
             }
         }
 
         // Not in a git repo or couldn't get git info - assume fresh
-        Ok(IndexMetadata {
-            status: IndexStatus::Fresh,
-            reason: None,
-            current_branch: None,
-            indexed_branch: None,
-            current_commit: None,
-            indexed_commit: None,
-            action_required: None,
-        })
+        Ok((IndexStatus::Fresh, true, None))
     }
 
     /// Check index freshness and show non-blocking warnings

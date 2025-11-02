@@ -223,22 +223,25 @@ pub struct IndexedFile {
 pub enum IndexStatus {
     /// Index is fresh and up-to-date
     Fresh,
-    /// Branch not indexed
-    BranchNotIndexed,
-    /// Commit changed since indexing
-    CommitChanged,
-    /// Files modified since indexing
-    FilesModified,
+    /// Index is stale (any issue: branch not indexed, commit changed, files modified)
+    Stale,
 }
 
-/// Metadata about index freshness (for JSON output)
+/// Warning details when index is stale
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IndexMetadata {
-    /// Status of the index
-    pub status: IndexStatus,
-    /// Human-readable reason (if stale)
+pub struct IndexWarning {
+    /// Human-readable reason why index is stale
+    pub reason: String,
+    /// Command to run to fix the issue
+    pub action_required: String,
+    /// Additional context (git branch info, etc.)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
+    pub details: Option<IndexWarningDetails>,
+}
+
+/// Detailed information about index staleness
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexWarningDetails {
     /// Current branch (if in git repo)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_branch: Option<String>,
@@ -251,16 +254,18 @@ pub struct IndexMetadata {
     /// Indexed commit SHA (if in git repo)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub indexed_commit: Option<String>,
-    /// Suggested action to fix staleness
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub action_required: Option<String>,
 }
 
-/// Query response with results and metadata
+/// Query response with results and index status
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResponse {
-    /// Index metadata (freshness status)
-    pub metadata: IndexMetadata,
+    /// Status of the index (fresh or stale)
+    pub status: IndexStatus,
+    /// Whether the results can be trusted
+    pub can_trust_results: bool,
+    /// Warning information (only present if stale)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<IndexWarning>,
     /// Search results
     pub results: Vec<SearchResult>,
 }
