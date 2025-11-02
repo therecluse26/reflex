@@ -48,6 +48,22 @@ impl Indexer {
         let root = root.as_ref();
         log::info!("Indexing directory: {:?}", root);
 
+        // Configure thread pool for parallel processing
+        // 0 = auto (use 80% of available cores to avoid locking the system)
+        let num_threads = if self.config.parallel_threads == 0 {
+            let available_cores = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4);
+            // Use 80% of available cores (minimum 1)
+            ((available_cores as f64 * 0.8).ceil() as usize).max(1)
+        } else {
+            self.config.parallel_threads
+        };
+
+        log::info!("Using {} threads for parallel indexing (out of {} available)",
+                   num_threads,
+                   std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4));
+
         // Ensure cache is initialized
         self.cache.init()?;
 
@@ -137,11 +153,18 @@ impl Indexer {
             None
         };
 
-        // Process files in parallel using rayon
+        // Build a custom thread pool with limited threads
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build()
+            .context("Failed to create thread pool")?;
+
+        // Process files in parallel using rayon with custom thread pool
         let counter_clone = Arc::clone(&progress_counter);
-        let results: Vec<Option<FileProcessingResult>> = files
-            .par_iter()
-            .map(|file_path| {
+        let results: Vec<Option<FileProcessingResult>> = pool.install(|| {
+            files
+                .par_iter()
+                .map(|file_path| {
                 let path_str = file_path.to_string_lossy().to_string();
 
                 // Read file content once (used for hashing, trigrams, and parsing)
@@ -215,7 +238,8 @@ impl Indexer {
                     line_count,
                 })
             })
-            .collect();
+            .collect()
+        });
 
         // Wait for progress thread to finish
         if let Some(thread) = progress_thread {

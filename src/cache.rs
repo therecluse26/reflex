@@ -240,7 +240,7 @@ default_limit = 100
 fuzzy_threshold = 0.8
 
 [performance]
-parallel_threads = 0  # 0 = auto-detect
+parallel_threads = 0  # 0 = auto (80% of available cores), or set a specific number
 compression_level = 3  # zstd level
 "#;
 
