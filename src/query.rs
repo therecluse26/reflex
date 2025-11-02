@@ -4,10 +4,12 @@
 //! deterministic searches based on lexical, structural, or symbol patterns.
 
 use anyhow::{Context, Result};
+use regex::Regex;
 
 use crate::cache::{CacheManager, SymbolReader, SYMBOLS_BIN};
 use crate::content_store::ContentReader;
 use crate::models::{Language, SearchResult, Span, SymbolKind};
+use crate::regex_trigrams::extract_trigrams_from_regex;
 use crate::trigram::TrigramIndex;
 
 /// Query filter options
@@ -19,6 +21,8 @@ pub struct QueryFilter {
     pub kind: Option<SymbolKind>,
     /// Use AST pattern matching (vs lexical search)
     pub use_ast: bool,
+    /// Use regex pattern matching
+    pub use_regex: bool,
     /// Maximum number of results
     pub limit: Option<usize>,
     /// Search symbol definitions only (vs full-text)
@@ -37,6 +41,7 @@ impl Default for QueryFilter {
             language: None,
             kind: None,
             use_ast: false,
+            use_regex: false,
             limit: None,
             symbols_mode: false,
             expand: false,
@@ -74,7 +79,11 @@ impl QueryEngine {
             .context("Failed to open symbols cache")?;
 
         // Step 2: Execute search based on mode
-        let mut results = if filter.symbols_mode {
+        let mut results = if filter.use_regex {
+            // Regex pattern search
+            // Uses trigrams to narrow candidates, then verifies with regex
+            self.search_with_regex(pattern, &filter)?
+        } else if filter.symbols_mode {
             // Symbol name search (filtered to symbol definitions only)
             // Searches Tree-sitter parsed symbols: functions, classes, structs, etc.
             if pattern.ends_with('*') {
@@ -289,6 +298,181 @@ impl QueryEngine {
         }
 
         Ok(results)
+    }
+
+    /// Search using regex patterns with trigram optimization
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Extract guaranteed trigrams from the regex pattern
+    /// 2. If trigrams found: use them to narrow down candidate files
+    /// 3. If no trigrams: fall back to full content scan
+    /// 4. Compile regex and verify matches in candidate files
+    /// 5. Return matching results with context
+    ///
+    /// # Performance
+    ///
+    /// - Best case (pattern with literals): <20ms (trigram optimization)
+    /// - Worst case (no literals like `.*`): ~100ms (full scan)
+    fn search_with_regex(&self, pattern: &str, _filter: &QueryFilter) -> Result<Vec<SearchResult>> {
+        // Step 1: Compile the regex
+        let regex = Regex::new(pattern)
+            .with_context(|| format!("Invalid regex pattern: {}", pattern))?;
+
+        // Step 2: Extract trigrams from regex
+        let trigrams = extract_trigrams_from_regex(pattern);
+
+        // Load content store
+        let content_path = self.cache.path().join("content.bin");
+        let content_reader = ContentReader::open(&content_path)
+            .context("Failed to open content store")?;
+
+        // Load symbol reader to get actual symbol kinds
+        let symbols_path = self.cache.path().join(SYMBOLS_BIN);
+        let symbol_reader = SymbolReader::open(&symbols_path)
+            .context("Failed to open symbols cache")?;
+        let all_symbols = symbol_reader.read_all()?;
+
+        let mut results = Vec::new();
+
+        if trigrams.is_empty() {
+            // No trigrams - fall back to full scan
+            log::warn!("Regex pattern '{}' has no literals (≥3 chars), falling back to full content scan", pattern);
+            log::warn!("This may be slow on large codebases. Consider using patterns with literal text.");
+
+            // Scan all files
+            for file_id in 0..content_reader.file_count() {
+                let file_path = content_reader.get_file_path(file_id as u32)
+                    .context("Invalid file_id")?;
+                let content = content_reader.get_file_content(file_id as u32)?;
+
+                self.find_regex_matches_in_file(
+                    &regex,
+                    file_path,
+                    content,
+                    &all_symbols,
+                    &mut results,
+                )?;
+            }
+        } else {
+            // Use trigrams to narrow down candidates
+            log::debug!("Using {} trigrams to narrow regex search candidates", trigrams.len());
+
+            // Load trigram index
+            let trigrams_path = self.cache.path().join("trigrams.bin");
+            let trigram_index = if trigrams_path.exists() {
+                TrigramIndex::load(&trigrams_path)?
+            } else {
+                Self::rebuild_trigram_index(&content_reader)?
+            };
+
+            // Extract the literal sequences from the regex pattern
+            use crate::regex_trigrams::extract_literal_sequences;
+            let literals = extract_literal_sequences(pattern);
+
+            if literals.is_empty() {
+                log::warn!("Regex extraction found trigrams but no literal sequences - this shouldn't happen");
+                // Fall back to full scan
+                for file_id in 0..content_reader.file_count() {
+                    let file_path = content_reader.get_file_path(file_id as u32)
+                        .context("Invalid file_id")?;
+                    let content = content_reader.get_file_content(file_id as u32)?;
+                    self.find_regex_matches_in_file(&regex, file_path, content, &all_symbols, &mut results)?;
+                }
+            } else {
+                // Search for each literal sequence and intersect the results
+                use std::collections::HashSet;
+                let mut candidate_files: Option<HashSet<u32>> = None;
+
+                for literal in &literals {
+                    // Search for this literal in the trigram index
+                    let candidates = trigram_index.search(literal);
+                    let file_ids: HashSet<u32> = candidates.iter().map(|loc| loc.file_id).collect();
+
+                    log::debug!("Literal '{}' found in {} files", literal, file_ids.len());
+
+                    // Intersect with existing candidate files
+                    if let Some(ref existing) = candidate_files {
+                        candidate_files = Some(existing.intersection(&file_ids).copied().collect());
+                    } else {
+                        candidate_files = Some(file_ids);
+                    }
+                }
+
+                let final_candidates = candidate_files.unwrap_or_default();
+                log::debug!("After intersection: searching {} files that contain all literals", final_candidates.len());
+
+                // Verify regex matches in candidate files only
+                for &file_id in &final_candidates {
+                    let file_path = trigram_index.get_file(file_id)
+                        .context("Invalid file_id from trigram search")?;
+                    let content = content_reader.get_file_content(file_id)?;
+
+                    self.find_regex_matches_in_file(
+                        &regex,
+                        file_path,
+                        content,
+                        &all_symbols,
+                        &mut results,
+                    )?;
+                }
+            }
+        }
+
+        log::info!("Regex search found {} matches for pattern '{}'", results.len(), pattern);
+        Ok(results)
+    }
+
+    /// Find all regex matches in a single file
+    fn find_regex_matches_in_file(
+        &self,
+        regex: &Regex,
+        file_path: &std::path::Path,
+        content: &str,
+        _all_symbols: &[SearchResult],
+        results: &mut Vec<SearchResult>,
+    ) -> Result<()> {
+        let file_path_str = file_path.to_string_lossy().to_string();
+
+        // Detect language from file extension
+        let ext = file_path.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        let lang = Language::from_extension(ext);
+
+        // Find all regex matches line by line
+        for (line_idx, line) in content.lines().enumerate() {
+            if regex.is_match(line) {
+                let line_no = line_idx + 1;
+
+                // For regex matches, always create a text match result
+                // Don't use symbol information because:
+                // 1. Regex may match inside a larger symbol (e.g., method inside class)
+                // 2. We want to show the specific line that matched, not the enclosing symbol
+
+                // Extract the actual matched portion
+                let matched_text = regex.find(line)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_else(|| line.to_string());
+
+                results.push(SearchResult {
+                    path: file_path_str.clone(),
+                    lang: lang.clone(),
+                    kind: SymbolKind::Unknown("regex_match".to_string()),
+                    symbol: matched_text,
+                    span: Span {
+                        start_line: line_no,
+                        end_line: line_no,
+                        start_col: 0,
+                        end_col: 0,
+                    },
+                    scope: None,
+                    preview: line.to_string(),
+                });
+            }
+        }
+
+        Ok(())
     }
 
     /// Helper function to find file_id in ContentReader by matching path

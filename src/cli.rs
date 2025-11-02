@@ -81,6 +81,10 @@ pub enum Command {
         #[arg(long)]
         ast: bool,
 
+        /// Use regex pattern matching
+        #[arg(short = 'r', long)]
+        regex: bool,
+
         /// Output format as JSON
         #[arg(long)]
         json: bool,
@@ -160,8 +164,8 @@ impl Cli {
             Command::Index { path, force, languages, progress } => {
                 handle_index(path, force, languages, progress)
             }
-            Command::Query { pattern, symbols, lang, kind, ast, json, limit, expand, file, exact, count } => {
-                handle_query(pattern, symbols, lang, kind, ast, json, limit, expand, file, exact, count)
+            Command::Query { pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, count } => {
+                handle_query(pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, count)
             }
             Command::Serve { port, host } => {
                 handle_serve(port, host)
@@ -280,6 +284,7 @@ fn handle_query(
     lang: Option<String>,
     kind_str: Option<String>,
     use_ast: bool,
+    use_regex: bool,
     as_json: bool,
     limit: Option<usize>,
     expand: bool,
@@ -352,6 +357,7 @@ fn handle_query(
         language,
         kind,
         use_ast,
+        use_regex,
         limit,
         symbols_mode,
         expand,

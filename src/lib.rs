@@ -32,6 +32,7 @@ pub mod indexer;
 pub mod models;
 pub mod parsers;
 pub mod query;
+pub mod regex_trigrams;
 pub mod trigram;
 
 // Re-export commonly used types
