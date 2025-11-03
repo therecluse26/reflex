@@ -20,11 +20,30 @@
 //!
 //! ```rust
 //! use reflex::ast_query::execute_ast_query;
-//! use reflex::Language;
+//! use reflex::{Language, SearchResult, Span, SymbolKind};
+//! use std::collections::HashMap;
 //!
-//! // Find all async functions in candidate files
-//! let pattern = "(function_item (async))";
-//! let results = execute_ast_query(candidates, pattern, Language::Rust)?;
+//! # fn example() -> anyhow::Result<()> {
+//! // Prepare candidates from trigram search
+//! let candidates = vec![SearchResult {
+//!     path: "test.rs".to_string(),
+//!     lang: Language::Rust,
+//!     span: Span { start_line: 1, start_col: 1, end_line: 1, end_col: 1 },
+//!     symbol: None,
+//!     kind: SymbolKind::Unknown("text_match".to_string()),
+//!     scope: None,
+//!     preview: String::new(),
+//! }];
+//!
+//! // File contents map
+//! let mut file_contents = HashMap::new();
+//! file_contents.insert("test.rs".to_string(), "async fn fetch() {}".to_string());
+//!
+//! // Find all async functions using AST query
+//! let pattern = "(function_item (async)) @fn";
+//! let results = execute_ast_query(candidates, pattern, Language::Rust, &file_contents)?;
+//! # Ok(())
+//! # }
 //! ```
 
 use crate::models::{Language, SearchResult, Span, SymbolKind};
