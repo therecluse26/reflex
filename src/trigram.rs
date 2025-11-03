@@ -400,11 +400,14 @@ impl TrigramIndex {
     /// Must be called after all files are indexed, before querying.
     /// Converts the HashMap to a sorted Vec for fast binary search.
     ///
-    /// If batch flushing was enabled, this will merge all partial indices.
+    /// If batch flushing was enabled, finalization will be deferred until write()
+    /// is called, which will perform streaming merge directly to disk.
     pub fn finalize(&mut self) {
-        // If we have partial indices from batch flushing, merge them
+        // If we have partial indices from batch flushing, DON'T merge yet
+        // We'll do streaming merge in write() or write_with_streaming_merge()
         if !self.partial_indices.is_empty() {
-            log::info!("Merging {} partial indices...", self.partial_indices.len() + 1);
+            log::info!("Deferring finalization - will stream merge {} partial indices during write()",
+                       self.partial_indices.len());
 
             // Flush final batch if temp_index is not empty
             if let Some(ref temp_map) = self.temp_index {
@@ -413,8 +416,7 @@ impl TrigramIndex {
                 }
             }
 
-            // Now merge all partial indices
-            self.merge_partial_indices().expect("Failed to merge partial indices");
+            // Don't merge yet - write() will handle it
             return;
         }
 
@@ -434,7 +436,311 @@ impl TrigramIndex {
         self.index.sort_unstable_by_key(|(trigram, _)| *trigram);
     }
 
-    /// Merge all partial indices into self.index using k-way merge
+    /// Merge all partial indices directly to trigrams.bin using streaming k-way merge
+    ///
+    /// This avoids loading the entire index into RAM by:
+    /// 1. Opening all partial index files as readers
+    /// 2. Performing k-way merge using a priority queue
+    /// 3. Writing compressed posting lists directly to disk
+    /// 4. Never accumulating more than K posting lists in memory at once
+    fn merge_partial_indices_to_file(&mut self, output_path: &Path) -> Result<()> {
+        use std::io::{BufReader, BufWriter, Read};
+        use std::cmp::Ordering;
+        use std::collections::BinaryHeap;
+
+        log::info!("Streaming merge of {} partial indices to {:?}",
+                   self.partial_indices.len(), output_path);
+
+        // Open all partial indices as buffered readers
+        struct PartialIndexReader {
+            reader: BufReader<File>,
+            current_trigram: Option<Trigram>,
+            current_posting_list: Vec<FileLocation>,
+            reader_id: usize,
+        }
+
+        let mut readers: Vec<PartialIndexReader> = Vec::new();
+
+        for (idx, partial_path) in self.partial_indices.iter().enumerate() {
+            let file = File::open(partial_path)
+                .with_context(|| format!("Failed to open partial index: {:?}", partial_path))?;
+            let mut reader = BufReader::with_capacity(16 * 1024 * 1024, file);
+
+            // Read number of trigrams (we don't need it for streaming merge)
+            let mut buf = [0u8; 8];
+            reader.read_exact(&mut buf)?;
+
+            readers.push(PartialIndexReader {
+                reader,
+                current_trigram: None,
+                current_posting_list: Vec::new(),
+                reader_id: idx,
+            });
+        }
+
+        // Helper to read next trigram from a reader
+        fn read_next_trigram(reader: &mut PartialIndexReader) -> Result<bool> {
+            // Try to read trigram
+            let mut trigram_buf = [0u8; 4];
+            match reader.reader.read_exact(&mut trigram_buf) {
+                Ok(_) => {
+                    let trigram = u32::from_le_bytes(trigram_buf);
+
+                    // Read posting list size
+                    let mut len_buf = [0u8; 4];
+                    reader.reader.read_exact(&mut len_buf)?;
+                    let list_len = u32::from_le_bytes(len_buf) as usize;
+
+                    // Read all locations for this trigram
+                    let mut locations = Vec::with_capacity(list_len);
+                    for _ in 0..list_len {
+                        let mut loc_buf = [0u8; 12];
+                        reader.reader.read_exact(&mut loc_buf)?;
+
+                        let file_id = u32::from_le_bytes([loc_buf[0], loc_buf[1], loc_buf[2], loc_buf[3]]);
+                        let line_no = u32::from_le_bytes([loc_buf[4], loc_buf[5], loc_buf[6], loc_buf[7]]);
+                        let byte_offset = u32::from_le_bytes([loc_buf[8], loc_buf[9], loc_buf[10], loc_buf[11]]);
+
+                        locations.push(FileLocation { file_id, line_no, byte_offset });
+                    }
+
+                    reader.current_trigram = Some(trigram);
+                    reader.current_posting_list = locations;
+                    Ok(true)
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    reader.current_trigram = None;
+                    Ok(false)
+                }
+                Err(e) => Err(e.into()),
+            }
+        }
+
+        // Initialize: read first trigram from each reader
+        for reader in &mut readers {
+            read_next_trigram(reader)?;
+        }
+
+        // Priority queue entry for k-way merge
+        #[derive(Eq, PartialEq)]
+        struct HeapEntry {
+            trigram: Trigram,
+            reader_id: usize,
+        }
+
+        impl Ord for HeapEntry {
+            fn cmp(&self, other: &Self) -> Ordering {
+                // Reverse for min-heap
+                other.trigram.cmp(&self.trigram)
+                    .then_with(|| other.reader_id.cmp(&self.reader_id))
+            }
+        }
+
+        impl PartialOrd for HeapEntry {
+            fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        // Build initial heap
+        let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
+        for reader in &readers {
+            if let Some(trigram) = reader.current_trigram {
+                heap.push(HeapEntry {
+                    trigram,
+                    reader_id: reader.reader_id,
+                });
+            }
+        }
+
+        // Open output file for writing
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(output_path)
+            .with_context(|| format!("Failed to create {}", output_path.display()))?;
+
+        let mut writer = BufWriter::with_capacity(16 * 1024 * 1024, file);
+
+        // Write placeholder header (we'll update it at the end)
+        writer.write_all(MAGIC)?;
+        writer.write_all(&VERSION.to_le_bytes())?;
+        writer.write_all(&0u64.to_le_bytes())?; // num_trigrams (placeholder)
+        writer.write_all(&(self.files.len() as u64).to_le_bytes())?; // num_files
+
+        // We'll build the directory as we go
+        let mut directory: Vec<DirectoryEntry> = Vec::new();
+        let mut num_trigrams = 0u64;
+
+        // K-way merge loop
+        let mut current_trigram: Option<Trigram> = None;
+        let mut merged_locations: Vec<FileLocation> = Vec::new();
+
+        while let Some(entry) = heap.pop() {
+            let reader = &mut readers[entry.reader_id];
+
+            // If this is a new trigram, write the previous one
+            if current_trigram.is_some() && current_trigram != Some(entry.trigram) {
+                // Write the accumulated posting list for current_trigram
+                let trigram = current_trigram.unwrap();
+                merged_locations.sort_unstable();
+                merged_locations.dedup();
+
+                // Compress and write this trigram's posting list
+                let data_offset = writer.stream_position()?;
+                let compressed_size = self.write_compressed_posting_list(&mut writer, &merged_locations)?;
+
+                directory.push(DirectoryEntry {
+                    trigram,
+                    data_offset,
+                    compressed_size,
+                });
+
+                num_trigrams += 1;
+                merged_locations.clear();
+            }
+
+            // Set current trigram
+            current_trigram = Some(entry.trigram);
+
+            // Merge this reader's posting list into accumulated list
+            merged_locations.extend_from_slice(&reader.current_posting_list);
+
+            // Advance this reader to next trigram
+            if read_next_trigram(reader)? {
+                if let Some(next_trigram) = reader.current_trigram {
+                    heap.push(HeapEntry {
+                        trigram: next_trigram,
+                        reader_id: entry.reader_id,
+                    });
+                }
+            }
+        }
+
+        // Write final trigram
+        if let Some(trigram) = current_trigram {
+            merged_locations.sort_unstable();
+            merged_locations.dedup();
+
+            let data_offset = writer.stream_position()?;
+            let compressed_size = self.write_compressed_posting_list(&mut writer, &merged_locations)?;
+
+            directory.push(DirectoryEntry {
+                trigram,
+                data_offset,
+                compressed_size,
+            });
+
+            num_trigrams += 1;
+        }
+
+        log::info!("Merged {} trigrams from {} partial indices", num_trigrams, self.partial_indices.len());
+
+        // Remember where data section ended (not used but kept for clarity)
+        let _data_end_pos = writer.stream_position()?;
+
+        // Write file paths after data section
+        for file_path in &self.files {
+            let path_str = file_path.to_string_lossy();
+            let path_bytes = path_str.as_bytes();
+            write_varint(&mut writer, path_bytes.len() as u32)?;
+            writer.write_all(path_bytes)?;
+        }
+
+        // Flush before we rewrite the beginning
+        writer.flush()?;
+        drop(writer);
+
+        // Now we need to insert the directory at the beginning
+        // We'll read the data+files we just wrote, then rewrite the file with directory in between
+        use std::io::{Seek, SeekFrom};
+
+        // Read data and files sections
+        let mut temp_data = Vec::new();
+        {
+            let mut file = File::open(output_path)?;
+            file.seek(SeekFrom::Start(HEADER_SIZE as u64))?;
+            file.read_to_end(&mut temp_data)?;
+        }
+
+        // Rewrite file with correct structure
+        let file = OpenOptions::new().write(true).truncate(true).open(output_path)?;
+        let mut writer = BufWriter::with_capacity(16 * 1024 * 1024, file);
+
+        // Write header with correct num_trigrams
+        writer.write_all(MAGIC)?;
+        writer.write_all(&VERSION.to_le_bytes())?;
+        writer.write_all(&num_trigrams.to_le_bytes())?;
+        writer.write_all(&(self.files.len() as u64).to_le_bytes())?;
+
+        // Write directory
+        for entry in &directory {
+            writer.write_all(&entry.trigram.to_le_bytes())?;
+            // Adjust data offset to account for directory size
+            let adjusted_offset = entry.data_offset + (directory.len() * 16) as u64;
+            writer.write_all(&adjusted_offset.to_le_bytes())?;
+            writer.write_all(&entry.compressed_size.to_le_bytes())?;
+        }
+
+        // Write data and files sections
+        writer.write_all(&temp_data)?;
+
+        // Flush and sync
+        writer.flush()?;
+        writer.get_ref().sync_all()?;
+
+        // Clean up partial index files
+        for partial_path in &self.partial_indices {
+            let _ = std::fs::remove_file(partial_path);
+        }
+        if let Some(ref temp_dir) = self.temp_dir {
+            let _ = std::fs::remove_dir(temp_dir);
+        }
+
+        log::info!("Wrote {} trigrams to {:?}", num_trigrams, output_path);
+
+        Ok(())
+    }
+
+    /// Write a compressed posting list to the writer and return the compressed size
+    fn write_compressed_posting_list(
+        &self,
+        writer: &mut impl Write,
+        locations: &[FileLocation],
+    ) -> Result<u32> {
+        let mut compressed = Vec::new();
+
+        // Compress posting list using delta+varint encoding
+        let mut prev_file_id = 0u32;
+        let mut prev_line_no = 0u32;
+        let mut prev_byte_offset = 0u32;
+
+        for loc in locations {
+            // Compute deltas
+            let file_id_delta = loc.file_id.wrapping_sub(prev_file_id);
+            let line_no_delta = loc.line_no.wrapping_sub(prev_line_no);
+            let byte_offset_delta = loc.byte_offset.wrapping_sub(prev_byte_offset);
+
+            // Write deltas as varints
+            write_varint(&mut compressed, file_id_delta)?;
+            write_varint(&mut compressed, line_no_delta)?;
+            write_varint(&mut compressed, byte_offset_delta)?;
+
+            // Update previous values
+            prev_file_id = loc.file_id;
+            prev_line_no = loc.line_no;
+            prev_byte_offset = loc.byte_offset;
+        }
+
+        let compressed_size = compressed.len() as u32;
+        writer.write_all(&compressed)?;
+
+        Ok(compressed_size)
+    }
+
+    /// Merge all partial indices into self.index (old in-memory approach - deprecated)
+    #[allow(dead_code)]
     fn merge_partial_indices(&mut self) -> Result<()> {
         use std::io::{BufReader, Read};
 
@@ -617,8 +923,16 @@ impl TrigramIndex {
     /// - File Paths Section (variable size):
     ///   - path_len: varint
     ///   - path_bytes: [u8; path_len]
-    pub fn write(&self, path: impl AsRef<Path>) -> Result<()> {
+    pub fn write(&mut self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
+
+        // If we have partial indices from batch flushing, use streaming merge
+        if !self.partial_indices.is_empty() {
+            log::info!("Using streaming merge to write {} partial indices", self.partial_indices.len());
+            return self.merge_partial_indices_to_file(path);
+        }
+
+        // Standard write path (no batch flushing)
         let file = OpenOptions::new()
             .create(true)
             .write(true)
@@ -629,73 +943,74 @@ impl TrigramIndex {
         // Use a large buffer (16MB) for streaming writes
         let mut writer = std::io::BufWriter::with_capacity(16 * 1024 * 1024, file);
 
-        // Step 1: Compress all posting lists to temporary buffers
+        // Write header
+        writer.write_all(MAGIC)?;
+        writer.write_all(&VERSION.to_le_bytes())?;
+        writer.write_all(&(self.index.len() as u64).to_le_bytes())?; // num_trigrams
+        writer.write_all(&(self.files.len() as u64).to_le_bytes())?; // num_files
+
+        // Build directory and write compressed data in a single pass
+        let mut directory: Vec<DirectoryEntry> = Vec::with_capacity(self.index.len());
+
+        // Calculate directory start and size
+        let directory_start = HEADER_SIZE as u64;
+        let directory_size = self.index.len() * 16;
+
+        // Reserve space for directory (we'll write it after data)
+        let data_start = directory_start + directory_size as u64;
+        let mut current_offset = data_start;
+
+        // We need to write in the correct order: header, directory, data, file paths
+        // But we need data offsets to write directory
+        // So we compress data first, then write header+directory+data
+
+        // Step 1: Compress all posting lists and track offsets
         let mut compressed_lists: Vec<(Trigram, Vec<u8>)> = Vec::with_capacity(self.index.len());
 
         for (trigram, locations) in &self.index {
+            // Compress the posting list
             let mut compressed = Vec::new();
-
-            // Compress posting list using delta+varint encoding
             let mut prev_file_id = 0u32;
             let mut prev_line_no = 0u32;
             let mut prev_byte_offset = 0u32;
 
             for loc in locations {
-                // Compute deltas
                 let file_id_delta = loc.file_id.wrapping_sub(prev_file_id);
                 let line_no_delta = loc.line_no.wrapping_sub(prev_line_no);
                 let byte_offset_delta = loc.byte_offset.wrapping_sub(prev_byte_offset);
 
-                // Write deltas as varints
                 write_varint(&mut compressed, file_id_delta)?;
                 write_varint(&mut compressed, line_no_delta)?;
                 write_varint(&mut compressed, byte_offset_delta)?;
 
-                // Update previous values
                 prev_file_id = loc.file_id;
                 prev_line_no = loc.line_no;
                 prev_byte_offset = loc.byte_offset;
             }
 
-            compressed_lists.push((*trigram, compressed));
-        }
-
-        // Step 2: Calculate offsets and build directory
-        let directory_start = HEADER_SIZE;
-        let directory_size = self.index.len() * 16; // 16 bytes per entry
-        let data_start = directory_start + directory_size;
-
-        let mut directory: Vec<DirectoryEntry> = Vec::with_capacity(self.index.len());
-        let mut current_offset = data_start as u64;
-
-        for (trigram, compressed) in &compressed_lists {
             directory.push(DirectoryEntry {
                 trigram: *trigram,
                 data_offset: current_offset,
                 compressed_size: compressed.len() as u32,
             });
             current_offset += compressed.len() as u64;
+
+            compressed_lists.push((*trigram, compressed));
         }
 
-        // Step 3: Write header
-        writer.write_all(MAGIC)?;
-        writer.write_all(&VERSION.to_le_bytes())?;
-        writer.write_all(&(self.index.len() as u64).to_le_bytes())?; // num_trigrams
-        writer.write_all(&(self.files.len() as u64).to_le_bytes())?; // num_files
-
-        // Step 4: Write directory
+        // Step 2: Write directory
         for entry in &directory {
             writer.write_all(&entry.trigram.to_le_bytes())?;
             writer.write_all(&entry.data_offset.to_le_bytes())?;
             writer.write_all(&entry.compressed_size.to_le_bytes())?;
         }
 
-        // Step 5: Write data section (compressed posting lists)
+        // Step 3: Write data section (compressed posting lists)
         for (_, compressed) in &compressed_lists {
             writer.write_all(compressed)?;
         }
 
-        // Step 6: Write file paths (same as before)
+        // Step 4: Write file paths
         for file_path in &self.files {
             let path_str = file_path.to_string_lossy();
             let path_bytes = path_str.as_bytes();
