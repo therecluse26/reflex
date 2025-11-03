@@ -45,9 +45,9 @@ pub enum Command {
         #[arg(short, long, value_delimiter = ',')]
         languages: Vec<String>,
 
-        /// Show progress bar during indexing
+        /// Suppress all output (no progress bar, no summary)
         #[arg(short, long)]
-        progress: bool,
+        quiet: bool,
     },
 
     /// Query the code index
@@ -161,8 +161,8 @@ impl Cli {
 
         // Execute the subcommand
         match self.command {
-            Command::Index { path, force, languages, progress } => {
-                handle_index(path, force, languages, progress)
+            Command::Index { path, force, languages, quiet } => {
+                handle_index(path, force, languages, quiet)
             }
             Command::Query { pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, count } => {
                 handle_query(pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, count)
@@ -184,7 +184,7 @@ impl Cli {
 }
 
 /// Handle the `index` subcommand
-fn handle_index(path: PathBuf, force: bool, languages: Vec<String>, show_progress: bool) -> Result<()> {
+fn handle_index(path: PathBuf, force: bool, languages: Vec<String>, quiet: bool) -> Result<()> {
     log::info!("Starting index command");
 
     let cache = CacheManager::new(&path);
@@ -220,37 +220,42 @@ fn handle_index(path: PathBuf, force: bool, languages: Vec<String>, show_progres
     };
 
     let indexer = Indexer::new(cache, config);
+    // Show progress by default, unless quiet mode is enabled
+    let show_progress = !quiet;
     let stats = indexer.index(&path, show_progress)?;
 
-    println!("Indexing complete!");
-    println!("  Files indexed: {}", stats.total_files);
-    println!("  Symbols found: {}", stats.total_symbols);
-    println!("  Cache size: {}", format_bytes(stats.index_size_bytes));
-    println!("  Last updated: {}", stats.last_updated);
+    // In quiet mode, suppress all output
+    if !quiet {
+        println!("Indexing complete!");
+        println!("  Files indexed: {}", stats.total_files);
+        println!("  Symbols found: {}", stats.total_symbols);
+        println!("  Cache size: {}", format_bytes(stats.index_size_bytes));
+        println!("  Last updated: {}", stats.last_updated);
 
-    // Display language breakdown if we have indexed files
-    if !stats.files_by_language.is_empty() {
-        println!("\nFiles by language:");
+        // Display language breakdown if we have indexed files
+        if !stats.files_by_language.is_empty() {
+            println!("\nFiles by language:");
 
-        // Sort languages by count (descending) for consistent output
-        let mut lang_vec: Vec<_> = stats.files_by_language.iter().collect();
-        lang_vec.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+            // Sort languages by count (descending) for consistent output
+            let mut lang_vec: Vec<_> = stats.files_by_language.iter().collect();
+            lang_vec.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
 
-        // Calculate column widths
-        let max_lang_len = lang_vec.iter().map(|(lang, _)| lang.len()).max().unwrap_or(8);
-        let lang_width = max_lang_len.max(8); // At least "Language" header width
+            // Calculate column widths
+            let max_lang_len = lang_vec.iter().map(|(lang, _)| lang.len()).max().unwrap_or(8);
+            let lang_width = max_lang_len.max(8); // At least "Language" header width
 
-        // Print table header
-        println!("  {:<width$}  Files  Lines    Symbols", "Language", width = lang_width);
-        println!("  {}  -----  -------  -------", "-".repeat(lang_width));
+            // Print table header
+            println!("  {:<width$}  Files  Lines    Symbols", "Language", width = lang_width);
+            println!("  {}  -----  -------  -------", "-".repeat(lang_width));
 
-        // Print rows
-        for (language, file_count) in lang_vec {
-            let line_count = stats.lines_by_language.get(language).copied().unwrap_or(0);
-            let symbol_count = stats.symbols_by_language.get(language).copied().unwrap_or(0);
-            println!("  {:<width$}  {:5}  {:7}  {:7}",
-                language, file_count, line_count, symbol_count,
-                width = lang_width);
+            // Print rows
+            for (language, file_count) in lang_vec {
+                let line_count = stats.lines_by_language.get(language).copied().unwrap_or(0);
+                let symbol_count = stats.symbols_by_language.get(language).copied().unwrap_or(0);
+                println!("  {:<width$}  {:5}  {:7}  {:7}",
+                    language, file_count, line_count, symbol_count,
+                    width = lang_width);
+            }
         }
     }
 
