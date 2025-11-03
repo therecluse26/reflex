@@ -118,22 +118,22 @@ impl QueryEngine {
     /// Internal search implementation (used by both search methods)
     fn search_internal(&self, pattern: &str, filter: QueryFilter) -> Result<Vec<SearchResult>> {
 
-        // Step 1: Execute search based on mode
+        // PHASE 1: Get initial candidates (choose search strategy)
         let mut results = if filter.use_regex {
-            // Regex pattern search
-            // Uses trigrams to narrow candidates, then verifies with regex
-            self.search_with_regex(pattern, &filter)?
-        } else if filter.symbols_mode {
-            // Symbol name search (filtered to symbol definitions only)
-            // Use trigrams to find candidates, then parse files at runtime
-            self.search_with_trigrams_and_parse(pattern)?
+            // Regex pattern search with trigram optimization
+            self.get_regex_candidates(pattern)?
         } else {
-            // Trigram-based full-text search
-            // Searches all file content for any occurrence of the pattern
-            self.search_with_trigrams(pattern)?
+            // Standard trigram-based full-text search
+            self.get_trigram_candidates(pattern)?
         };
 
-        // Step 3: Apply filters
+        // PHASE 2: Enrich with symbol information (if needed)
+        // Parse candidate files and extract symbol definitions
+        if filter.symbols_mode || filter.kind.is_some() {
+            results = self.enrich_with_symbols(results, pattern, filter.use_regex)?;
+        }
+
+        // PHASE 3: Apply filters
         if let Some(lang) = filter.language {
             results.retain(|r| r.lang == lang);
         }
@@ -236,20 +236,29 @@ impl QueryEngine {
         self.search("*", filter)
     }
 
-    /// Search with trigrams, then parse candidate files to extract symbols at runtime
+    /// Enrich text match candidates with symbol information by parsing files
     ///
-    /// This is the core of the runtime symbol detection strategy:
-    /// 1. Use trigrams to narrow down to ~10-100 candidate files
-    /// 2. Parse only those files with tree-sitter
-    /// 3. Filter symbols by pattern match
-    /// 4. Return actual symbol definitions (not just text matches)
-    fn search_with_trigrams_and_parse(&self, pattern: &str) -> Result<Vec<SearchResult>> {
-        // Load content store
+    /// Takes a list of text match candidates and replaces them with actual symbol
+    /// definitions where the symbol name matches the pattern.
+    ///
+    /// # Algorithm
+    /// 1. Group candidates by file_id for efficient processing
+    /// 2. Parse each file with tree-sitter to extract symbols
+    /// 3. For each symbol, check if its name matches the pattern
+    ///    - If use_regex=true: match symbol name against regex pattern
+    ///    - If use_regex=false: substring match (contains)
+    /// 4. Return symbol results (not the original text matches)
+    ///
+    /// # Performance
+    /// Only parses files that have text matches, so typically 10-100 files
+    /// instead of the entire codebase (62K+ files).
+    fn enrich_with_symbols(&self, candidates: Vec<SearchResult>, pattern: &str, use_regex: bool) -> Result<Vec<SearchResult>> {
+        // Load content store for file reading
         let content_path = self.cache.path().join("content.bin");
         let content_reader = ContentReader::open(&content_path)
             .context("Failed to open content store")?;
 
-        // Load trigram index
+        // Load trigram index for file path lookups
         let trigrams_path = self.cache.path().join("trigrams.bin");
         let trigram_index = if trigrams_path.exists() {
             TrigramIndex::load(&trigrams_path)?
@@ -257,68 +266,109 @@ impl QueryEngine {
             Self::rebuild_trigram_index(&content_reader)?
         };
 
-        // Use trigrams to find candidate files
-        let candidates = trigram_index.search(pattern);
-        log::debug!("Trigram search found {} candidate locations for symbol search", candidates.len());
-
-        // Collect unique file IDs from trigram results
+        // Collect unique file paths from candidates
         use std::collections::HashSet;
-        let candidate_file_ids: HashSet<u32> = candidates
+        let candidate_files: HashSet<String> = candidates
             .iter()
-            .map(|loc| loc.file_id)
+            .map(|r| r.path.clone())
             .collect();
 
-        log::debug!("Parsing {} candidate files for symbol extraction", candidate_file_ids.len());
+        log::debug!("Enriching {} candidate files with symbol information", candidate_files.len());
 
         // Parse each candidate file and extract symbols
         let mut all_symbols = Vec::new();
-        for file_id in candidate_file_ids {
-            let file_path = match trigram_index.get_file(file_id) {
-                Some(p) => p,
-                None => continue,
+        for file_path in candidate_files {
+            // Find file_id for this path
+            let file_id = match Self::find_file_id_by_path(&content_reader, &trigram_index, &file_path) {
+                Some(id) => id,
+                None => {
+                    log::warn!("Could not find file_id for path: {}", file_path);
+                    continue;
+                }
             };
 
             let content = match content_reader.get_file_content(file_id) {
                 Ok(c) => c,
                 Err(e) => {
-                    log::warn!("Failed to read file {}: {}", file_path.display(), e);
+                    log::warn!("Failed to read file {}: {}", file_path, e);
                     continue;
                 }
             };
 
             // Detect language
-            let ext = file_path.extension()
+            let ext = std::path::Path::new(&file_path)
+                .extension()
                 .and_then(|e| e.to_str())
                 .unwrap_or("");
             let lang = Language::from_extension(ext);
 
             // Parse file to extract symbols
-            let file_path_str = file_path.to_string_lossy().to_string();
-            match ParserFactory::parse(&file_path_str, content, lang) {
+            match ParserFactory::parse(&file_path, content, lang) {
                 Ok(symbols) => {
-                    log::debug!("Parsed {} symbols from {}", symbols.len(), file_path_str);
+                    log::debug!("Parsed {} symbols from {}", symbols.len(), file_path);
                     all_symbols.extend(symbols);
                 }
                 Err(e) => {
-                    log::debug!("Failed to parse {}: {}", file_path_str, e);
+                    log::debug!("Failed to parse {}: {}", file_path, e);
                     // Continue processing other files
                 }
             }
         }
 
-        // Filter symbols by pattern (substring match)
-        let filtered: Vec<SearchResult> = all_symbols
-            .into_iter()
-            .filter(|sym| sym.symbol.as_deref().map_or(false, |s| s.contains(pattern)))
-            .collect();
+        // Filter symbols by pattern
+        let filtered: Vec<SearchResult> = if use_regex {
+            // Compile regex for symbol name matching
+            let regex = Regex::new(pattern)
+                .with_context(|| format!("Invalid regex pattern: {}", pattern))?;
 
-        log::info!("Runtime symbol detection found {} matches for pattern '{}'", filtered.len(), pattern);
+            all_symbols
+                .into_iter()
+                .filter(|sym| {
+                    sym.symbol.as_deref().map_or(false, |s| regex.is_match(s))
+                })
+                .collect()
+        } else {
+            // Substring match for normal symbol search
+            all_symbols
+                .into_iter()
+                .filter(|sym| sym.symbol.as_deref().map_or(false, |s| s.contains(pattern)))
+                .collect()
+        };
+
+        log::info!("Symbol enrichment found {} matches for pattern '{}'", filtered.len(), pattern);
 
         Ok(filtered)
     }
 
-    /// Search using trigram-based full-text search
-    fn search_with_trigrams(&self, pattern: &str) -> Result<Vec<SearchResult>> {
+    /// Helper to find file_id by path string
+    fn find_file_id_by_path(
+        content_reader: &ContentReader,
+        trigram_index: &TrigramIndex,
+        target_path: &str,
+    ) -> Option<u32> {
+        // Try trigram index first (faster)
+        for file_id in 0..trigram_index.file_count() {
+            if let Some(path) = trigram_index.get_file(file_id as u32) {
+                if path.to_string_lossy() == target_path {
+                    return Some(file_id as u32);
+                }
+            }
+        }
+
+        // Fallback to content reader
+        for file_id in 0..content_reader.file_count() {
+            if let Some(path) = content_reader.get_file_path(file_id as u32) {
+                if path.to_string_lossy() == target_path {
+                    return Some(file_id as u32);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Get candidate results using trigram-based full-text search
+    fn get_trigram_candidates(&self, pattern: &str) -> Result<Vec<SearchResult>> {
         // Load content store
         let content_path = self.cache.path().join("content.bin");
         let content_reader = ContentReader::open(&content_path)
@@ -448,7 +498,7 @@ impl QueryEngine {
         Ok(results)
     }
 
-    /// Search using regex patterns with trigram optimization
+    /// Get candidate results using regex patterns with trigram optimization
     ///
     /// # Algorithm
     ///
@@ -471,7 +521,7 @@ impl QueryEngine {
     /// - Best case (pattern with literals): <20ms (trigram optimization)
     /// - Typical case (alternation/sequential): 5-15ms on small codebases (<100 files)
     /// - Worst case (no literals like `.*`): ~100ms (full scan)
-    fn search_with_regex(&self, pattern: &str, _filter: &QueryFilter) -> Result<Vec<SearchResult>> {
+    fn get_regex_candidates(&self, pattern: &str) -> Result<Vec<SearchResult>> {
         // Step 1: Compile the regex
         let regex = Regex::new(pattern)
             .with_context(|| format!("Invalid regex pattern: {}", pattern))?;
