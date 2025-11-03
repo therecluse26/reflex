@@ -246,7 +246,7 @@ fn extract_variables(
                             String::new(),
                             Language::TypeScript,
                             SymbolKind::Constant,
-                            name,
+                            Some(name),
                             span,
                             None,
                             preview,
@@ -324,7 +324,7 @@ fn extract_methods(
                 String::new(),
                 Language::TypeScript,
                 SymbolKind::Method,
-                method_name,
+                Some(method_name),
                 span,
                 Some(scope),
                 preview,
@@ -371,7 +371,7 @@ fn extract_symbols(
                 String::new(),
                 Language::TypeScript,
                 kind.clone(),
-                name,
+                Some(name),
                 span,
                 scope.clone(),
                 preview,
@@ -420,7 +420,7 @@ mod tests {
 
         let symbols = parse("test.ts", source, Language::TypeScript).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "greet");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("greet"));
         assert!(matches!(symbols[0].kind, SymbolKind::Function));
     }
 
@@ -434,7 +434,7 @@ mod tests {
 
         let symbols = parse("test.ts", source, Language::TypeScript).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "add");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("add"));
         assert!(matches!(symbols[0].kind, SymbolKind::Function));
     }
 
@@ -448,7 +448,7 @@ mod tests {
 
         let symbols = parse("test.ts", source, Language::TypeScript).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "fetchData");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("fetchData"));
         assert!(matches!(symbols[0].kind, SymbolKind::Function));
     }
 
@@ -474,7 +474,7 @@ mod tests {
             .collect();
 
         assert_eq!(class_symbols.len(), 1);
-        assert_eq!(class_symbols[0].symbol, "User");
+        assert_eq!(class_symbols[0].symbol.as_deref(), Some("User"));
     }
 
     #[test]
@@ -501,8 +501,8 @@ mod tests {
             .collect();
 
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol == "add"));
-        assert!(method_symbols.iter().any(|s| s.symbol == "subtract"));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("add")));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("subtract")));
 
         // Check scope
         for method in method_symbols {
@@ -522,7 +522,7 @@ mod tests {
 
         let symbols = parse("test.ts", source, Language::TypeScript).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "User");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("User"));
         assert!(matches!(symbols[0].kind, SymbolKind::Interface));
     }
 
@@ -541,8 +541,8 @@ mod tests {
             .collect();
 
         assert_eq!(type_symbols.len(), 2);
-        assert!(type_symbols.iter().any(|s| s.symbol == "UserId"));
-        assert!(type_symbols.iter().any(|s| s.symbol == "UserRole"));
+        assert!(type_symbols.iter().any(|s| s.symbol.as_deref() == Some("UserId")));
+        assert!(type_symbols.iter().any(|s| s.symbol.as_deref() == Some("UserRole")));
     }
 
     #[test]
@@ -557,7 +557,7 @@ mod tests {
 
         let symbols = parse("test.ts", source, Language::TypeScript).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "Status");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("Status"));
         assert!(matches!(symbols[0].kind, SymbolKind::Enum));
     }
 
@@ -579,8 +579,8 @@ mod tests {
             .collect();
 
         assert_eq!(const_symbols.len(), 2);
-        assert!(const_symbols.iter().any(|s| s.symbol == "MAX_SIZE"));
-        assert!(const_symbols.iter().any(|s| s.symbol == "DEFAULT_USER"));
+        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("MAX_SIZE")));
+        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("DEFAULT_USER")));
     }
 
     #[test]
@@ -612,9 +612,9 @@ mod tests {
         let symbols = parse("Button.tsx", source, Language::TypeScript).unwrap();
 
         // Should find interface, Button component (arrow fn), useCounter hook (function)
-        assert!(symbols.iter().any(|s| s.symbol == "ButtonProps" && matches!(s.kind, SymbolKind::Interface)));
-        assert!(symbols.iter().any(|s| s.symbol == "Button" && matches!(s.kind, SymbolKind::Function)));
-        assert!(symbols.iter().any(|s| s.symbol == "useCounter" && matches!(s.kind, SymbolKind::Function)));
+        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("ButtonProps") && matches!(s.kind, SymbolKind::Interface)));
+        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("Button") && matches!(s.kind, SymbolKind::Function)));
+        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("useCounter") && matches!(s.kind, SymbolKind::Function)));
     }
 
     #[test]
@@ -684,7 +684,7 @@ mod tests {
         // Debug: Print all symbols
         println!("\nAll symbols found:");
         for symbol in &symbols {
-            println!("  {:?} - {}", symbol.kind, symbol.symbol);
+            println!("  {:?} - {}", symbol.kind, symbol.symbol.as_deref().unwrap_or(""));
         }
 
         // Should find: class + 3 methods (2 async, 1 regular)
@@ -692,7 +692,7 @@ mod tests {
             .filter(|s| matches!(s.kind, SymbolKind::Class))
             .collect();
         assert_eq!(class_symbols.len(), 1);
-        assert_eq!(class_symbols[0].symbol, "CentralUsersModule");
+        assert_eq!(class_symbols[0].symbol.as_deref(), Some("CentralUsersModule"));
 
         let method_symbols: Vec<_> = symbols.iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
@@ -700,9 +700,9 @@ mod tests {
 
         // All three should be detected as methods, not variables
         assert_eq!(method_symbols.len(), 3, "Expected 3 methods, found {}", method_symbols.len());
-        assert!(method_symbols.iter().any(|s| s.symbol == "getAllUsers"));
-        assert!(method_symbols.iter().any(|s| s.symbol == "getUser"));
-        assert!(method_symbols.iter().any(|s| s.symbol == "deleteUser"));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("getAllUsers")));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("getUser")));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("deleteUser")));
 
         // Verify no async methods are misclassified as variables
         let variable_symbols: Vec<_> = symbols.iter()
@@ -748,12 +748,12 @@ export class CentralUsersModule extends HttpFactory<WatchHookMap, WatchEvents> {
         // Debug: Print all symbols
         println!("\nAll symbols found in user code:");
         for symbol in &symbols {
-            println!("  {:?} - {}", symbol.kind, symbol.symbol);
+            println!("  {:?} - {}", symbol.kind, symbol.symbol.as_deref().unwrap_or(""));
         }
 
         // Verify getAllUsers is a Method, not a Variable
         let getAllUsers_symbols: Vec<_> = symbols.iter()
-            .filter(|s| s.symbol == "getAllUsers")
+            .filter(|s| s.symbol.as_deref() == Some("getAllUsers"))
             .collect();
 
         assert_eq!(getAllUsers_symbols.len(), 1, "Should find exactly one getAllUsers");

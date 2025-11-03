@@ -146,7 +146,7 @@ fn extract_methods(
                 String::new(),
                 Language::Python,
                 SymbolKind::Method,
-                method_name,
+                Some(method_name),
                 span,
                 Some(scope),
                 preview,
@@ -210,7 +210,7 @@ fn extract_constants(
                 String::new(),
                 Language::Python,
                 SymbolKind::Constant,
-                name,
+                Some(name),
                 span,
                 None,
                 preview,
@@ -275,7 +275,7 @@ fn extract_symbols(
                 String::new(),
                 Language::Python,
                 kind.clone(),
-                name,
+                Some(name),
                 span,
                 scope.clone(),
                 preview,
@@ -324,7 +324,7 @@ def hello_world():
 
         let symbols = parse("test.py", source).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "hello_world");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("hello_world"));
         assert!(matches!(symbols[0].kind, SymbolKind::Function));
     }
 
@@ -339,7 +339,7 @@ async def fetch_data(url):
 
         let symbols = parse("test.py", source).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "fetch_data");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("fetch_data"));
         assert!(matches!(symbols[0].kind, SymbolKind::Function));
     }
 
@@ -359,7 +359,7 @@ class User:
             .collect();
 
         assert_eq!(class_symbols.len(), 1);
-        assert_eq!(class_symbols[0].symbol, "User");
+        assert_eq!(class_symbols[0].symbol.as_deref(), Some("User"));
     }
 
     #[test]
@@ -384,9 +384,9 @@ class Calculator:
             .collect();
 
         assert_eq!(method_symbols.len(), 3);
-        assert!(method_symbols.iter().any(|s| s.symbol == "add"));
-        assert!(method_symbols.iter().any(|s| s.symbol == "subtract"));
-        assert!(method_symbols.iter().any(|s| s.symbol == "multiply"));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("add")));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("subtract")));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("multiply")));
 
         // Check scope
         for method in method_symbols {
@@ -412,8 +412,8 @@ class DataFetcher:
             .collect();
 
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol == "get_user"));
-        assert!(method_symbols.iter().any(|s| s.symbol == "get_all_users"));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("get_user")));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("get_all_users")));
     }
 
     #[test]
@@ -431,9 +431,9 @@ API_URL = "https://api.example.com"
             .collect();
 
         assert_eq!(const_symbols.len(), 3);
-        assert!(const_symbols.iter().any(|s| s.symbol == "MAX_SIZE"));
-        assert!(const_symbols.iter().any(|s| s.symbol == "DEFAULT_TIMEOUT"));
-        assert!(const_symbols.iter().any(|s| s.symbol == "API_URL"));
+        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("MAX_SIZE")));
+        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("DEFAULT_TIMEOUT")));
+        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("API_URL")));
     }
 
     #[test]
@@ -450,8 +450,8 @@ add = lambda a, b: a + b
             .collect();
 
         assert!(lambda_symbols.len() >= 2);
-        assert!(lambda_symbols.iter().any(|s| s.symbol == "square"));
-        assert!(lambda_symbols.iter().any(|s| s.symbol == "add"));
+        assert!(lambda_symbols.iter().any(|s| s.symbol.as_deref() == Some("square")));
+        assert!(lambda_symbols.iter().any(|s| s.symbol.as_deref() == Some("add")));
     }
 
     #[test]
@@ -478,9 +478,9 @@ class WebService:
             .collect();
 
         assert_eq!(method_symbols.len(), 3);
-        assert!(method_symbols.iter().any(|s| s.symbol == "url"));
-        assert!(method_symbols.iter().any(|s| s.symbol == "from_config"));
-        assert!(method_symbols.iter().any(|s| s.symbol == "validate_url"));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("url")));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("from_config")));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("validate_url")));
     }
 
     #[test]
@@ -538,7 +538,7 @@ class Outer:
 
         // Should find both Outer and Inner classes
         assert_eq!(class_symbols.len(), 2);
-        assert!(class_symbols.iter().any(|s| s.symbol == "Outer"));
-        assert!(class_symbols.iter().any(|s| s.symbol == "Inner"));
+        assert!(class_symbols.iter().any(|s| s.symbol.as_deref() == Some("Outer")));
+        assert!(class_symbols.iter().any(|s| s.symbol.as_deref() == Some("Inner")));
     }
 }

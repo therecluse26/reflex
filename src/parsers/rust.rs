@@ -166,7 +166,7 @@ fn extract_impls(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchRes
                 String::new(), // Path will be filled in later
                 Language::Rust,
                 SymbolKind::Method,
-                method_name,
+                Some(method_name),
                 span,
                 Some(scope),
                 preview,
@@ -255,7 +255,7 @@ fn extract_symbols(
                 String::new(), // Path will be filled in later
                 Language::Rust,
                 kind.clone(),
-                name,
+                Some(name),
                 span,
                 scope.clone(),
                 preview,
@@ -305,7 +305,7 @@ mod tests {
 
         let symbols = parse("test.rs", source).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "hello_world");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("hello_world"));
         assert!(matches!(symbols[0].kind, SymbolKind::Function));
     }
 
@@ -320,7 +320,7 @@ mod tests {
 
         let symbols = parse("test.rs", source).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "User");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("User"));
         assert!(matches!(symbols[0].kind, SymbolKind::Struct));
     }
 
@@ -352,8 +352,8 @@ mod tests {
             .collect();
 
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol == "new"));
-        assert!(method_symbols.iter().any(|s| s.symbol == "get_name"));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("new")));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("get_name")));
 
         // Check scope
         for method in method_symbols {
@@ -372,7 +372,7 @@ mod tests {
 
         let symbols = parse("test.rs", source).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "Status");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("Status"));
         assert!(matches!(symbols[0].kind, SymbolKind::Enum));
     }
 
@@ -386,7 +386,7 @@ mod tests {
 
         let symbols = parse("test.rs", source).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "Drawable");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("Drawable"));
         assert!(matches!(symbols[0].kind, SymbolKind::Trait));
     }
 

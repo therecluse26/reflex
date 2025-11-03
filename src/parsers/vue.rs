@@ -241,7 +241,7 @@ fn extract_variables(
                             String::new(),
                             Language::Vue,
                             SymbolKind::Constant,
-                            name,
+                            Some(name),
                             span,
                             None,
                             preview,
@@ -290,7 +290,7 @@ fn extract_symbols(
                 String::new(),
                 Language::Vue,
                 kind.clone(),
-                name,
+                Some(name),
                 span,
                 scope.clone(),
                 preview,
@@ -353,8 +353,8 @@ div {
 
         let symbols = parse("test.vue", source).unwrap();
         // Should extract message constant and greet function
-        assert!(symbols.iter().any(|s| s.symbol == "message"));
-        assert!(symbols.iter().any(|s| s.symbol == "greet"));
+        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("message")));
+        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("greet")));
     }
 
     #[test]
@@ -376,8 +376,8 @@ const increment = () => {
 
         let symbols = parse("test.vue", source).unwrap();
         // Should extract count and increment
-        assert!(symbols.iter().any(|s| s.symbol == "count"));
-        assert!(symbols.iter().any(|s| s.symbol == "increment"));
+        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("count")));
+        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("increment")));
     }
 
     #[test]
@@ -402,6 +402,6 @@ const user: User = {
 
         let symbols = parse("test.vue", source).unwrap();
         // Should extract user constant
-        assert!(symbols.iter().any(|s| s.symbol == "user"));
+        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("user")));
     }
 }

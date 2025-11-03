@@ -261,7 +261,7 @@ fn extract_variables(
                         String::new(),
                         Language::Svelte,
                         kind,
-                        name,
+                        Some(name),
                         span,
                         None,
                         preview,
@@ -329,7 +329,7 @@ fn extract_reactive_declarations(
                     String::new(),
                     Language::Svelte,
                     SymbolKind::Variable,
-                    name,
+                    Some(name),
                     span,
                     Some("reactive".to_string()),
                     preview,
@@ -376,7 +376,7 @@ fn extract_symbols(
                 String::new(),
                 Language::Svelte,
                 kind.clone(),
-                name,
+                Some(name),
                 span,
                 scope.clone(),
                 preview,
@@ -432,8 +432,8 @@ mod tests {
 "#;
 
         let symbols = parse("test.svelte", source).unwrap();
-        assert!(symbols.iter().any(|s| s.symbol == "count"));
-        assert!(symbols.iter().any(|s| s.symbol == "increment"));
+        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("count")));
+        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("increment")));
     }
 
     #[test]
@@ -452,9 +452,9 @@ mod tests {
 "#;
 
         let symbols = parse("test.svelte", source).unwrap();
-        assert!(symbols.iter().any(|s| s.symbol == "count"));
-        assert!(symbols.iter().any(|s| s.symbol == "doubled" && s.scope == Some("reactive".to_string())));
-        assert!(symbols.iter().any(|s| s.symbol == "increment"));
+        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("count")));
+        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("doubled") && s.scope == Some("reactive".to_string())));
+        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("increment")));
     }
 
     #[test]
@@ -485,8 +485,8 @@ mod tests {
         assert!(module_symbols.len() > 0);
 
         // Should have component symbols
-        assert!(symbols.iter().any(|s| s.symbol == "data"));
-        assert!(symbols.iter().any(|s| s.symbol == "fetchData"));
+        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("data")));
+        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("fetchData")));
     }
 
     #[test]
@@ -508,6 +508,6 @@ mod tests {
 "#;
 
         let symbols = parse("test.svelte", source).unwrap();
-        assert!(symbols.iter().any(|s| s.symbol == "user"));
+        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("user")));
     }
 }

@@ -202,7 +202,7 @@ fn extract_methods(
                 String::new(),
                 Language::PHP,
                 SymbolKind::Method,
-                method_name,
+                Some(method_name),
                 span,
                 Some(scope),
                 preview,
@@ -288,7 +288,7 @@ fn extract_properties(
                 String::new(),
                 Language::PHP,
                 SymbolKind::Variable,
-                prop_name,
+                Some(prop_name),
                 span,
                 Some(scope),
                 preview,
@@ -387,7 +387,7 @@ fn extract_symbols(
                 String::new(),
                 Language::PHP,
                 kind.clone(),
-                name,
+                Some(name),
                 span,
                 scope.clone(),
                 preview,
@@ -437,7 +437,7 @@ mod tests {
 
         let symbols = parse("test.php", source).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "greet");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("greet"));
         assert!(matches!(symbols[0].kind, SymbolKind::Function));
     }
 
@@ -464,7 +464,7 @@ mod tests {
             .collect();
 
         assert_eq!(class_symbols.len(), 1);
-        assert_eq!(class_symbols[0].symbol, "User");
+        assert_eq!(class_symbols[0].symbol.as_deref(), Some("User"));
     }
 
     #[test]
@@ -492,8 +492,8 @@ mod tests {
             .collect();
 
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol == "add"));
-        assert!(method_symbols.iter().any(|s| s.symbol == "subtract"));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("add")));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("subtract")));
 
         // Check scope
         for method in method_symbols {
@@ -517,7 +517,7 @@ mod tests {
             .collect();
 
         assert_eq!(interface_symbols.len(), 1);
-        assert_eq!(interface_symbols[0].symbol, "Drawable");
+        assert_eq!(interface_symbols[0].symbol.as_deref(), Some("Drawable"));
     }
 
     #[test]
@@ -538,7 +538,7 @@ mod tests {
             .collect();
 
         assert_eq!(trait_symbols.len(), 1);
-        assert_eq!(trait_symbols[0].symbol, "Loggable");
+        assert_eq!(trait_symbols[0].symbol.as_deref(), Some("Loggable"));
     }
 
     #[test]
@@ -561,7 +561,7 @@ mod tests {
             .collect();
 
         assert_eq!(namespace_symbols.len(), 1);
-        assert_eq!(namespace_symbols[0].symbol, "App\\Controllers");
+        assert_eq!(namespace_symbols[0].symbol.as_deref(), Some("App\\Controllers"));
     }
 
     #[test]
@@ -579,8 +579,8 @@ mod tests {
             .collect();
 
         assert_eq!(const_symbols.len(), 2);
-        assert!(const_symbols.iter().any(|s| s.symbol == "MAX_SIZE"));
-        assert!(const_symbols.iter().any(|s| s.symbol == "DEFAULT_NAME"));
+        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("MAX_SIZE")));
+        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("DEFAULT_NAME")));
     }
 
     #[test]
@@ -601,9 +601,9 @@ mod tests {
             .collect();
 
         assert_eq!(prop_symbols.len(), 3);
-        assert!(prop_symbols.iter().any(|s| s.symbol == "debug"));
-        assert!(prop_symbols.iter().any(|s| s.symbol == "timeout"));
-        assert!(prop_symbols.iter().any(|s| s.symbol == "secret"));
+        assert!(prop_symbols.iter().any(|s| s.symbol.as_deref() == Some("debug")));
+        assert!(prop_symbols.iter().any(|s| s.symbol.as_deref() == Some("timeout")));
+        assert!(prop_symbols.iter().any(|s| s.symbol.as_deref() == Some("secret")));
     }
 
     #[test]
@@ -624,7 +624,7 @@ mod tests {
             .collect();
 
         assert_eq!(enum_symbols.len(), 1);
-        assert_eq!(enum_symbols[0].symbol, "Status");
+        assert_eq!(enum_symbols[0].symbol.as_deref(), Some("Status"));
     }
 
     #[test]

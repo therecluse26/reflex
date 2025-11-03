@@ -56,7 +56,7 @@ pub fn main() {
     for symbol in &symbols {
         println!("   {:<15} {:<20} {:>6}:{:<4}",
                  format!("{:?}", symbol.kind),
-                 symbol.symbol,
+                 symbol.symbol.as_deref().unwrap_or("<no symbol>"),
                  symbol.span.start_line,
                  symbol.span.start_col);
 

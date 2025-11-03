@@ -74,7 +74,7 @@ pub enum Status {
     println!("   Query: symbol:User");
     println!("   Results: {}", results.len());
     for result in &results {
-        println!("     - {:?} '{}' at {}:{}", result.kind, result.symbol, result.path, result.span.start_line);
+        println!("     - {:?} '{}' at {}:{}", result.kind, result.symbol.as_deref().unwrap_or("<no symbol>"), result.path, result.span.start_line);
     }
     assert!(results.len() > 0, "Expected at least one result for 'User'");
     println!("   ✅ Exact search works\n");
@@ -85,7 +85,7 @@ pub enum Status {
     println!("   Query: greet");
     println!("   Results: {}", results.len());
     for result in &results {
-        println!("     - {:?} '{}' at {}:{}", result.kind, result.symbol, result.path, result.span.start_line);
+        println!("     - {:?} '{}' at {}:{}", result.kind, result.symbol.as_deref().unwrap_or("<no symbol>"), result.path, result.span.start_line);
     }
     assert!(results.len() > 0, "Expected at least one result for 'greet'");
     println!("   ✅ Substring search works\n");
@@ -96,7 +96,7 @@ pub enum Status {
     println!("   Query: symbol:n*");
     println!("   Results: {}", results.len());
     for result in &results {
-        println!("     - {:?} '{}' at {}:{}", result.kind, result.symbol, result.path, result.span.start_line);
+        println!("     - {:?} '{}' at {}:{}", result.kind, result.symbol.as_deref().unwrap_or("<no symbol>"), result.path, result.span.start_line);
     }
     assert!(results.len() > 0, "Expected at least one result for prefix 'n*'");
     println!("   ✅ Prefix search works\n");

@@ -173,7 +173,7 @@ fn extract_class_methods(
                 String::new(),
                 Language::Java,
                 SymbolKind::Method,
-                method_name,
+                Some(method_name),
                 span,
                 Some(scope),
                 preview,
@@ -258,7 +258,7 @@ fn extract_fields(
                 String::new(),
                 Language::Java,
                 SymbolKind::Variable,
-                field_name,
+                Some(field_name),
                 span,
                 Some(scope),
                 preview,
@@ -328,7 +328,7 @@ fn extract_constructors(
                 String::new(),
                 Language::Java,
                 SymbolKind::Method,
-                constructor_name,
+                Some(constructor_name),
                 span,
                 Some(scope),
                 preview,
@@ -398,7 +398,7 @@ fn extract_interface_methods(
                 String::new(),
                 Language::Java,
                 SymbolKind::Method,
-                method_name,
+                Some(method_name),
                 span,
                 Some(scope),
                 preview,
@@ -445,7 +445,7 @@ fn extract_symbols(
                 String::new(),
                 Language::Java,
                 kind.clone(),
-                name,
+                Some(name),
                 span,
                 scope.clone(),
                 preview,
@@ -500,7 +500,7 @@ public class User {
             .collect();
 
         assert_eq!(class_symbols.len(), 1);
-        assert_eq!(class_symbols[0].symbol, "User");
+        assert_eq!(class_symbols[0].symbol.as_deref(), Some("User"));
     }
 
     #[test]
@@ -524,8 +524,8 @@ public class Calculator {
             .collect();
 
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol == "add"));
-        assert!(method_symbols.iter().any(|s| s.symbol == "subtract"));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("add")));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("subtract")));
 
         // Check scope
         for method in method_symbols {
@@ -549,7 +549,7 @@ public interface Drawable {
             .collect();
 
         assert_eq!(interface_symbols.len(), 1);
-        assert_eq!(interface_symbols[0].symbol, "Drawable");
+        assert_eq!(interface_symbols[0].symbol.as_deref(), Some("Drawable"));
     }
 
     #[test]
@@ -569,7 +569,7 @@ public enum Status {
             .collect();
 
         assert_eq!(enum_symbols.len(), 1);
-        assert_eq!(enum_symbols[0].symbol, "Status");
+        assert_eq!(enum_symbols[0].symbol.as_deref(), Some("Status"));
     }
 
     #[test]
@@ -589,9 +589,9 @@ public class Config {
             .collect();
 
         assert_eq!(field_symbols.len(), 3);
-        assert!(field_symbols.iter().any(|s| s.symbol == "MAX_SIZE"));
-        assert!(field_symbols.iter().any(|s| s.symbol == "hostname"));
-        assert!(field_symbols.iter().any(|s| s.symbol == "port"));
+        assert!(field_symbols.iter().any(|s| s.symbol.as_deref() == Some("MAX_SIZE")));
+        assert!(field_symbols.iter().any(|s| s.symbol.as_deref() == Some("hostname")));
+        assert!(field_symbols.iter().any(|s| s.symbol.as_deref() == Some("port")));
     }
 
     #[test]
@@ -613,7 +613,7 @@ public class User {
         let symbols = parse("test.java", source).unwrap();
 
         let constructor_symbols: Vec<_> = symbols.iter()
-            .filter(|s| matches!(s.kind, SymbolKind::Method) && s.symbol == "User")
+            .filter(|s| matches!(s.kind, SymbolKind::Method) && s.symbol.as_deref() == Some("User"))
             .collect();
 
         assert_eq!(constructor_symbols.len(), 2);
@@ -640,15 +640,15 @@ public abstract class Animal {
             .collect();
 
         assert_eq!(class_symbols.len(), 1);
-        assert_eq!(class_symbols[0].symbol, "Animal");
+        assert_eq!(class_symbols[0].symbol.as_deref(), Some("Animal"));
 
         let method_symbols: Vec<_> = symbols.iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
             .collect();
 
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol == "makeSound"));
-        assert!(method_symbols.iter().any(|s| s.symbol == "sleep"));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("makeSound")));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("sleep")));
     }
 
     #[test]
@@ -678,8 +678,8 @@ public class Outer {
             .collect();
 
         assert_eq!(class_symbols.len(), 2);
-        assert!(class_symbols.iter().any(|s| s.symbol == "Outer"));
-        assert!(class_symbols.iter().any(|s| s.symbol == "Nested"));
+        assert!(class_symbols.iter().any(|s| s.symbol.as_deref() == Some("Outer")));
+        assert!(class_symbols.iter().any(|s| s.symbol.as_deref() == Some("Nested")));
     }
 
     #[test]
@@ -706,10 +706,10 @@ public interface Repository<T> {
             .collect();
 
         assert_eq!(method_symbols.len(), 4);
-        assert!(method_symbols.iter().any(|s| s.symbol == "findById"));
-        assert!(method_symbols.iter().any(|s| s.symbol == "findAll"));
-        assert!(method_symbols.iter().any(|s| s.symbol == "save"));
-        assert!(method_symbols.iter().any(|s| s.symbol == "delete"));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("findById")));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("findAll")));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("save")));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("delete")));
     }
 
     #[test]
@@ -737,7 +737,7 @@ public enum Day {
             .collect();
 
         assert_eq!(method_symbols.len(), 1);
-        assert_eq!(method_symbols[0].symbol, "isWeekend");
+        assert_eq!(method_symbols[0].symbol.as_deref(), Some("isWeekend"));
     }
 
     #[test]
@@ -808,7 +808,7 @@ public class Container<T> {
             .collect();
 
         assert_eq!(class_symbols.len(), 1);
-        assert_eq!(class_symbols[0].symbol, "Container");
+        assert_eq!(class_symbols[0].symbol.as_deref(), Some("Container"));
 
         let method_symbols: Vec<_> = symbols.iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))

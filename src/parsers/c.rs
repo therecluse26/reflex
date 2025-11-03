@@ -196,7 +196,7 @@ fn extract_variables(
                     String::new(),
                     Language::C,
                     SymbolKind::Variable,
-                    name,
+                    Some(name),
                     span,
                     None,
                     preview,
@@ -244,7 +244,7 @@ fn extract_symbols(
                 String::new(),
                 Language::C,
                 kind.clone(),
-                name,
+                Some(name),
                 span,
                 scope.clone(),
                 preview,
@@ -293,7 +293,7 @@ int add(int a, int b) {
 
         let symbols = parse("test.c", source).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "add");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("add"));
         assert!(matches!(symbols[0].kind, SymbolKind::Function));
     }
 
@@ -308,7 +308,7 @@ struct User {
 
         let symbols = parse("test.c", source).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "User");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("User"));
         assert!(matches!(symbols[0].kind, SymbolKind::Struct));
     }
 
@@ -324,7 +324,7 @@ enum Status {
 
         let symbols = parse("test.c", source).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "Status");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("Status"));
         assert!(matches!(symbols[0].kind, SymbolKind::Enum));
     }
 
@@ -346,7 +346,7 @@ typedef int UserID;
             .collect();
 
         assert!(typedef_symbols.len() >= 1);
-        assert!(typedef_symbols.iter().any(|s| s.symbol == "Point"));
+        assert!(typedef_symbols.iter().any(|s| s.symbol.as_deref() == Some("Point")));
     }
 
     #[test]
@@ -366,7 +366,7 @@ union Data {
             .collect();
 
         assert_eq!(union_symbols.len(), 1);
-        assert_eq!(union_symbols[0].symbol, "Data");
+        assert_eq!(union_symbols[0].symbol.as_deref(), Some("Data"));
     }
 
     #[test]
@@ -384,9 +384,9 @@ extern int external_value;
             .collect();
 
         assert_eq!(var_symbols.len(), 3);
-        assert!(var_symbols.iter().any(|s| s.symbol == "global_counter"));
-        assert!(var_symbols.iter().any(|s| s.symbol == "internal_state"));
-        assert!(var_symbols.iter().any(|s| s.symbol == "external_value"));
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("global_counter")));
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("internal_state")));
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("external_value")));
     }
 
     #[test]
@@ -399,7 +399,7 @@ int* create_array(int size) {
 
         let symbols = parse("test.c", source).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "create_array");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("create_array"));
         assert!(matches!(symbols[0].kind, SymbolKind::Function));
     }
 
@@ -459,7 +459,7 @@ typedef struct Node {
 
         // Should find both the struct and the typedef
         assert!(symbols.len() >= 1);
-        assert!(symbols.iter().any(|s| s.symbol == "Node"));
+        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("Node")));
     }
 
     #[test]
@@ -481,6 +481,6 @@ int calculate(int x) {
 
         // Should only find global_var, not local_var
         assert_eq!(var_symbols.len(), 1);
-        assert_eq!(var_symbols[0].symbol, "global_var");
+        assert_eq!(var_symbols[0].symbol.as_deref(), Some("global_var"));
     }
 }

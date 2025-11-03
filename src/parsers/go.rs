@@ -156,7 +156,7 @@ fn extract_methods(
                 String::new(),
                 Language::Go,
                 SymbolKind::Method,
-                method_name,
+                Some(method_name),
                 span,
                 Some(scope),
                 preview,
@@ -234,7 +234,7 @@ fn extract_variables(
                             String::new(),
                             Language::Go,
                             SymbolKind::Variable,
-                            name,
+                            Some(name),
                             span,
                             None,
                             preview,
@@ -284,7 +284,7 @@ fn extract_symbols(
                 String::new(),
                 Language::Go,
                 kind.clone(),
-                name,
+                Some(name),
                 span,
                 scope.clone(),
                 preview,
@@ -335,7 +335,7 @@ func helloWorld() string {
 
         let symbols = parse("test.go", source).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "helloWorld");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("helloWorld"));
         assert!(matches!(symbols[0].kind, SymbolKind::Function));
     }
 
@@ -352,7 +352,7 @@ type User struct {
 
         let symbols = parse("test.go", source).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "User");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("User"));
         assert!(matches!(symbols[0].kind, SymbolKind::Struct));
     }
 
@@ -368,7 +368,7 @@ type Reader interface {
 
         let symbols = parse("test.go", source).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "Reader");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("Reader"));
         assert!(matches!(symbols[0].kind, SymbolKind::Interface));
     }
 
@@ -397,8 +397,8 @@ func (u User) SetName(name string) {
             .collect();
 
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol == "GetName"));
-        assert!(method_symbols.iter().any(|s| s.symbol == "SetName"));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("GetName")));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("SetName")));
 
         // Check scope
         for method in method_symbols {
@@ -427,10 +427,10 @@ const (
             .collect();
 
         assert_eq!(const_symbols.len(), 4);
-        assert!(const_symbols.iter().any(|s| s.symbol == "MaxSize"));
-        assert!(const_symbols.iter().any(|s| s.symbol == "DefaultTimeout"));
-        assert!(const_symbols.iter().any(|s| s.symbol == "StatusActive"));
-        assert!(const_symbols.iter().any(|s| s.symbol == "StatusInactive"));
+        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("MaxSize")));
+        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("DefaultTimeout")));
+        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("StatusActive")));
+        assert!(const_symbols.iter().any(|s| s.symbol.as_deref() == Some("StatusInactive")));
     }
 
     #[test]
@@ -452,9 +452,9 @@ var (
             .collect();
 
         assert_eq!(var_symbols.len(), 3);
-        assert!(var_symbols.iter().any(|s| s.symbol == "GlobalConfig"));
-        assert!(var_symbols.iter().any(|s| s.symbol == "Logger"));
-        assert!(var_symbols.iter().any(|s| s.symbol == "Version"));
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("GlobalConfig")));
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("Logger")));
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("Version")));
     }
 
     #[test]
@@ -524,9 +524,9 @@ func (c *Calculator) Multiply(a, b int) int {
             .collect();
 
         assert_eq!(method_symbols.len(), 3);
-        assert!(method_symbols.iter().any(|s| s.symbol == "Add"));
-        assert!(method_symbols.iter().any(|s| s.symbol == "Subtract"));
-        assert!(method_symbols.iter().any(|s| s.symbol == "Multiply"));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("Add")));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("Subtract")));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("Multiply")));
     }
 
     #[test]
@@ -551,7 +551,7 @@ type Config struct {
             .collect();
 
         assert_eq!(struct_symbols.len(), 1);
-        assert_eq!(struct_symbols[0].symbol, "Config");
+        assert_eq!(struct_symbols[0].symbol.as_deref(), Some("Config"));
     }
 
     #[test]
@@ -580,8 +580,8 @@ type ReadWriter interface {
             .collect();
 
         assert_eq!(interface_symbols.len(), 3);
-        assert!(interface_symbols.iter().any(|s| s.symbol == "Reader"));
-        assert!(interface_symbols.iter().any(|s| s.symbol == "Writer"));
-        assert!(interface_symbols.iter().any(|s| s.symbol == "ReadWriter"));
+        assert!(interface_symbols.iter().any(|s| s.symbol.as_deref() == Some("Reader")));
+        assert!(interface_symbols.iter().any(|s| s.symbol.as_deref() == Some("Writer")));
+        assert!(interface_symbols.iter().any(|s| s.symbol.as_deref() == Some("ReadWriter")));
     }
 }

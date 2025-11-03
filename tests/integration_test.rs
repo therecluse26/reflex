@@ -39,7 +39,7 @@ fn greet(name: &str) {
     let engine = QueryEngine::new(cache);
     let results = engine.find_symbol("main").unwrap();
     assert_eq!(results.len(), 1); // Should find the main function
-    assert_eq!(results[0].symbol, "main");
+    assert_eq!(results[0].symbol.as_deref(), Some("main"));
 }
 
 #[test]
@@ -218,7 +218,7 @@ fn test_modify_file_and_reindex_workflow() {
     let engine = QueryEngine::new(cache);
     let results = engine.search("new", filter).unwrap();
     assert!(results.len() >= 1);
-    assert!(results.iter().any(|r| r.symbol.contains("new")));
+    assert!(results.iter().any(|r| r.symbol.as_ref().map_or(false, |s| s.contains("new"))));
 }
 
 // ==================== Multi-language Workflow Tests ====================

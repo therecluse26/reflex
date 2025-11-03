@@ -230,7 +230,7 @@ fn extract_methods(
                 String::new(),
                 Language::Cpp,
                 SymbolKind::Method,
-                method_name,
+                Some(method_name),
                 span,
                 Some(scope),
                 preview,
@@ -308,7 +308,7 @@ fn extract_symbols(
                 String::new(),
                 Language::Cpp,
                 kind.clone(),
-                name,
+                Some(name),
                 span,
                 scope.clone(),
                 preview,
@@ -357,7 +357,7 @@ int add(int a, int b) {
 
         let symbols = parse("test.cpp", source).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "add");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("add"));
         assert!(matches!(symbols[0].kind, SymbolKind::Function));
     }
 
@@ -381,7 +381,7 @@ public:
             .collect();
 
         assert_eq!(class_symbols.len(), 1);
-        assert_eq!(class_symbols[0].symbol, "User");
+        assert_eq!(class_symbols[0].symbol.as_deref(), Some("User"));
     }
 
     #[test]
@@ -403,7 +403,7 @@ namespace Nested::Namespace {
             .collect();
 
         assert!(namespace_symbols.len() >= 1);
-        assert!(namespace_symbols.iter().any(|s| s.symbol == "MyNamespace"));
+        assert!(namespace_symbols.iter().any(|s| s.symbol.as_deref() == Some("MyNamespace")));
     }
 
     #[test]
@@ -417,7 +417,7 @@ struct Point {
 
         let symbols = parse("test.cpp", source).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "Point");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("Point"));
         assert!(matches!(symbols[0].kind, SymbolKind::Struct));
     }
 
@@ -443,8 +443,8 @@ enum class Status {
             .collect();
 
         assert_eq!(enum_symbols.len(), 2);
-        assert!(enum_symbols.iter().any(|s| s.symbol == "Color"));
-        assert!(enum_symbols.iter().any(|s| s.symbol == "Status"));
+        assert!(enum_symbols.iter().any(|s| s.symbol.as_deref() == Some("Color")));
+        assert!(enum_symbols.iter().any(|s| s.symbol.as_deref() == Some("Status")));
     }
 
     #[test]
@@ -468,7 +468,7 @@ public:
             .collect();
 
         assert_eq!(class_symbols.len(), 1);
-        assert_eq!(class_symbols[0].symbol, "Container");
+        assert_eq!(class_symbols[0].symbol.as_deref(), Some("Container"));
     }
 
     #[test]
@@ -482,7 +482,7 @@ T max(T a, T b) {
 
         let symbols = parse("test.cpp", source).unwrap();
         assert_eq!(symbols.len(), 1);
-        assert_eq!(symbols[0].symbol, "max");
+        assert_eq!(symbols[0].symbol.as_deref(), Some("max"));
         assert!(matches!(symbols[0].kind, SymbolKind::Function));
     }
 
@@ -508,8 +508,8 @@ public:
             .collect();
 
         assert_eq!(method_symbols.len(), 2);
-        assert!(method_symbols.iter().any(|s| s.symbol == "add"));
-        assert!(method_symbols.iter().any(|s| s.symbol == "subtract"));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("add")));
+        assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("subtract")));
 
         // Check scope
         for method in method_symbols {
@@ -531,7 +531,7 @@ using IntPtr = int*;
             .collect();
 
         assert!(type_symbols.len() >= 1);
-        assert!(type_symbols.iter().any(|s| s.symbol == "StringVector"));
+        assert!(type_symbols.iter().any(|s| s.symbol.as_deref() == Some("StringVector")));
     }
 
     #[test]
@@ -610,8 +610,8 @@ namespace Outer {
             .collect();
 
         assert_eq!(namespace_symbols.len(), 2);
-        assert!(namespace_symbols.iter().any(|s| s.symbol == "Outer"));
-        assert!(namespace_symbols.iter().any(|s| s.symbol == "Inner"));
+        assert!(namespace_symbols.iter().any(|s| s.symbol.as_deref() == Some("Outer")));
+        assert!(namespace_symbols.iter().any(|s| s.symbol.as_deref() == Some("Inner")));
     }
 
     #[test]
@@ -638,8 +638,8 @@ public:
             .collect();
 
         assert_eq!(class_symbols.len(), 2);
-        assert!(class_symbols.iter().any(|s| s.symbol == "Base"));
-        assert!(class_symbols.iter().any(|s| s.symbol == "Derived"));
+        assert!(class_symbols.iter().any(|s| s.symbol.as_deref() == Some("Base")));
+        assert!(class_symbols.iter().any(|s| s.symbol.as_deref() == Some("Derived")));
 
         let method_symbols: Vec<_> = symbols.iter()
             .filter(|s| matches!(s.kind, SymbolKind::Method))
@@ -669,6 +669,6 @@ public:
             .collect();
 
         assert_eq!(class_symbols.len(), 1);
-        assert_eq!(class_symbols[0].symbol, "Complex");
+        assert_eq!(class_symbols[0].symbol.as_deref(), Some("Complex"));
     }
 }

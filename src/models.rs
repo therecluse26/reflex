@@ -123,7 +123,9 @@ pub struct SearchResult {
     /// Type of symbol found
     pub kind: SymbolKind,
     /// Symbol name (e.g., function name, class name)
-    pub symbol: String,
+    /// None for text/regex matches where symbol name cannot be accurately determined
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
     /// Location span in the source file
     pub span: Span,
     /// Scope context (e.g., "impl MyStruct", "class User")
@@ -137,7 +139,7 @@ impl SearchResult {
         path: String,
         lang: Language,
         kind: SymbolKind,
-        symbol: String,
+        symbol: Option<String>,
         span: Span,
         scope: Option<String>,
         preview: String,

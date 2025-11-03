@@ -158,7 +158,7 @@ impl QueryEngine {
 
         // Apply exact name filter (only for symbol searches)
         if filter.exact && filter.symbols_mode {
-            results.retain(|r| r.symbol == pattern);
+            results.retain(|r| r.symbol.as_deref() == Some(pattern));
         }
 
         // Expand symbol bodies if requested
@@ -309,7 +309,7 @@ impl QueryEngine {
         // Filter symbols by pattern (substring match)
         let filtered: Vec<SearchResult> = all_symbols
             .into_iter()
-            .filter(|sym| sym.symbol.contains(pattern))
+            .filter(|sym| sym.symbol.as_deref().map_or(false, |s| s.contains(pattern)))
             .collect();
 
         log::info!("Runtime symbol detection found {} matches for pattern '{}'", filtered.len(), pattern);
@@ -429,7 +429,7 @@ impl QueryEngine {
                         path: file_path_str.clone(),
                         lang: lang.clone(),
                         kind: SymbolKind::Unknown("text_match".to_string()),
-                        symbol: pattern_owned.clone(),
+                        symbol: Some(pattern_owned.clone()),
                         span: Span {
                             start_line: line_no,
                             end_line: line_no,
@@ -593,18 +593,17 @@ impl QueryEngine {
             if regex.is_match(line) {
                 let line_no = line_idx + 1;
 
-                // Extract the actual matched portion
-                let matched_text = regex.find(line)
-                    .map(|m| m.as_str().to_string())
-                    .unwrap_or_else(|| line.to_string());
-
                 // Create text match result
-                // TODO: Add runtime tree-sitter parsing to detect symbol kind
+                // Note: We don't extract symbol names from regex matches because:
+                // 1. Regex might match partial identifiers (e.g., "UserController" in "ListUserController")
+                // 2. Regex might match across language-specific delimiters (namespaces, scopes, etc.)
+                // 3. Accurate symbol extraction requires tree-sitter parsing (expensive)
+                // The user can see the full context in the 'preview' field
                 results.push(SearchResult {
                     path: file_path_str.clone(),
                     lang: lang.clone(),
                     kind: SymbolKind::Unknown("regex_match".to_string()),
-                    symbol: matched_text,
+                    symbol: None,  // No symbol name for regex matches
                     span: Span {
                         start_line: line_no,
                         end_line: line_no,
@@ -1019,7 +1018,7 @@ mod tests {
 
         // Should find main function
         assert!(results.len() > 0, "Should find at least one result");
-        assert!(results.iter().any(|r| r.symbol == "main"), "Should find 'main' function");
+        assert!(results.iter().any(|r| r.symbol.as_deref() == Some("main")), "Should find 'main' function");
     }
 
     #[test]
@@ -1108,7 +1107,7 @@ mod tests {
 
         // Should only match exactly "test", not "test_helper" or "other_test"
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].symbol, "test");
+        assert_eq!(results[0].symbol.as_deref(), Some("test"));
     }
 
     // ==================== Expand Mode Tests ====================
@@ -1384,7 +1383,7 @@ mod tests {
         // Should find Point struct
         assert!(results.len() >= 1, "Should find at least Point struct");
         assert!(results.iter().all(|r| r.kind == SymbolKind::Struct));
-        assert!(results.iter().any(|r| r.symbol == "Point"));
+        assert!(results.iter().any(|r| r.symbol.as_deref() == Some("Point")));
     }
 
     // ==================== Metadata Tests ====================

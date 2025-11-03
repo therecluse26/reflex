@@ -411,7 +411,7 @@ fn handle_query(
                          result.path,
                          result.span.start_line,
                          format!("{:?}", result.kind),
-                         result.symbol);
+                         result.symbol.as_deref().unwrap_or(""));
                 if let Some(scope) = result.scope {
                     println!("  Scope: {}", scope);
                 }
