@@ -6,12 +6,13 @@
 use anyhow::{Context, Result};
 use regex::Regex;
 
-use crate::cache::{CacheManager, SymbolReader, SYMBOLS_BIN};
+use crate::cache::CacheManager;
 use crate::content_store::ContentReader;
 use crate::models::{
     IndexStatus, IndexWarning, IndexWarningDetails, Language, QueryResponse, SearchResult, Span,
     SymbolKind,
 };
+use crate::parsers::ParserFactory;
 use crate::regex_trigrams::extract_trigrams_from_regex;
 use crate::trigram::TrigramIndex;
 
@@ -117,34 +118,15 @@ impl QueryEngine {
     /// Internal search implementation (used by both search methods)
     fn search_internal(&self, pattern: &str, filter: QueryFilter) -> Result<Vec<SearchResult>> {
 
-        // Step 1: Load symbol reader
-        let symbols_path = self.cache.path().join(SYMBOLS_BIN);
-        let reader = SymbolReader::open(&symbols_path)
-            .context("Failed to open symbols cache")?;
-
-        // Step 2: Execute search based on mode
+        // Step 1: Execute search based on mode
         let mut results = if filter.use_regex {
             // Regex pattern search
             // Uses trigrams to narrow candidates, then verifies with regex
             self.search_with_regex(pattern, &filter)?
         } else if filter.symbols_mode {
             // Symbol name search (filtered to symbol definitions only)
-            // Searches Tree-sitter parsed symbols: functions, classes, structs, etc.
-            if pattern.ends_with('*') {
-                // Prefix match: "get_*"
-                let prefix = pattern.trim_end_matches('*');
-                reader.find_by_prefix(prefix)?
-            } else if pattern == "*" {
-                // List all symbols
-                reader.read_all()?
-            } else if pattern.contains('*') {
-                // Wildcard match - treat as substring but symbol-only
-                let substring = pattern.replace('*', "");
-                reader.find_by_symbol_name_only(&substring)?
-            } else {
-                // Substring match in symbol names only
-                reader.find_by_symbol_name_only(pattern)?
-            }
+            // Use trigrams to find candidates, then parse files at runtime
+            self.search_with_trigrams_and_parse(pattern)?
         } else {
             // Trigram-based full-text search
             // Searches all file content for any occurrence of the pattern
@@ -254,17 +236,93 @@ impl QueryEngine {
         self.search("*", filter)
     }
 
+    /// Search with trigrams, then parse candidate files to extract symbols at runtime
+    ///
+    /// This is the core of the runtime symbol detection strategy:
+    /// 1. Use trigrams to narrow down to ~10-100 candidate files
+    /// 2. Parse only those files with tree-sitter
+    /// 3. Filter symbols by pattern match
+    /// 4. Return actual symbol definitions (not just text matches)
+    fn search_with_trigrams_and_parse(&self, pattern: &str) -> Result<Vec<SearchResult>> {
+        // Load content store
+        let content_path = self.cache.path().join("content.bin");
+        let content_reader = ContentReader::open(&content_path)
+            .context("Failed to open content store")?;
+
+        // Load trigram index
+        let trigrams_path = self.cache.path().join("trigrams.bin");
+        let trigram_index = if trigrams_path.exists() {
+            TrigramIndex::load(&trigrams_path)?
+        } else {
+            Self::rebuild_trigram_index(&content_reader)?
+        };
+
+        // Use trigrams to find candidate files
+        let candidates = trigram_index.search(pattern);
+        log::debug!("Trigram search found {} candidate locations for symbol search", candidates.len());
+
+        // Collect unique file IDs from trigram results
+        use std::collections::HashSet;
+        let candidate_file_ids: HashSet<u32> = candidates
+            .iter()
+            .map(|loc| loc.file_id)
+            .collect();
+
+        log::debug!("Parsing {} candidate files for symbol extraction", candidate_file_ids.len());
+
+        // Parse each candidate file and extract symbols
+        let mut all_symbols = Vec::new();
+        for file_id in candidate_file_ids {
+            let file_path = match trigram_index.get_file(file_id) {
+                Some(p) => p,
+                None => continue,
+            };
+
+            let content = match content_reader.get_file_content(file_id) {
+                Ok(c) => c,
+                Err(e) => {
+                    log::warn!("Failed to read file {}: {}", file_path.display(), e);
+                    continue;
+                }
+            };
+
+            // Detect language
+            let ext = file_path.extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            let lang = Language::from_extension(ext);
+
+            // Parse file to extract symbols
+            let file_path_str = file_path.to_string_lossy().to_string();
+            match ParserFactory::parse(&file_path_str, content, lang) {
+                Ok(symbols) => {
+                    log::debug!("Parsed {} symbols from {}", symbols.len(), file_path_str);
+                    all_symbols.extend(symbols);
+                }
+                Err(e) => {
+                    log::debug!("Failed to parse {}: {}", file_path_str, e);
+                    // Continue processing other files
+                }
+            }
+        }
+
+        // Filter symbols by pattern (substring match)
+        let filtered: Vec<SearchResult> = all_symbols
+            .into_iter()
+            .filter(|sym| sym.symbol.contains(pattern))
+            .collect();
+
+        log::info!("Runtime symbol detection found {} matches for pattern '{}'", filtered.len(), pattern);
+
+        Ok(filtered)
+    }
+
     /// Search using trigram-based full-text search
     fn search_with_trigrams(&self, pattern: &str) -> Result<Vec<SearchResult>> {
         // Load content store
         let content_path = self.cache.path().join("content.bin");
         let content_reader = ContentReader::open(&content_path)
             .context("Failed to open content store")?;
-
-        // Load symbol reader to get actual symbol kinds
-        let symbols_path = self.cache.path().join(SYMBOLS_BIN);
-        let symbol_reader = SymbolReader::open(&symbols_path)
-            .context("Failed to open symbols cache")?;
 
         // Load trigram index from disk (or rebuild if missing)
         let trigrams_path = self.cache.path().join("trigrams.bin");
@@ -288,76 +346,104 @@ impl QueryEngine {
 
         // Search using trigrams
         let candidates = trigram_index.search(pattern);
-        log::debug!("Found {} candidate locations", candidates.len());
+        log::debug!("Found {} candidate locations from trigram search", candidates.len());
 
-        // Get all symbols and build lookup index by path for O(1) access
-        let all_symbols = symbol_reader.read_all()?;
+        // Clone pattern to owned String for thread safety
+        let pattern_owned = pattern.to_string();
 
-        // Build a HashMap: file_path -> Vec<Symbol> for faster lookup
+        // Group candidates by file for efficient processing
         use std::collections::HashMap;
-        let mut symbols_by_path: HashMap<String, Vec<&SearchResult>> = HashMap::new();
-        for symbol in &all_symbols {
-            symbols_by_path
-                .entry(symbol.path.clone())
-                .or_insert_with(Vec::new)
-                .push(symbol);
-        }
-
-        // Verify matches and build results
-        let mut results = Vec::new();
-
+        let mut candidates_by_file: HashMap<u32, Vec<crate::trigram::FileLocation>> = HashMap::new();
         for loc in candidates {
-            let file_path = trigram_index.get_file(loc.file_id)
-                .context("Invalid file_id from trigram search")?;
-            let content = content_reader.get_file_content(loc.file_id)?;
-            let file_path_str = file_path.to_string_lossy().to_string();
-
-            // Detect language from file extension (once per file)
-            let ext = file_path.extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
-            let lang = Language::from_extension(ext);
-
-            // Get symbols for this file (if any)
-            let file_symbols = symbols_by_path.get(&file_path_str);
-
-            // Find all occurrences of the pattern in this file
-            for (line_idx, line) in content.lines().enumerate() {
-                if line.contains(pattern) {
-                    let line_no = line_idx + 1;
-
-                    // Try to find a matching symbol at this location (using pre-filtered file symbols)
-                    let matching_symbol = file_symbols.and_then(|syms| {
-                        syms.iter().find(|sym| {
-                            line_no >= sym.span.start_line &&
-                            line_no <= sym.span.end_line &&
-                            line.contains(&sym.symbol)
-                        })
-                    });
-
-                    if let Some(symbol) = matching_symbol {
-                        // Use the actual symbol information
-                        results.push((*symbol).clone());
-                    } else {
-                        // Fallback: create a generic text match result
-                        results.push(SearchResult {
-                            path: file_path_str.clone(),
-                            lang: lang.clone(),
-                            kind: SymbolKind::Unknown("text_match".to_string()),
-                            symbol: pattern.to_string(),
-                            span: Span {
-                                start_line: line_no,
-                                end_line: line_no,
-                                start_col: 0,
-                                end_col: 0,
-                            },
-                            scope: None,
-                            preview: line.to_string(),
-                        });
-                    }
-                }
-            }
+            candidates_by_file
+                .entry(loc.file_id)
+                .or_insert_with(Vec::new)
+                .push(loc);
         }
+
+        log::debug!("Scanning {} files with trigram matches", candidates_by_file.len());
+
+        // Process files in parallel using rayon
+        use rayon::prelude::*;
+
+        let results: Vec<SearchResult> = candidates_by_file
+            .par_iter()
+            .flat_map(|(file_id, locations)| {
+                // Get file metadata
+                let file_path = match trigram_index.get_file(*file_id) {
+                    Some(p) => p,
+                    None => return Vec::new(),
+                };
+
+                let content = match content_reader.get_file_content(*file_id) {
+                    Ok(c) => c,
+                    Err(_) => return Vec::new(),
+                };
+
+                let file_path_str = file_path.to_string_lossy().to_string();
+
+                // Detect language once per file
+                let ext = file_path.extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                let lang = Language::from_extension(ext);
+
+                // Split content into lines once
+                let lines: Vec<&str> = content.lines().collect();
+
+                // Use a HashSet to deduplicate results by line number
+                let mut seen_lines: std::collections::HashSet<usize> = std::collections::HashSet::new();
+                let mut file_results = Vec::new();
+
+                // Only check the specific lines indicated by trigram posting lists
+                for loc in locations {
+                    let line_no = loc.line_no as usize;
+
+                    // Skip if we've already processed this line
+                    if seen_lines.contains(&line_no) {
+                        continue;
+                    }
+
+                    // Bounds check
+                    if line_no == 0 || line_no > lines.len() {
+                        log::debug!("Line {} out of bounds (file has {} lines)", line_no, lines.len());
+                        continue;
+                    }
+
+                    let line = lines[line_no - 1];
+
+                    // Verify the pattern actually appears on this line
+                    // (trigrams guarantee all trigrams present, but not exact match)
+                    // Use owned pattern_owned (thread-safe)
+                    if !line.contains(&pattern_owned) {
+                        log::debug!("Pattern '{}' not found on line {} in {}: {:?}",
+                                   pattern_owned, line_no, file_path_str,
+                                   if line.len() > 80 { &line[..80] } else { line });
+                        continue;
+                    }
+
+                    seen_lines.insert(line_no);
+
+                    // Create a text match result (no symbol lookup for performance)
+                    file_results.push(SearchResult {
+                        path: file_path_str.clone(),
+                        lang: lang.clone(),
+                        kind: SymbolKind::Unknown("text_match".to_string()),
+                        symbol: pattern_owned.clone(),
+                        span: Span {
+                            start_line: line_no,
+                            end_line: line_no,
+                            start_col: 0,
+                            end_col: 0,
+                        },
+                        scope: None,
+                        preview: line.to_string(),
+                    });
+                }
+
+                file_results
+            })
+            .collect();
 
         Ok(results)
     }
@@ -398,12 +484,6 @@ impl QueryEngine {
         let content_reader = ContentReader::open(&content_path)
             .context("Failed to open content store")?;
 
-        // Load symbol reader to get actual symbol kinds
-        let symbols_path = self.cache.path().join(SYMBOLS_BIN);
-        let symbol_reader = SymbolReader::open(&symbols_path)
-            .context("Failed to open symbols cache")?;
-        let all_symbols = symbol_reader.read_all()?;
-
         let mut results = Vec::new();
 
         if trigrams.is_empty() {
@@ -421,7 +501,6 @@ impl QueryEngine {
                     &regex,
                     file_path,
                     content,
-                    &all_symbols,
                     &mut results,
                 )?;
             }
@@ -448,7 +527,7 @@ impl QueryEngine {
                     let file_path = content_reader.get_file_path(file_id as u32)
                         .context("Invalid file_id")?;
                     let content = content_reader.get_file_content(file_id as u32)?;
-                    self.find_regex_matches_in_file(&regex, file_path, content, &all_symbols, &mut results)?;
+                    self.find_regex_matches_in_file(&regex, file_path, content, &mut results)?;
                 }
             } else {
                 // Search for each literal sequence and union the results
@@ -483,7 +562,6 @@ impl QueryEngine {
                         &regex,
                         file_path,
                         content,
-                        &all_symbols,
                         &mut results,
                     )?;
                 }
@@ -500,7 +578,6 @@ impl QueryEngine {
         regex: &Regex,
         file_path: &std::path::Path,
         content: &str,
-        all_symbols: &[SearchResult],
         results: &mut Vec<SearchResult>,
     ) -> Result<()> {
         let file_path_str = file_path.to_string_lossy().to_string();
@@ -511,59 +588,32 @@ impl QueryEngine {
             .unwrap_or("");
         let lang = Language::from_extension(ext);
 
-        // Pre-filter symbols for this file only (optimization)
-        let file_symbols: Vec<&SearchResult> = all_symbols.iter()
-            .filter(|sym| sym.path == file_path_str)
-            .collect();
-
         // Find all regex matches line by line
         for (line_idx, line) in content.lines().enumerate() {
             if regex.is_match(line) {
                 let line_no = line_idx + 1;
-
-                // Try to find a symbol whose definition is on this exact line
-                // AND whose symbol name matches the regex (not just the line content)
-                // This ensures --kind function returns only function definitions, not calls
-                // and that we only match symbols whose names match the pattern
-                let matching_symbol = file_symbols.iter()
-                    .find(|sym| {
-                        sym.span.start_line == line_no &&
-                        regex.is_match(&sym.symbol)  // Symbol name must match regex
-                    });
 
                 // Extract the actual matched portion
                 let matched_text = regex.find(line)
                     .map(|m| m.as_str().to_string())
                     .unwrap_or_else(|| line.to_string());
 
-                if let Some(symbol) = matching_symbol {
-                    // Found a symbol - use its kind and full span (for --expand support)
-                    results.push(SearchResult {
-                        path: file_path_str.clone(),
-                        lang: lang.clone(),
-                        kind: symbol.kind.clone(),
-                        symbol: matched_text,
-                        span: symbol.span.clone(),  // Use symbol's full span
-                        scope: symbol.scope.clone(),
-                        preview: line.to_string(),
-                    });
-                } else {
-                    // No symbol found - create generic text match
-                    results.push(SearchResult {
-                        path: file_path_str.clone(),
-                        lang: lang.clone(),
-                        kind: SymbolKind::Unknown("regex_match".to_string()),
-                        symbol: matched_text,
-                        span: Span {
-                            start_line: line_no,
-                            end_line: line_no,
-                            start_col: 0,
-                            end_col: 0,
-                        },
-                        scope: None,
-                        preview: line.to_string(),
-                    });
-                }
+                // Create text match result
+                // TODO: Add runtime tree-sitter parsing to detect symbol kind
+                results.push(SearchResult {
+                    path: file_path_str.clone(),
+                    lang: lang.clone(),
+                    kind: SymbolKind::Unknown("regex_match".to_string()),
+                    symbol: matched_text,
+                    span: Span {
+                        start_line: line_no,
+                        end_line: line_no,
+                        start_col: 0,
+                        end_col: 0,
+                    },
+                    scope: None,
+                    preview: line.to_string(),
+                });
             }
         }
 

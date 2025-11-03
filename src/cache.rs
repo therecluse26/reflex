@@ -2,14 +2,10 @@
 //!
 //! The cache module handles the `.reflex/` directory structure:
 //! - `meta.db`: Metadata, file hashes, and configuration (SQLite)
-//! - `symbols.bin`: Serialized symbol table (rkyv binary)
 //! - `tokens.bin`: Compressed lexical tokens (binary)
 //! - `content.bin`: Memory-mapped file contents (binary)
 //! - `trigrams.bin`: Trigram inverted index (bincode binary)
 //! - `config.toml`: Index settings (TOML text)
-
-pub mod symbol_writer;
-pub mod symbol_reader;
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension};
@@ -20,15 +16,11 @@ use std::path::{Path, PathBuf};
 
 use crate::models::IndexedFile;
 
-pub use symbol_writer::SymbolWriter;
-pub use symbol_reader::SymbolReader;
-
 /// Default cache directory name
 pub const CACHE_DIR: &str = ".reflex";
 
 /// File names within the cache directory
 pub const META_DB: &str = "meta.db";
-pub const SYMBOLS_BIN: &str = "symbols.bin";
 pub const TOKENS_BIN: &str = "tokens.bin";
 pub const HASHES_JSON: &str = "hashes.json";
 pub const CONFIG_TOML: &str = "config.toml";
@@ -55,9 +47,6 @@ impl CacheManager {
 
         // Create meta.db with schema
         self.init_meta_db()?;
-
-        // Create empty symbols.bin with header
-        self.init_symbols_bin()?;
 
         // Create empty tokens.bin with header
         self.init_tokens_bin()?;
@@ -174,33 +163,6 @@ impl CacheManager {
         Ok(())
     }
 
-    /// Initialize symbols.bin with header
-    fn init_symbols_bin(&self) -> Result<()> {
-        let symbols_path = self.cache_path.join(SYMBOLS_BIN);
-
-        if symbols_path.exists() {
-            return Ok(());
-        }
-
-        let mut file = File::create(&symbols_path)?;
-
-        // Write header: magic bytes + version + symbol count + index offset
-        let magic_bytes = b"RFLX"; // RefLex magic
-        let version: u32 = 1;
-        let symbol_count: u64 = 0;
-        let index_offset: u64 = 0;
-        let reserved = [0u8; 8];
-
-        file.write_all(magic_bytes)?;
-        file.write_all(&version.to_le_bytes())?;
-        file.write_all(&symbol_count.to_le_bytes())?;
-        file.write_all(&index_offset.to_le_bytes())?;
-        file.write_all(&reserved)?;
-
-        log::debug!("Created empty symbols.bin");
-        Ok(())
-    }
-
     /// Initialize tokens.bin with header
     fn init_tokens_bin(&self) -> Result<()> {
         let tokens_path = self.cache_path.join(TOKENS_BIN);
@@ -289,7 +251,6 @@ compression_level = 3  # zstd level
     pub fn exists(&self) -> bool {
         self.cache_path.exists()
             && self.cache_path.join(META_DB).exists()
-            && self.cache_path.join(SYMBOLS_BIN).exists()
     }
 
     /// Get the path to the cache directory
@@ -506,7 +467,7 @@ compression_level = 3  # zstd level
         // Calculate total cache size (all binary files)
         let mut index_size_bytes: u64 = 0;
 
-        for file_name in [META_DB, SYMBOLS_BIN, TOKENS_BIN, CONFIG_TOML, "content.bin", "trigrams.bin"] {
+        for file_name in [META_DB, TOKENS_BIN, CONFIG_TOML, "content.bin", "trigrams.bin"] {
             let file_path = self.cache_path.join(file_name);
             if let Ok(metadata) = std::fs::metadata(&file_path) {
                 index_size_bytes += metadata.len();

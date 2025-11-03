@@ -25,10 +25,121 @@ pub type Trigram = u32;
 
 // Binary format constants for trigrams.bin
 const MAGIC: &[u8; 4] = b"RFTG"; // ReFlex TriGrams
-const VERSION: u32 = 1;
+const VERSION: u32 = 3; // V3: No filtering, lazy loading with directory + data separation
 // Header: magic(4) + version(4) + num_trigrams(8) + num_files(8) = 24 bytes
 #[allow(dead_code)]
 const HEADER_SIZE: usize = 24;
+
+/// Write a u32 as a varint (variable-length integer)
+/// Uses 1-5 bytes depending on magnitude (smaller numbers = fewer bytes)
+fn write_varint(writer: &mut impl Write, mut value: u32) -> std::io::Result<()> {
+    loop {
+        let mut byte = (value & 0x7F) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80; // Set continuation bit
+        }
+        writer.write_all(&[byte])?;
+        if value == 0 {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Read a varint from a byte slice, returns (value, bytes_consumed)
+fn read_varint(data: &[u8]) -> Result<(u32, usize)> {
+    let mut value: u32 = 0;
+    let mut shift = 0;
+    let mut pos = 0;
+
+    loop {
+        if pos >= data.len() {
+            anyhow::bail!("Truncated varint");
+        }
+        let byte = data[pos];
+        pos += 1;
+
+        value |= ((byte & 0x7F) as u32) << shift;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+        if shift >= 32 {
+            anyhow::bail!("Varint too large");
+        }
+    }
+
+    Ok((value, pos))
+}
+
+/// Decompress a posting list from memory-mapped data
+///
+/// Reads a compressed posting list (delta+varint encoded) from the given offset
+/// and decompresses it into a Vec<FileLocation>.
+///
+/// # Arguments
+/// * `mmap` - Memory-mapped file data
+/// * `offset` - Absolute byte offset where compressed data starts
+/// * `size` - Number of bytes to read
+fn decompress_posting_list(
+    mmap: &[u8],
+    offset: u64,
+    size: u32,
+) -> Result<Vec<FileLocation>> {
+    let start = offset as usize;
+    let end = start + size as usize;
+
+    if end > mmap.len() {
+        anyhow::bail!(
+            "Posting list out of bounds: offset={}, size={}, mmap_len={}",
+            offset,
+            size,
+            mmap.len()
+        );
+    }
+
+    let compressed_data = &mmap[start..end];
+
+    // Decompress delta-encoded posting list
+    let mut locations = Vec::new();
+    let mut pos = 0;
+    let mut prev_file_id = 0u32;
+    let mut prev_line_no = 0u32;
+    let mut prev_byte_offset = 0u32;
+
+    while pos < compressed_data.len() {
+        // Read file_id delta
+        let (file_id_delta, consumed) = read_varint(&compressed_data[pos..])?;
+        pos += consumed;
+
+        // Read line_no delta
+        let (line_no_delta, consumed) = read_varint(&compressed_data[pos..])?;
+        pos += consumed;
+
+        // Read byte_offset delta
+        let (byte_offset_delta, consumed) = read_varint(&compressed_data[pos..])?;
+        pos += consumed;
+
+        // Reconstruct absolute values from deltas
+        let file_id = prev_file_id.wrapping_add(file_id_delta);
+        let line_no = prev_line_no.wrapping_add(line_no_delta);
+        let byte_offset = prev_byte_offset.wrapping_add(byte_offset_delta);
+
+        locations.push(FileLocation {
+            file_id,
+            line_no,
+            byte_offset,
+        });
+
+        // Update previous values for next delta
+        prev_file_id = file_id;
+        prev_line_no = line_no;
+        prev_byte_offset = byte_offset;
+    }
+
+    Ok(locations)
+}
 
 /// Location of a trigram occurrence in the codebase
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Archive, Serialize, Deserialize)]
@@ -60,18 +171,41 @@ struct TrigramData {
     files: Vec<String>,
 }
 
+/// Directory entry for lazy-loaded trigram index
+///
+/// Maps each trigram to its compressed posting list location in the data section.
+/// Total size: 16 bytes per entry (4 + 8 + 4)
+#[derive(Debug, Clone)]
+struct DirectoryEntry {
+    /// The trigram value (for binary search)
+    trigram: Trigram,
+    /// Absolute byte offset in the file where compressed data starts
+    data_offset: u64,
+    /// Size of compressed posting list in bytes
+    compressed_size: u32,
+}
+
 /// Trigram-based inverted index
 ///
 /// Maps each trigram to a sorted list of locations where it appears.
 /// Posting lists are kept sorted by (file_id, line_no) for efficient intersection.
 /// The index itself is kept sorted by trigram for O(log n) binary search.
+///
+/// Supports two modes:
+/// 1. In-memory mode (during indexing): All posting lists in RAM
+/// 2. Lazy-loaded mode (after loading): Compressed posting lists in mmap, decompressed on-demand
 pub struct TrigramIndex {
     /// Inverted index: sorted Vec of (trigram, locations) for binary search
+    /// Used in in-memory mode (during indexing)
     index: Vec<(Trigram, Vec<FileLocation>)>,
     /// File ID to file path mapping
     files: Vec<PathBuf>,
     /// Temporary HashMap used during batch indexing (None when finalized)
     temp_index: Option<HashMap<Trigram, Vec<FileLocation>>>,
+    /// Memory-mapped index file (for lazy loading)
+    mmap: Option<memmap2::Mmap>,
+    /// Directory of (trigram, offset, size) for lazy loading
+    directory: Vec<DirectoryEntry>,
 }
 
 impl TrigramIndex {
@@ -81,6 +215,8 @@ impl TrigramIndex {
             index: Vec::new(),
             files: Vec::new(),
             temp_index: Some(HashMap::new()),
+            mmap: None,
+            directory: Vec::new(),
         }
     }
 
@@ -103,7 +239,13 @@ impl TrigramIndex {
 
     /// Get total number of unique trigrams
     pub fn trigram_count(&self) -> usize {
-        self.index.len()
+        if !self.directory.is_empty() {
+            // Lazy-loaded mode
+            self.directory.len()
+        } else {
+            // In-memory mode
+            self.index.len()
+        }
     }
 
     /// Index a file's content
@@ -161,7 +303,7 @@ impl TrigramIndex {
             self.index = temp_map.into_iter().collect();
         }
 
-        // Sort posting lists
+        // Sort and deduplicate posting lists
         for (_, list) in self.index.iter_mut() {
             list.sort_unstable();
             list.dedup(); // Remove duplicates (same trigram appearing multiple times on same line)
@@ -176,8 +318,8 @@ impl TrigramIndex {
     /// Returns candidate file locations that could contain the pattern.
     /// Caller must verify actual matches.
     ///
-    /// Note: Returns locations for files that contain all trigrams.
-    /// The pattern may appear at different locations than returned.
+    /// In lazy-loaded mode: Decompresses posting lists on-demand from mmap.
+    /// In in-memory mode: Uses pre-loaded posting lists.
     pub fn search(&self, pattern: &str) -> Vec<FileLocation> {
         if pattern.len() < 3 {
             // Pattern too short for trigrams - caller must fall back to full scan
@@ -189,32 +331,68 @@ impl TrigramIndex {
             return vec![];
         }
 
-        // Get posting lists for each trigram using binary search
-        let mut posting_lists: Vec<&Vec<FileLocation>> = trigrams
-            .iter()
-            .filter_map(|t| {
-                self.index
-                    .binary_search_by_key(t, |(trigram, _)| *trigram)
-                    .ok()
-                    .map(|idx| &self.index[idx].1)
-            })
-            .collect();
+        // Check if we're in lazy-loaded mode or in-memory mode
+        if let Some(ref mmap) = self.mmap {
+            // Lazy-loaded mode: decompress posting lists on-demand
+            let mut posting_lists: Vec<Vec<FileLocation>> = Vec::new();
 
-        if posting_lists.is_empty() {
-            // No trigrams found in index
-            return vec![];
+            for trigram in &trigrams {
+                // Binary search directory for this trigram
+                match self.directory.binary_search_by_key(trigram, |e| e.trigram) {
+                    Ok(idx) => {
+                        let entry = &self.directory[idx];
+                        // Decompress this posting list on-demand
+                        match decompress_posting_list(mmap, entry.data_offset, entry.compressed_size) {
+                            Ok(locations) => posting_lists.push(locations),
+                            Err(e) => {
+                                log::warn!("Failed to decompress posting list for trigram {}: {}", trigram, e);
+                                return vec![];
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // Trigram not found - pattern cannot match
+                        return vec![];
+                    }
+                }
+            }
+
+            if posting_lists.is_empty() || posting_lists.len() < trigrams.len() {
+                return vec![];
+            }
+
+            // Sort by list size (smallest first for efficient intersection)
+            posting_lists.sort_by_key(|list| list.len());
+
+            // Intersect posting lists (owned version)
+            intersect_by_file_owned(&posting_lists)
+        } else {
+            // In-memory mode: use pre-loaded index
+            let mut posting_lists: Vec<&Vec<FileLocation>> = trigrams
+                .iter()
+                .filter_map(|t| {
+                    self.index
+                        .binary_search_by_key(t, |(trigram, _)| *trigram)
+                        .ok()
+                        .map(|idx| &self.index[idx].1)
+                })
+                .collect();
+
+            if posting_lists.is_empty() {
+                return vec![];
+            }
+
+            if posting_lists.len() < trigrams.len() {
+                // Some trigrams missing - pattern cannot match
+                return vec![];
+            }
+
+            // Sort by list size (smallest first for efficient intersection)
+            posting_lists.sort_by_key(|list| list.len());
+
+            // Intersect posting lists (reference version)
+            intersect_by_file(&posting_lists)
         }
-
-        if posting_lists.len() < trigrams.len() {
-            // Some trigrams missing - pattern cannot match
-            return vec![];
-        }
-
-        // Sort by list size (smallest first for efficient intersection)
-        posting_lists.sort_by_key(|list| list.len());
-
-        // Get files that contain ALL trigrams (not exact locations)
-        intersect_by_file(&posting_lists)
     }
 
     /// Get posting list for a specific trigram (for debugging)
@@ -227,14 +405,16 @@ impl TrigramIndex {
 
     /// Write the trigram index to disk
     ///
-    /// Binary format (streaming, memory-efficient):
+    /// Binary format V3 (lazy-loadable with directory + data separation):
     /// - Header (24 bytes): magic, version, num_trigrams, num_files
-    /// - For each (trigram, locations) pair:
-    ///   - trigram: u32
-    ///   - num_locations: u32
-    ///   - locations: [FileLocation; num_locations] (12 bytes each)
-    /// - For each file path:
-    ///   - path_len: u32
+    /// - Directory Section (16 bytes per trigram):
+    ///   - trigram: u32 (4 bytes)
+    ///   - data_offset: u64 (8 bytes) - absolute offset in file
+    ///   - compressed_size: u32 (4 bytes) - size of compressed posting list
+    /// - Data Section (variable size):
+    ///   - Compressed posting lists (delta+varint encoded)
+    /// - File Paths Section (variable size):
+    ///   - path_len: varint
     ///   - path_bytes: [u8; path_len]
     pub fn write(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
@@ -248,41 +428,86 @@ impl TrigramIndex {
         // Use a large buffer (16MB) for streaming writes
         let mut writer = std::io::BufWriter::with_capacity(16 * 1024 * 1024, file);
 
-        // Write header
+        // Step 1: Compress all posting lists to temporary buffers
+        let mut compressed_lists: Vec<(Trigram, Vec<u8>)> = Vec::with_capacity(self.index.len());
+
+        for (trigram, locations) in &self.index {
+            let mut compressed = Vec::new();
+
+            // Compress posting list using delta+varint encoding
+            let mut prev_file_id = 0u32;
+            let mut prev_line_no = 0u32;
+            let mut prev_byte_offset = 0u32;
+
+            for loc in locations {
+                // Compute deltas
+                let file_id_delta = loc.file_id.wrapping_sub(prev_file_id);
+                let line_no_delta = loc.line_no.wrapping_sub(prev_line_no);
+                let byte_offset_delta = loc.byte_offset.wrapping_sub(prev_byte_offset);
+
+                // Write deltas as varints
+                write_varint(&mut compressed, file_id_delta)?;
+                write_varint(&mut compressed, line_no_delta)?;
+                write_varint(&mut compressed, byte_offset_delta)?;
+
+                // Update previous values
+                prev_file_id = loc.file_id;
+                prev_line_no = loc.line_no;
+                prev_byte_offset = loc.byte_offset;
+            }
+
+            compressed_lists.push((*trigram, compressed));
+        }
+
+        // Step 2: Calculate offsets and build directory
+        let directory_start = HEADER_SIZE;
+        let directory_size = self.index.len() * 16; // 16 bytes per entry
+        let data_start = directory_start + directory_size;
+
+        let mut directory: Vec<DirectoryEntry> = Vec::with_capacity(self.index.len());
+        let mut current_offset = data_start as u64;
+
+        for (trigram, compressed) in &compressed_lists {
+            directory.push(DirectoryEntry {
+                trigram: *trigram,
+                data_offset: current_offset,
+                compressed_size: compressed.len() as u32,
+            });
+            current_offset += compressed.len() as u64;
+        }
+
+        // Step 3: Write header
         writer.write_all(MAGIC)?;
         writer.write_all(&VERSION.to_le_bytes())?;
         writer.write_all(&(self.index.len() as u64).to_le_bytes())?; // num_trigrams
         writer.write_all(&(self.files.len() as u64).to_le_bytes())?; // num_files
 
-        // Stream write trigram index (no memory spike)
-        for (trigram, locations) in &self.index {
-            writer.write_all(&trigram.to_le_bytes())?;
-            writer.write_all(&(locations.len() as u32).to_le_bytes())?;
-
-            // Write locations as raw bytes (3x u32 per location = 12 bytes)
-            for loc in locations {
-                writer.write_all(&loc.file_id.to_le_bytes())?;
-                writer.write_all(&loc.line_no.to_le_bytes())?;
-                writer.write_all(&loc.byte_offset.to_le_bytes())?;
-            }
+        // Step 4: Write directory
+        for entry in &directory {
+            writer.write_all(&entry.trigram.to_le_bytes())?;
+            writer.write_all(&entry.data_offset.to_le_bytes())?;
+            writer.write_all(&entry.compressed_size.to_le_bytes())?;
         }
 
-        // Stream write file paths
+        // Step 5: Write data section (compressed posting lists)
+        for (_, compressed) in &compressed_lists {
+            writer.write_all(compressed)?;
+        }
+
+        // Step 6: Write file paths (same as before)
         for file_path in &self.files {
             let path_str = file_path.to_string_lossy();
             let path_bytes = path_str.as_bytes();
-            writer.write_all(&(path_bytes.len() as u32).to_le_bytes())?;
+            write_varint(&mut writer, path_bytes.len() as u32)?;
             writer.write_all(path_bytes)?;
         }
 
-        // Flush buffer
+        // Flush and sync
         writer.flush()?;
-
-        // Sync to disk
         writer.get_ref().sync_all()?;
 
-        log::debug!(
-            "Wrote trigram index: {} trigrams, {} files to {:?}",
+        log::info!(
+            "Wrote lazy-loadable trigram index: {} trigrams, {} files to {:?}",
             self.index.len(),
             self.files.len(),
             path
@@ -291,17 +516,17 @@ impl TrigramIndex {
         Ok(())
     }
 
-    /// Load trigram index from disk using memory-mapped I/O
+    /// Load trigram index from disk using memory-mapped I/O with lazy loading
     ///
-    /// Uses mmap for zero-copy reads (much faster than buffered reading).
-    /// Reads the streaming binary format written by write().
+    /// Binary format V3: Only reads the directory and file paths, keeps posting lists compressed in mmap.
+    /// Posting lists are decompressed on-demand during search queries.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
 
         let file = File::open(path)
             .with_context(|| format!("Failed to open {}", path.display()))?;
 
-        // Memory-map the file for zero-copy access
+        // Memory-map the file (keep it alive for lazy access)
         let mmap = unsafe {
             memmap2::Mmap::map(&file)
                 .with_context(|| format!("Failed to mmap {}", path.display()))?
@@ -318,7 +543,10 @@ impl TrigramIndex {
 
         let version = u32::from_le_bytes([mmap[4], mmap[5], mmap[6], mmap[7]]);
         if version != VERSION {
-            anyhow::bail!("Unsupported trigrams.bin version: {}", version);
+            anyhow::bail!(
+                "Unsupported trigrams.bin version: {} (expected {}). Please re-index with 'reflex index'.",
+                version, VERSION
+            );
         }
 
         let num_trigrams = u64::from_le_bytes([
@@ -331,15 +559,16 @@ impl TrigramIndex {
             mmap[20], mmap[21], mmap[22], mmap[23],
         ]) as usize;
 
-        log::debug!("Loading trigram index: {} trigrams, {} files", num_trigrams, num_files);
+        log::debug!("Loading lazy trigram index: {} trigrams, {} files", num_trigrams, num_files);
 
-        // Read trigram index from mmap
-        let mut index = Vec::with_capacity(num_trigrams);
+        // Read directory (trigram → offset mappings) - fast, just metadata
+        let mut directory = Vec::with_capacity(num_trigrams);
         let mut pos = HEADER_SIZE;
+        let directory_size = num_trigrams * 16; // 16 bytes per entry
 
         for _ in 0..num_trigrams {
-            if pos + 8 > mmap.len() {
-                anyhow::bail!("Truncated trigram index at pos={}", pos);
+            if pos + 16 > mmap.len() {
+                anyhow::bail!("Truncated directory entry at pos={}", pos);
             }
 
             let trigram = u32::from_le_bytes([
@@ -350,68 +579,48 @@ impl TrigramIndex {
             ]);
             pos += 4;
 
-            let num_locations = u32::from_le_bytes([
+            let data_offset = u64::from_le_bytes([
                 mmap[pos],
                 mmap[pos + 1],
                 mmap[pos + 2],
                 mmap[pos + 3],
-            ]) as usize;
+                mmap[pos + 4],
+                mmap[pos + 5],
+                mmap[pos + 6],
+                mmap[pos + 7],
+            ]);
+            pos += 8;
+
+            let compressed_size = u32::from_le_bytes([
+                mmap[pos],
+                mmap[pos + 1],
+                mmap[pos + 2],
+                mmap[pos + 3],
+            ]);
             pos += 4;
 
-            if pos + num_locations * 12 > mmap.len() {
-                anyhow::bail!("Truncated location list at pos={}", pos);
-            }
-
-            let mut locations = Vec::with_capacity(num_locations);
-            for _ in 0..num_locations {
-                let file_id = u32::from_le_bytes([
-                    mmap[pos],
-                    mmap[pos + 1],
-                    mmap[pos + 2],
-                    mmap[pos + 3],
-                ]);
-                pos += 4;
-
-                let line_no = u32::from_le_bytes([
-                    mmap[pos],
-                    mmap[pos + 1],
-                    mmap[pos + 2],
-                    mmap[pos + 3],
-                ]);
-                pos += 4;
-
-                let byte_offset = u32::from_le_bytes([
-                    mmap[pos],
-                    mmap[pos + 1],
-                    mmap[pos + 2],
-                    mmap[pos + 3],
-                ]);
-                pos += 4;
-
-                locations.push(FileLocation {
-                    file_id,
-                    line_no,
-                    byte_offset,
-                });
-            }
-
-            index.push((trigram, locations));
+            directory.push(DirectoryEntry {
+                trigram,
+                data_offset,
+                compressed_size,
+            });
         }
 
-        // Read file paths from mmap
+        // Directory is already sorted by trigram (from write())
+        directory.sort_unstable_by_key(|e| e.trigram);
+
+        // Calculate where file paths section starts (after header + directory + data)
+        let data_section_size: u64 = directory.iter().map(|e| e.compressed_size as u64).sum();
+        let files_section_offset = HEADER_SIZE + directory_size + data_section_size as usize;
+        pos = files_section_offset;
+
+        // Read file paths (varint-encoded lengths)
         let mut files = Vec::with_capacity(num_files);
         for _ in 0..num_files {
-            if pos + 4 > mmap.len() {
-                anyhow::bail!("Truncated file path list at pos={}", pos);
-            }
-
-            let path_len = u32::from_le_bytes([
-                mmap[pos],
-                mmap[pos + 1],
-                mmap[pos + 2],
-                mmap[pos + 3],
-            ]) as usize;
-            pos += 4;
+            // Read path length (varint)
+            let (path_len, consumed) = read_varint(&mmap[pos..])?;
+            pos += consumed;
+            let path_len = path_len as usize;
 
             if pos + path_len > mmap.len() {
                 anyhow::bail!("Truncated file path at pos={}", pos);
@@ -424,9 +633,20 @@ impl TrigramIndex {
             pos += path_len;
         }
 
-        log::debug!("Loaded trigram index from {:?}", path);
+        log::info!(
+            "Loaded lazy trigram index: {} trigrams, {} files (directory: {} KB)",
+            num_trigrams,
+            num_files,
+            directory_size / 1024
+        );
 
-        Ok(Self { index, files, temp_index: None })
+        Ok(Self {
+            index: Vec::new(),  // Empty in lazy mode
+            files,
+            temp_index: None,
+            mmap: Some(mmap),  // Keep mmap alive for lazy decompression!
+            directory,
+        })
     }
 }
 
@@ -494,10 +714,10 @@ fn trigram_to_bytes(trigram: Trigram) -> [u8; 3] {
     ]
 }
 
-/// Intersect posting lists by file ID
+/// Intersect posting lists by (file_id, line_no) pairs
 ///
-/// Returns one location per file that contains all trigrams.
-/// This is used for searching - we just need to know which files to check.
+/// Returns locations where ALL trigrams appear on the SAME line (not just in the same file).
+/// This ensures accurate full-text matching.
 fn intersect_by_file(lists: &[&Vec<FileLocation>]) -> Vec<FileLocation> {
     if lists.is_empty() {
         return vec![];
@@ -505,20 +725,73 @@ fn intersect_by_file(lists: &[&Vec<FileLocation>]) -> Vec<FileLocation> {
 
     use std::collections::HashSet;
 
-    // Get unique file IDs from first list
-    let mut file_ids: HashSet<u32> = lists[0].iter().map(|loc| loc.file_id).collect();
+    // Create a set of (file_id, line_no) pairs from the first list
+    let mut candidates: HashSet<(u32, u32)> = lists[0]
+        .iter()
+        .map(|loc| (loc.file_id, loc.line_no))
+        .collect();
 
-    // Intersect with file IDs from other lists
+    // Intersect with (file_id, line_no) pairs from other lists
     for &list in &lists[1..] {
-        let list_files: HashSet<u32> = list.iter().map(|loc| loc.file_id).collect();
-        file_ids.retain(|id| list_files.contains(id));
+        let list_pairs: HashSet<(u32, u32)> = list
+            .iter()
+            .map(|loc| (loc.file_id, loc.line_no))
+            .collect();
+        candidates.retain(|pair| list_pairs.contains(pair));
     }
 
-    // Return one location per matching file
+    // Convert back to FileLocation results
     let mut result = Vec::new();
-    for &file_id in &file_ids {
-        // Find first location for this file in first list
-        if let Some(loc) = lists[0].iter().find(|loc| loc.file_id == file_id) {
+    for &(file_id, line_no) in &candidates {
+        // Find a location matching this (file_id, line_no) from the first list
+        if let Some(loc) = lists[0]
+            .iter()
+            .find(|loc| loc.file_id == file_id && loc.line_no == line_no)
+        {
+            result.push(*loc);
+        }
+    }
+
+    result.sort_unstable();
+    result
+}
+
+/// Intersect posting lists by (file_id, line_no) pairs (owned version for lazy-loading)
+///
+/// Similar to intersect_by_file() but works with owned Vec<Vec<FileLocation>>
+/// instead of references. Used in lazy-loading mode where posting lists are decompressed on-demand.
+///
+/// Returns locations where ALL trigrams appear on the SAME line (not just in the same file).
+fn intersect_by_file_owned(lists: &[Vec<FileLocation>]) -> Vec<FileLocation> {
+    if lists.is_empty() {
+        return vec![];
+    }
+
+    use std::collections::HashSet;
+
+    // Create a set of (file_id, line_no) pairs from the first list
+    let mut candidates: HashSet<(u32, u32)> = lists[0]
+        .iter()
+        .map(|loc| (loc.file_id, loc.line_no))
+        .collect();
+
+    // Intersect with (file_id, line_no) pairs from other lists
+    for list in &lists[1..] {
+        let list_pairs: HashSet<(u32, u32)> = list
+            .iter()
+            .map(|loc| (loc.file_id, loc.line_no))
+            .collect();
+        candidates.retain(|pair| list_pairs.contains(pair));
+    }
+
+    // Convert back to FileLocation results
+    let mut result = Vec::new();
+    for &(file_id, line_no) in &candidates {
+        // Find a location matching this (file_id, line_no) from the first list
+        if let Some(loc) = lists[0]
+            .iter()
+            .find(|loc| loc.file_id == file_id && loc.line_no == line_no)
+        {
             result.push(*loc);
         }
     }
