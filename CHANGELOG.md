@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/therecluse26/reflex/compare/v0.1.2...v0.1.3) - 2025-11-03
+
+### Other
+
+- Merge pull request #2 from therecluse26/release-plz-2025-11-03T22-53-50Z
+- *(ci)* add release status logging to workflow
+
 ## [0.1.2](https://github.com/therecluse26/reflex/compare/v0.1.1...v0.1.2) - 2025-11-03
 
 ### Fixed
