@@ -2,6 +2,9 @@
 /target/
 Cargo.lock
 
+# Binary symlink (convenience link to compiled binary)
+/rfx
+
 # RefLex cache directory (local-first data)
 .reflex/
 
