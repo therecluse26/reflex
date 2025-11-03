@@ -1,0 +1,27 @@
+//! Test Corpus: Whitespace Edge Cases
+
+
+
+
+
+
+
+Multiple blank lines above
+
+Tabs	between	words	here
+
+Trailing spaces exist on this line
+And this line
+
+Mixed	tabs and    spaces
+
+No spaces:NoSpacesBetweenWords
+
+Excessive     spaces     between     words
+
+CRLF line endings test
+Windows style endings
+Should handle properly
+
+
+Single newline at end (not multiple)

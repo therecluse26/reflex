@@ -1,0 +1,29 @@
+//! Test Corpus: Unicode Heavy File
+//!
+//! This file contains heavy emoji and unicode usage
+
+🚀 Rocket emoji function
+🔥 Fire emoji variable
+✨ Sparkles emoji class
+💯 Hundred points emoji method
+🎯 Dart emoji constant
+
+你好世界 Chinese Hello World
+こんにちは日本 Japanese Hello Japan
+Привет мир Russian Hello World
+مرحبا العالم Arabic Hello World
+שלום עולם Hebrew Hello World
+
+Mathematical symbols: ∑ ∫ ∂ ∇ √ ∞ ≈ ≠ ≤ ≥
+Greek letters: α β γ δ ε ζ η θ ι κ λ μ ν ξ ο π ρ σ τ υ φ χ ψ ω
+
+Emoji patterns:
+🌟✨💫⭐🌠
+❤️🧡💛💚💙💜🖤🤍🤎
+🍎🍊🍋🍌🍉🍇🍓🫐🍈🍒
+🐶🐱🐭🐹🐰🦊🐻🐼🐻‍❄️🐨
+
+Mixed scripts:
+Caf�� naïve Zürich München
+Ελληνικά 한국어 ภาษาไทย
+العَرَبِيَّة עִבְרִית

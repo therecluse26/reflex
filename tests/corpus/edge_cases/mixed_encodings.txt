@@ -1,0 +1,21 @@
+UTF-8 characters: café, naïve, Zürich
+Chinese: 你好世界 (Hello World)
+Japanese: こんにちは (Hello)
+Korean: 안녕하세요 (Hello)
+Arabic: مرحبا (Hello)
+Hebrew: שלום (Hello)
+Greek: Γειά σου (Hello)
+Russian: Привет (Hello)
+Thai: สวัสดี (Hello)
+Hindi: नमस्ते (Hello)
+
+Emoji test: 🚀 🔥 ✨ 💯 🎯 ⚡ 🌟 💫 ⭐ 🌠
+
+Combined characters: é (e + ´), ñ (n + ~)
+Zero-width characters: test​invisible​spaces
+Right-to-left: العربية עברית
+Mathematical: ∑∫∂∇√∞≈≠≤≥
+Currency: $ € £ ¥ ₹ ₽ ₩ ₪
+
+Box drawing: ┌─┬─┐│ ├─┼─┤│ └─┴─┘
+Arrows: ← → ↑ ↓ ↔ ↕ ⇐ ⇒ ⇑ ⇓

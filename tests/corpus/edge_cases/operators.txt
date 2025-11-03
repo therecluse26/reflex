@@ -1,0 +1,46 @@
+//! Test Corpus: Operators and Punctuation
+//!
+//! This file tests searching for operators and special characters
+
+Logical operators:
+&& || ! == != === !==
+
+Comparison operators:
+< > <= >= <=>
+
+Bitwise operators:
+& | ^ << >> ~
+
+Arithmetic operators:
++ - * / % **
+
+Assignment operators:
+= += -= *= /= %= **= &= |= ^= <<= >>=
+
+Path and navigation:
+:: -> => . .. ... /
+
+Brackets and parens:
+() [] {} <>
+
+Quotes and strings:
+"double quotes"
+'single quotes'
+`backticks`
+"""triple quotes"""
+
+Regex patterns:
+/pattern/
+/^start/
+/end$/
+/\d+/
+/\w+/
+
+Punctuation:
+, ; : ? ! @ # $ % ^ & * - _ = + \ | / < >
+
+URLs and protocols:
+https://example.com
+http://localhost:8080
+ftp://files.server.com
+ws://websocket.example.com
