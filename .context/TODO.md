@@ -793,19 +793,17 @@ Located in tests/performance_test.rs:
 
 #### Long-term Features
 - [ ] `reflexd`: Background indexing daemon
-- [ ] **MCP (Model Context Protocol) Server** - NEW P1 PRIORITY
-  - Implement MCP server for AI agent integration
-  - Use case: Direct integration with Claude Desktop, Cline, and other MCP clients
-  - Benefit: Native tool calling interface for AI coding agents
-  - Resources available in MCP spec
-  - Tools to expose: `search_code`, `get_symbol`, `index_project`, `get_stats`
-  - Context to provide: File content, symbol definitions, code structure
-  - Prompts to offer: "Find usages", "Explain symbol", "Show related code"
+- [x] **MCP (Model Context Protocol) Server** - ✅ COMPLETED (2025-11-03)
+  - Implemented stdio MCP server (`rfx mcp` command)
+  - Direct JSON-RPC protocol implementation (~470 lines, zero heavy deps)
+  - Tools exposed: `search_code`, `search_regex`, `search_ast`, `index_project`
+  - Configuration: Add to Claude Code's `claude_code_config.json`
+  - Benefits: Zero port conflicts, automatic lifecycle, per-session isolation
+  - Implementation: src/mcp.rs (clean, maintainable, no macro magic)
 - [ ] LSP (Language Server Protocol) adapter
 - [ ] Graph queries (imports/exports, call graph)
 - [ ] Branch-aware context diffing (`--since`, `--branch`)
 - [ ] Binary protocol for ultra-low-latency queries
-- [ ] File system watcher for auto-reindexing
 - [ ] Plugin system for custom languages
 
 ---

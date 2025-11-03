@@ -377,6 +377,72 @@ curl -X POST http://localhost:7878/index \
 - JSON responses compatible with AI agents and automation tools
 - Synchronous indexing (returns after completion)
 
+### `rfx mcp`
+
+Start as an MCP (Model Context Protocol) server for AI coding assistants like Claude Code.
+
+```bash
+rfx mcp
+```
+
+**What is MCP?**
+
+MCP is an open standard for connecting AI assistants to external tools and data sources. RefLex implements MCP over stdio, allowing AI coding assistants to search your codebase directly.
+
+**Configuration for Claude Code:**
+
+Add to `~/.claude/claude_code_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "reflex": {
+      "type": "stdio",
+      "command": "rfx",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+**Available MCP Tools:**
+
+1. **`search_code`** - Full-text or symbol search
+   - Parameters: `pattern` (required), `lang`, `kind`, `symbols`, `exact`, `file`, `limit`, `expand`
+   - Returns: Search results with file paths, line numbers, and context
+
+2. **`search_regex`** - Regex pattern matching with trigram optimization
+   - Parameters: `pattern` (required), `lang`, `file`, `limit`
+   - Returns: Regex search results
+
+3. **`search_ast`** - Structure-aware AST pattern matching
+   - Parameters: `pattern`, `ast_pattern`, `lang` (all required), `file`, `limit`
+   - Returns: AST query results
+
+4. **`index_project`** - Trigger reindexing
+   - Parameters: `force` (optional), `languages` (optional array)
+   - Returns: Index statistics after completion
+
+**Usage in Claude Code:**
+
+Once configured, Claude Code will automatically:
+- Spawn `rfx mcp` when the session starts
+- Expose RefLex tools for natural language queries
+- Handle process lifecycle (start/stop/restart)
+
+Example prompts:
+- "Search for all async functions in this project"
+- "Find usages of the `parse_tree` function"
+- "Show me all struct definitions in Rust files"
+
+**Why stdio MCP?**
+
+- **Zero port conflicts**: No network configuration needed
+- **Automatic lifecycle**: Claude Code manages the process
+- **Per-session isolation**: Each session gets its own subprocess
+- **Crash recovery**: Client automatically respawns on failure
+- **Secure**: OS-sandboxed, no network exposure
+
 ## 🌐 Supported Languages
 
 | Language | Extensions | Symbol Extraction |
@@ -539,11 +605,12 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for implementation details.
 - [x] Rustdoc comments for all public APIs
 - [x] HTTP server for programmatic access
 - [x] AST pattern matching (Tree-sitter queries)
+- [x] MCP (Model Context Protocol) server for AI agents
 
 ### Next Phase: Advanced Features
-- [ ] MCP (Model Context Protocol) adapter for AI agents
 - [ ] LSP (Language Server Protocol) adapter
 - [ ] Background indexing daemon (`reflexd`)
+- [ ] Graph queries (imports/exports, call graph)
 
 ## 📄 License
 

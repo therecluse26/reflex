@@ -169,6 +169,24 @@ pub enum Command {
         #[arg(short, long)]
         quiet: bool,
     },
+
+    /// Start MCP server for AI agent integration
+    ///
+    /// Runs RefLex as a Model Context Protocol (MCP) server using stdio transport.
+    /// This command is automatically invoked by MCP clients like Claude Code and
+    /// should not be run manually.
+    ///
+    /// Configuration example for Claude Code (~/.claude/claude_code_config.json):
+    /// {
+    ///   "mcpServers": {
+    ///     "reflex": {
+    ///       "type": "stdio",
+    ///       "command": "rfx",
+    ///       "args": ["mcp"]
+    ///     }
+    ///   }
+    /// }
+    Mcp,
 }
 
 impl Cli {
@@ -206,6 +224,9 @@ impl Cli {
             }
             Command::Watch { path, debounce, quiet } => {
                 handle_watch(path, debounce, quiet)
+            }
+            Command::Mcp => {
+                handle_mcp()
             }
         }
     }
@@ -902,4 +923,10 @@ fn handle_watch(path: PathBuf, debounce_ms: u64, quiet: bool) -> Result<()> {
     crate::watcher::watch(&path, indexer, watch_config)?;
 
     Ok(())
+}
+
+/// Handle the `mcp` subcommand
+fn handle_mcp() -> Result<()> {
+    log::info!("Starting MCP server");
+    crate::mcp::run_mcp_server()
 }

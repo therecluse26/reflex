@@ -31,6 +31,7 @@ pub mod cli;
 pub mod content_store;
 pub mod git;
 pub mod indexer;
+pub mod mcp;
 pub mod models;
 pub mod parsers;
 pub mod query;
