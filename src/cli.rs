@@ -145,6 +145,30 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+
+    /// Watch for file changes and auto-reindex
+    ///
+    /// Continuously monitors the workspace for changes and automatically
+    /// triggers incremental reindexing. Useful for IDE integrations and
+    /// keeping the index always fresh during active development.
+    ///
+    /// The debounce timer resets on every file change, batching rapid edits
+    /// (e.g., multi-file refactors, format-on-save) into a single reindex.
+    Watch {
+        /// Directory to watch (defaults to current directory)
+        #[arg(value_name = "PATH", default_value = ".")]
+        path: PathBuf,
+
+        /// Debounce duration in milliseconds (default: 15000 = 15s)
+        /// Waits this long after the last change before reindexing
+        /// Valid range: 5000-30000 (5-30 seconds)
+        #[arg(short, long, default_value = "15000")]
+        debounce: u64,
+
+        /// Suppress output (only log errors)
+        #[arg(short, long)]
+        quiet: bool,
+    },
 }
 
 impl Cli {
@@ -179,6 +203,9 @@ impl Cli {
             }
             Command::ListFiles { json } => {
                 handle_list_files(json)
+            }
+            Command::Watch { path, debounce, quiet } => {
+                handle_watch(path, debounce, quiet)
             }
         }
     }
@@ -822,6 +849,57 @@ fn handle_list_files(as_json: bool) -> Result<()> {
             }
         }
     }
+
+    Ok(())
+}
+
+/// Handle the `watch` subcommand
+fn handle_watch(path: PathBuf, debounce_ms: u64, quiet: bool) -> Result<()> {
+    log::info!("Starting watch mode for {:?}", path);
+
+    // Validate debounce range (5s - 30s)
+    if debounce_ms < 5000 || debounce_ms > 30000 {
+        anyhow::bail!(
+            "Debounce must be between 5000ms (5s) and 30000ms (30s). Got: {}ms",
+            debounce_ms
+        );
+    }
+
+    if !quiet {
+        println!("Starting RefLex watch mode...");
+        println!("  Directory: {}", path.display());
+        println!("  Debounce: {}ms ({}s)", debounce_ms, debounce_ms / 1000);
+        println!("  Press Ctrl+C to stop.\n");
+    }
+
+    // Setup cache
+    let cache = CacheManager::new(&path);
+
+    // Initial index if cache doesn't exist
+    if !cache.exists() {
+        if !quiet {
+            println!("No index found, running initial index...");
+        }
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+        indexer.index(&path, !quiet)?;
+        if !quiet {
+            println!("Initial index complete. Now watching for changes...\n");
+        }
+    }
+
+    // Create indexer for watcher
+    let cache = CacheManager::new(&path);
+    let config = IndexConfig::default();
+    let indexer = Indexer::new(cache, config);
+
+    // Start watcher
+    let watch_config = crate::watcher::WatchConfig {
+        debounce_ms,
+        quiet,
+    };
+
+    crate::watcher::watch(&path, indexer, watch_config)?;
 
     Ok(())
 }

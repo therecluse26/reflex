@@ -57,6 +57,11 @@ RefLex uses **trigram-based indexing** to enable sub-100ms full-text search acro
     # Export results as JSON (for AI agents)
     rfx query "format!" --json
 
+    # Watch for file changes and auto-reindex (new!)
+    rfx watch                    # 15s debounce (default)
+    rfx watch --debounce 20000   # 20s debounce
+    rfx watch --quiet            # Suppress output
+
     # Serve a local HTTP API (optional)
     rfx serve --port 7878
 
@@ -234,10 +239,11 @@ Result: **Simpler, faster, smaller cache, more flexible symbol filtering**
 ---
 
 ## Future Work
-- `reflexd`: tiny background helper for continuous indexing (opt-in).  
-- MCP / LSP adapters for direct IDE/agent integration.  
-- Graph queries (imports/exports, limited call graph).  
-- Branch-aware context diffing and filters (e.g., `--since`, `--branch`).  
+- ✅ **File watcher** (`rfx watch`): Auto-reindex on file changes with configurable debouncing
+- `reflexd`: tiny background helper for continuous indexing (opt-in).
+- MCP / LSP adapters for direct IDE/agent integration.
+- Graph queries (imports/exports, limited call graph).
+- Branch-aware context diffing and filters (e.g., `--since`, `--branch`).
 - Binary protocol for ultra-low-latency local queries.
 
 ---

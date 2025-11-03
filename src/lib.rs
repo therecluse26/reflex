@@ -36,6 +36,7 @@ pub mod parsers;
 pub mod query;
 pub mod regex_trigrams;
 pub mod trigram;
+pub mod watcher;
 
 // Re-export commonly used types
 pub use cache::CacheManager;
@@ -45,3 +46,4 @@ pub use models::{
     Language, QueryResponse, SearchResult, Span, SymbolKind,
 };
 pub use query::{QueryEngine, QueryFilter};
+pub use watcher::{watch, WatchConfig};
