@@ -73,7 +73,7 @@ curl http://localhost:7878/stats
 Simple health check.
 
 ### GET /stats
-Get index statistics (files, symbols, languages).
+Get index statistics (files, lines, languages).
 
 ### GET /query
 Search the codebase.
@@ -143,7 +143,6 @@ curl -X POST http://localhost:7878/index \
 ```json
 {
   "total_files": 35,
-  "total_symbols": 0,
   "index_size_bytes": 2745787,
   "last_updated": "2025-11-03T06:20:12+00:00",
   "files_by_language": {
@@ -152,10 +151,6 @@ curl -X POST http://localhost:7878/index \
     "Python": 2,
     "JavaScript": 1,
     "PHP": 1
-  },
-  "symbols_by_language": {
-    "Rust": 0,
-    "TypeScript": 0
   },
   "lines_by_language": {
     "Rust": 14736,

@@ -80,7 +80,6 @@ impl CacheManager {
                 hash TEXT NOT NULL,
                 last_indexed INTEGER NOT NULL,
                 language TEXT NOT NULL,
-                symbol_count INTEGER DEFAULT 0,
                 token_count INTEGER DEFAULT 0,
                 line_count INTEGER DEFAULT 0
             )",
@@ -105,10 +104,6 @@ impl CacheManager {
         conn.execute(
             "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
             ["total_files", "0", &now.to_string()],
-        )?;
-        conn.execute(
-            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
-            ["total_symbols", "0", &now.to_string()],
         )?;
         conn.execute(
             "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
@@ -301,7 +296,7 @@ compression_level = 3  # zstd level
     }
 
     /// Update file metadata in the files table
-    pub fn update_file(&self, path: &str, hash: &str, language: &str, symbol_count: usize, line_count: usize) -> Result<()> {
+    pub fn update_file(&self, path: &str, hash: &str, language: &str, line_count: usize) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
         let conn = Connection::open(&db_path)
             .context("Failed to open meta.db for file update")?;
@@ -309,16 +304,16 @@ compression_level = 3  # zstd level
         let now = chrono::Utc::now().timestamp();
 
         conn.execute(
-            "INSERT OR REPLACE INTO files (path, hash, last_indexed, language, symbol_count, line_count)
-             VALUES (?, ?, ?, ?, ?, ?)",
-            [path, hash, &now.to_string(), language, &symbol_count.to_string(), &line_count.to_string()],
+            "INSERT OR REPLACE INTO files (path, hash, last_indexed, language, line_count)
+             VALUES (?, ?, ?, ?, ?)",
+            [path, hash, &now.to_string(), language, &line_count.to_string()],
         )?;
 
         Ok(())
     }
 
     /// Batch update multiple files in a single transaction for performance
-    pub fn batch_update_files(&self, files: &[(String, String, String, usize, usize)]) -> Result<()> {
+    pub fn batch_update_files(&self, files: &[(String, String, String, usize)]) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
         let mut conn = Connection::open(&db_path)
             .context("Failed to open meta.db for batch update")?;
@@ -329,11 +324,11 @@ compression_level = 3  # zstd level
         // Use a transaction for batch inserts
         let tx = conn.transaction()?;
 
-        for (path, hash, language, symbol_count, line_count) in files {
+        for (path, hash, language, line_count) in files {
             tx.execute(
-                "INSERT OR REPLACE INTO files (path, hash, last_indexed, language, symbol_count, line_count)
-                 VALUES (?, ?, ?, ?, ?, ?)",
-                [path.as_str(), hash.as_str(), &now_str, language.as_str(), &symbol_count.to_string(), &line_count.to_string()],
+                "INSERT OR REPLACE INTO files (path, hash, last_indexed, language, line_count)
+                 VALUES (?, ?, ?, ?, ?)",
+                [path.as_str(), hash.as_str(), &now_str, language.as_str(), &line_count.to_string()],
             )?;
         }
 
@@ -354,13 +349,6 @@ compression_level = 3  # zstd level
             |row| row.get(0),
         ).unwrap_or(0);
 
-        // Sum total symbols from files table
-        let total_symbols: usize = conn.query_row(
-            "SELECT SUM(symbol_count) FROM files",
-            [],
-            |row| row.get(0),
-        ).unwrap_or(0);
-
         let now = chrono::Utc::now().timestamp();
 
         conn.execute(
@@ -368,12 +356,7 @@ compression_level = 3  # zstd level
             ["total_files", &total_files.to_string(), &now.to_string()],
         )?;
 
-        conn.execute(
-            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
-            ["total_symbols", &total_symbols.to_string(), &now.to_string()],
-        )?;
-
-        log::debug!("Updated statistics: {} files, {} symbols", total_files, total_symbols);
+        log::debug!("Updated statistics: {} files", total_files);
         Ok(())
     }
 
@@ -389,19 +372,17 @@ compression_level = 3  # zstd level
             .context("Failed to open meta.db")?;
 
         let mut stmt = conn.prepare(
-            "SELECT path, language, symbol_count, last_indexed FROM files ORDER BY path"
+            "SELECT path, language, last_indexed FROM files ORDER BY path"
         )?;
 
         let files = stmt.query_map([], |row| {
             let path: String = row.get(0)?;
             let language: String = row.get(1)?;
-            let symbol_count: i64 = row.get(2)?;
-            let last_indexed: i64 = row.get(3)?;
+            let last_indexed: i64 = row.get(2)?;
 
             Ok(IndexedFile {
                 path,
                 language,
-                symbol_count: symbol_count as usize,
                 last_indexed: chrono::DateTime::from_timestamp(last_indexed, 0)
                     .unwrap_or_else(chrono::Utc::now)
                     .to_rfc3339(),
@@ -420,11 +401,9 @@ compression_level = 3  # zstd level
             // Cache not initialized
             return Ok(crate::models::IndexStats {
                 total_files: 0,
-                total_symbols: 0,
                 index_size_bytes: 0,
                 last_updated: chrono::Utc::now().to_rfc3339(),
                 files_by_language: std::collections::HashMap::new(),
-                symbols_by_language: std::collections::HashMap::new(),
                 lines_by_language: std::collections::HashMap::new(),
             });
         }
@@ -435,16 +414,6 @@ compression_level = 3  # zstd level
         // Read total files
         let total_files: usize = conn.query_row(
             "SELECT value FROM statistics WHERE key = 'total_files'",
-            [],
-            |row| {
-                let value: String = row.get(0)?;
-                Ok(value.parse().unwrap_or(0))
-            },
-        ).unwrap_or(0);
-
-        // Read total symbols
-        let total_symbols: usize = conn.query_row(
-            "SELECT value FROM statistics WHERE key = 'total_symbols'",
             [],
             |row| {
                 let value: String = row.get(0)?;
@@ -488,20 +457,6 @@ compression_level = 3  # zstd level
             files_by_language.insert(language, count);
         }
 
-        // Get symbol count breakdown by language
-        let mut symbols_by_language = std::collections::HashMap::new();
-        let mut stmt = conn.prepare("SELECT language, SUM(symbol_count) FROM files GROUP BY language")?;
-        let symbol_counts = stmt.query_map([], |row| {
-            let language: String = row.get(0)?;
-            let count: i64 = row.get(1)?;
-            Ok((language, count as usize))
-        })?;
-
-        for result in symbol_counts {
-            let (language, count) = result?;
-            symbols_by_language.insert(language, count);
-        }
-
         // Get line count breakdown by language
         let mut lines_by_language = std::collections::HashMap::new();
         let mut stmt = conn.prepare("SELECT language, SUM(line_count) FROM files GROUP BY language")?;
@@ -518,11 +473,9 @@ compression_level = 3  # zstd level
 
         Ok(crate::models::IndexStats {
             total_files,
-            total_symbols,
             index_size_bytes,
             last_updated,
             files_by_language,
-            symbols_by_language,
             lines_by_language,
         })
     }
@@ -825,7 +778,7 @@ mod tests {
         let cache = CacheManager::new(temp.path());
 
         cache.init().unwrap();
-        cache.update_file("src/main.rs", "abc123", "rust", 5, 100).unwrap();
+        cache.update_file("src/main.rs", "abc123", "rust", 100).unwrap();
 
         // Verify file was stored
         let hashes = cache.load_hashes().unwrap();
@@ -838,9 +791,9 @@ mod tests {
         let cache = CacheManager::new(temp.path());
 
         cache.init().unwrap();
-        cache.update_file("src/main.rs", "abc123", "rust", 5, 100).unwrap();
-        cache.update_file("src/lib.rs", "def456", "rust", 10, 200).unwrap();
-        cache.update_file("README.md", "ghi789", "markdown", 0, 50).unwrap();
+        cache.update_file("src/main.rs", "abc123", "rust", 100).unwrap();
+        cache.update_file("src/lib.rs", "def456", "rust", 200).unwrap();
+        cache.update_file("README.md", "ghi789", "markdown", 50).unwrap();
 
         let hashes = cache.load_hashes().unwrap();
         assert_eq!(hashes.len(), 3);
@@ -855,8 +808,8 @@ mod tests {
         let cache = CacheManager::new(temp.path());
 
         cache.init().unwrap();
-        cache.update_file("src/main.rs", "abc123", "rust", 5, 100).unwrap();
-        cache.update_file("src/main.rs", "xyz999", "rust", 8, 150).unwrap();
+        cache.update_file("src/main.rs", "abc123", "rust", 100).unwrap();
+        cache.update_file("src/main.rs", "xyz999", "rust", 150).unwrap();
 
         // Second update should replace the first
         let hashes = cache.load_hashes().unwrap();
@@ -872,9 +825,9 @@ mod tests {
         cache.init().unwrap();
 
         let files = vec![
-            ("src/main.rs".to_string(), "hash1".to_string(), "rust".to_string(), 5, 100),
-            ("src/lib.rs".to_string(), "hash2".to_string(), "rust".to_string(), 10, 200),
-            ("test.py".to_string(), "hash3".to_string(), "python".to_string(), 3, 50),
+            ("src/main.rs".to_string(), "hash1".to_string(), "rust".to_string(), 100),
+            ("src/lib.rs".to_string(), "hash2".to_string(), "rust".to_string(), 200),
+            ("test.py".to_string(), "hash3".to_string(), "python".to_string(), 50),
         ];
 
         cache.batch_update_files(&files).unwrap();
@@ -892,13 +845,12 @@ mod tests {
         let cache = CacheManager::new(temp.path());
 
         cache.init().unwrap();
-        cache.update_file("src/main.rs", "abc123", "rust", 5, 100).unwrap();
-        cache.update_file("src/lib.rs", "def456", "rust", 10, 200).unwrap();
+        cache.update_file("src/main.rs", "abc123", "rust", 100).unwrap();
+        cache.update_file("src/lib.rs", "def456", "rust", 200).unwrap();
         cache.update_stats().unwrap();
 
         let stats = cache.stats().unwrap();
         assert_eq!(stats.total_files, 2);
-        assert_eq!(stats.total_symbols, 15); // 5 + 10
     }
 
     #[test]
@@ -910,7 +862,6 @@ mod tests {
         let stats = cache.stats().unwrap();
 
         assert_eq!(stats.total_files, 0);
-        assert_eq!(stats.total_symbols, 0);
         assert_eq!(stats.files_by_language.len(), 0);
     }
 
@@ -922,7 +873,6 @@ mod tests {
         // Stats before init should return zeros
         let stats = cache.stats().unwrap();
         assert_eq!(stats.total_files, 0);
-        assert_eq!(stats.total_symbols, 0);
     }
 
     #[test]
@@ -931,17 +881,15 @@ mod tests {
         let cache = CacheManager::new(temp.path());
 
         cache.init().unwrap();
-        cache.update_file("main.rs", "hash1", "rust", 5, 100).unwrap();
-        cache.update_file("lib.rs", "hash2", "rust", 10, 200).unwrap();
-        cache.update_file("script.py", "hash3", "python", 3, 50).unwrap();
-        cache.update_file("test.py", "hash4", "python", 7, 80).unwrap();
+        cache.update_file("main.rs", "hash1", "rust", 100).unwrap();
+        cache.update_file("lib.rs", "hash2", "rust", 200).unwrap();
+        cache.update_file("script.py", "hash3", "python", 50).unwrap();
+        cache.update_file("test.py", "hash4", "python", 80).unwrap();
         cache.update_stats().unwrap();
 
         let stats = cache.stats().unwrap();
         assert_eq!(stats.files_by_language.get("rust"), Some(&2));
         assert_eq!(stats.files_by_language.get("python"), Some(&2));
-        assert_eq!(stats.symbols_by_language.get("rust"), Some(&15)); // 5 + 10
-        assert_eq!(stats.symbols_by_language.get("python"), Some(&10)); // 3 + 7
         assert_eq!(stats.lines_by_language.get("rust"), Some(&300)); // 100 + 200
         assert_eq!(stats.lines_by_language.get("python"), Some(&130)); // 50 + 80
     }
@@ -962,8 +910,8 @@ mod tests {
         let cache = CacheManager::new(temp.path());
 
         cache.init().unwrap();
-        cache.update_file("src/main.rs", "hash1", "rust", 5, 100).unwrap();
-        cache.update_file("src/lib.rs", "hash2", "rust", 10, 200).unwrap();
+        cache.update_file("src/main.rs", "hash1", "rust", 100).unwrap();
+        cache.update_file("src/lib.rs", "hash2", "rust", 200).unwrap();
 
         let files = cache.list_files().unwrap();
         assert_eq!(files.len(), 2);
@@ -973,8 +921,6 @@ mod tests {
         assert_eq!(files[1].path, "src/main.rs");
 
         assert_eq!(files[0].language, "rust");
-        assert_eq!(files[0].symbol_count, 10);
-        assert_eq!(files[1].symbol_count, 5);
     }
 
     #[test]
@@ -1180,7 +1126,6 @@ mod tests {
                             &format!("file_{}.rs", i),
                             &format!("hash_{}", i),
                             "rust",
-                            i,
                             i * 10,
                         )
                         .unwrap();

@@ -49,7 +49,6 @@ fn main() -> anyhow::Result<()> {
     let stats = cache.stats()?;
     println!("   📊 Cache Statistics:");
     println!("      - Total files: {}", stats.total_files);
-    println!("      - Total symbols: {}", stats.total_symbols);
     println!("      - Cache size: {} bytes ({:.2} KB)",
              stats.index_size_bytes,
              stats.index_size_bytes as f64 / 1024.0);

@@ -228,7 +228,6 @@ fn handle_index(path: PathBuf, force: bool, languages: Vec<String>, quiet: bool)
     if !quiet {
         println!("Indexing complete!");
         println!("  Files indexed: {}", stats.total_files);
-        println!("  Symbols found: {}", stats.total_symbols);
         println!("  Cache size: {}", format_bytes(stats.index_size_bytes));
         println!("  Last updated: {}", stats.last_updated);
 
@@ -245,15 +244,14 @@ fn handle_index(path: PathBuf, force: bool, languages: Vec<String>, quiet: bool)
             let lang_width = max_lang_len.max(8); // At least "Language" header width
 
             // Print table header
-            println!("  {:<width$}  Files  Lines    Symbols", "Language", width = lang_width);
-            println!("  {}  -----  -------  -------", "-".repeat(lang_width));
+            println!("  {:<width$}  Files  Lines", "Language", width = lang_width);
+            println!("  {}  -----  -------", "-".repeat(lang_width));
 
             // Print rows
             for (language, file_count) in lang_vec {
                 let line_count = stats.lines_by_language.get(language).copied().unwrap_or(0);
-                let symbol_count = stats.symbols_by_language.get(language).copied().unwrap_or(0);
-                println!("  {:<width$}  {:5}  {:7}  {:7}",
-                    language, file_count, line_count, symbol_count,
+                println!("  {:<width$}  {:5}  {:7}",
+                    language, file_count, line_count,
                     width = lang_width);
             }
         }
@@ -738,7 +736,6 @@ fn handle_stats(as_json: bool) -> Result<()> {
         }
 
         println!("Files indexed:  {}", stats.total_files);
-        println!("Symbols found:  {}", stats.total_symbols);
         println!("Index size:     {} bytes", stats.index_size_bytes);
         println!("Last updated:   {}", stats.last_updated);
     }
@@ -795,10 +792,9 @@ fn handle_list_files(as_json: bool) -> Result<()> {
             println!("Indexed Files ({} total):", files.len());
             println!();
             for file in files {
-                println!("  {} ({} - {} symbols)",
+                println!("  {} ({})",
                          file.path,
-                         file.language,
-                         file.symbol_count);
+                         file.language);
             }
         }
     }

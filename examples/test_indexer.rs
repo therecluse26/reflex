@@ -66,7 +66,6 @@ pub enum Status {
     // Show statistics
     println!("📊 Index Statistics:");
     println!("   - Files indexed: {}", stats.total_files);
-    println!("   - Symbols extracted: {}", stats.total_symbols);
     println!("   - Cache size: {} bytes ({:.2} KB)",
              stats.index_size_bytes,
              stats.index_size_bytes as f64 / 1024.0);

@@ -62,7 +62,7 @@ pub enum Status {
 
     println!("2️⃣  Indexing files...");
     let stats = indexer.index(temp.path(), false)?;
-    println!("   ✅ Indexed {} files, {} symbols\n", stats.total_files, stats.total_symbols);
+    println!("   ✅ Indexed {} files\n", stats.total_files);
 
     // Create query engine
     let cache = CacheManager::new(temp.path());
@@ -106,7 +106,7 @@ pub enum Status {
     let results = engine.search("symbol:*", QueryFilter::default())?;
     println!("   Query: symbol:*");
     println!("   Results: {}", results.len());
-    assert_eq!(results.len(), stats.total_symbols, "Should match total symbols");
+    assert!(results.len() > 0, "Should find symbols");
     println!("   ✅ List all works\n");
 
     println!("✅ All query engine tests passed!");

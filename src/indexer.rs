@@ -137,7 +137,7 @@ impl Indexer {
         // Step 2: Build trigram index + content store
         let mut new_hashes = HashMap::new();
         let mut files_indexed = 0;
-        let mut file_metadata: Vec<(String, String, String, usize, usize)> = Vec::new(); // For batch SQLite update
+        let mut file_metadata: Vec<(String, String, String, usize)> = Vec::new(); // For batch SQLite update
 
         // Initialize trigram index and content store
         let mut trigram_index = TrigramIndex::new();
@@ -277,7 +277,6 @@ impl Indexer {
                     result.path_str.clone(),
                     result.hash.clone(),
                     format!("{:?}", result.language),
-                    0, // symbol_count is always 0 now
                     result.line_count
                 ));
 
@@ -331,7 +330,7 @@ impl Indexer {
         // Prepare data for batch recording
         let branch_files: Vec<(String, String)> = file_metadata
             .iter()
-            .map(|(path, hash, _, _, _)| (path.clone(), hash.clone()))
+            .map(|(path, hash, _, _)| (path.clone(), hash.clone()))
             .collect();
 
         // Batch record all files in a single transaction
@@ -692,7 +691,6 @@ mod tests {
         let stats = indexer.index(temp.path(), false).unwrap();
 
         assert_eq!(stats.total_files, 0);
-        assert_eq!(stats.total_symbols, 0);
     }
 
     #[test]

@@ -7,9 +7,9 @@
 //!
 //! # Architecture
 //!
-//! - **Indexer**: Scans and parses code with Tree-sitter; writes to cache
-//! - **Query Engine**: Loads cache on demand; executes deterministic searches
-//! - **Cache**: Memory-mapped storage for symbols, tokens, and metadata
+//! - **Indexer**: Scans code and builds trigram index; writes to cache
+//! - **Query Engine**: Loads cache on demand; executes deterministic searches; parses symbols at runtime
+//! - **Cache**: Memory-mapped storage for trigrams, content, and metadata
 //!
 //! # Example Usage
 //!
@@ -22,7 +22,7 @@
 //! let indexer = Indexer::new(cache, config);
 //! let stats = indexer.index(".", false).unwrap();
 //!
-//! println!("Indexed {} symbols", stats.total_symbols);
+//! println!("Indexed {} files", stats.total_files);
 //! ```
 
 pub mod cache;

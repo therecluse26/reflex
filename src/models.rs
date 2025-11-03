@@ -189,16 +189,12 @@ impl Default for IndexConfig {
 pub struct IndexStats {
     /// Total files indexed
     pub total_files: usize,
-    /// Total symbols found
-    pub total_symbols: usize,
     /// Index size on disk (bytes)
     pub index_size_bytes: u64,
     /// Last update timestamp
     pub last_updated: String,
     /// File count breakdown by language
     pub files_by_language: std::collections::HashMap<String, usize>,
-    /// Symbol count breakdown by language
-    pub symbols_by_language: std::collections::HashMap<String, usize>,
     /// Line count breakdown by language
     pub lines_by_language: std::collections::HashMap<String, usize>,
 }
@@ -210,8 +206,6 @@ pub struct IndexedFile {
     pub path: String,
     /// Detected language
     pub language: String,
-    /// Number of symbols in this file
-    pub symbol_count: usize,
     /// Last indexed timestamp
     pub last_indexed: String,
 }
