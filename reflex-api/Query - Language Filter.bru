@@ -1,0 +1,41 @@
+meta {
+  name: Query - Language Filter
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/query?q=parse&lang=rust&limit=10
+  body: none
+  auth: none
+}
+
+params:query {
+  q: parse
+  lang: rust
+  limit: 10
+}
+
+docs {
+  Search filtered by programming language.
+
+  Query Parameters:
+  - q: Search pattern (required)
+  - lang: Filter by language (rust, typescript, python, go, java, c, cpp, php)
+  - limit: Maximum number of results
+
+  Supported languages: rust, javascript (js), typescript (ts), vue, svelte, php, python (py), go, java, c, cpp (c++)
+}
+
+tests {
+  test("Status code is 200", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("All results are Rust files", function() {
+    const results = res.getBody().results;
+    results.forEach(result => {
+      expect(result.lang).to.equal('rust');
+    });
+  });
+}

@@ -1,0 +1,36 @@
+meta {
+  name: Get Stats
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/stats
+  body: none
+  auth: none
+}
+
+docs {
+  Get index statistics including:
+  - Total files indexed
+  - Total symbols found
+  - Index size in bytes
+  - Last updated timestamp
+  - File/symbol/line counts by language
+
+  Returns: IndexStats JSON object
+}
+
+tests {
+  test("Status code is 200", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("Response has total_files", function() {
+    expect(res.getBody().total_files).to.be.a('number');
+  });
+
+  test("Response has files_by_language", function() {
+    expect(res.getBody().files_by_language).to.be.an('object');
+  });
+}

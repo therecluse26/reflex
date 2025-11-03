@@ -1,0 +1,44 @@
+meta {
+  name: Index - Trigger Full Reindex
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/index
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "force": true,
+    "languages": []
+  }
+}
+
+docs {
+  Trigger a full reindex (force rebuild).
+
+  Request Body:
+  - force: boolean - Force full rebuild (ignore incremental cache)
+  - languages: string[] - Limit to specific languages (empty = all)
+
+  Returns: IndexStats JSON after indexing completes
+
+  Note: This is a synchronous operation - it returns after indexing is complete.
+}
+
+tests {
+  test("Status code is 200", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("Response has total_files", function() {
+    expect(res.getBody().total_files).to.be.a('number');
+  });
+
+  test("Response has total_symbols", function() {
+    expect(res.getBody().total_symbols).to.be.a('number');
+  });
+}

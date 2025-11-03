@@ -1,0 +1,44 @@
+meta {
+  name: Query - Symbol Search
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/query?q=QueryEngine&symbols=true&kind=struct&limit=5
+  body: none
+  auth: none
+}
+
+params:query {
+  q: QueryEngine
+  symbols: true
+  kind: struct
+  limit: 5
+}
+
+docs {
+  Symbol-only search that finds definitions (not usages).
+
+  Query Parameters:
+  - q: Symbol name pattern (required)
+  - symbols: Enable symbol-only mode (boolean)
+  - kind: Filter by symbol kind (function, class, struct, etc.)
+  - limit: Maximum number of results
+
+  Returns: QueryResponse with symbol definitions only
+}
+
+tests {
+  test("Status code is 200", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("Results have symbol information", function() {
+    const results = res.getBody().results;
+    if (results.length > 0) {
+      expect(results[0].kind).to.exist;
+      expect(results[0].symbol).to.exist;
+    }
+  });
+}

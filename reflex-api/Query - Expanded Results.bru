@@ -1,0 +1,44 @@
+meta {
+  name: Query - Expanded Results
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/query?q=QueryEngine&symbols=true&expand=true&limit=3
+  body: none
+  auth: none
+}
+
+params:query {
+  q: QueryEngine
+  symbols: true
+  expand: true
+  limit: 3
+}
+
+docs {
+  Show full symbol body (not just signature).
+
+  Query Parameters:
+  - q: Symbol name pattern (required)
+  - symbols: Enable symbol-only mode (boolean)
+  - expand: Show full symbol body (boolean)
+  - limit: Maximum number of results
+
+  With expand=true, the preview includes the entire function/class body
+  instead of just the first few lines.
+}
+
+tests {
+  test("Status code is 200", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("Results have expanded preview", function() {
+    const results = res.getBody().results;
+    if (results.length > 0) {
+      expect(results[0].preview.length).to.be.greaterThan(100);
+    }
+  });
+}

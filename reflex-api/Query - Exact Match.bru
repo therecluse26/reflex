@@ -1,0 +1,43 @@
+meta {
+  name: Query - Exact Match
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/query?q=QueryEngine&symbols=true&exact=true&limit=10
+  body: none
+  auth: none
+}
+
+params:query {
+  q: QueryEngine
+  symbols: true
+  exact: true
+  limit: 10
+}
+
+docs {
+  Exact symbol name match (no substring matching).
+
+  Query Parameters:
+  - q: Exact symbol name (required)
+  - symbols: Enable symbol-only mode (boolean)
+  - exact: Enable exact match mode (boolean)
+  - limit: Maximum number of results
+
+  With exact=true, only symbols with names exactly matching the pattern are returned.
+}
+
+tests {
+  test("Status code is 200", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("Results have exact symbol names", function() {
+    const results = res.getBody().results;
+    results.forEach(result => {
+      expect(result.symbol).to.equal('QueryEngine');
+    });
+  });
+}

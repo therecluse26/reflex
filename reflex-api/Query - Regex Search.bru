@@ -1,0 +1,39 @@
+meta {
+  name: Query - Regex Search
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/query?q=fn.*test&regex=true&limit=10
+  body: none
+  auth: none
+}
+
+params:query {
+  q: fn.*test
+  regex: true
+  limit: 10
+}
+
+docs {
+  Regex pattern search with trigram optimization.
+
+  Query Parameters:
+  - q: Regex pattern (required)
+  - regex: Enable regex mode (boolean)
+  - limit: Maximum number of results
+
+  RefLex extracts literals from regex patterns to use trigram optimization,
+  falling back to full scan when no literals are present.
+}
+
+tests {
+  test("Status code is 200", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("Response has results", function() {
+    expect(res.getBody().results).to.be.an('array');
+  });
+}

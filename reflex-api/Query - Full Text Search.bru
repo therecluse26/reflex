@@ -1,0 +1,40 @@
+meta {
+  name: Query - Full Text Search
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/query?q=QueryEngine&limit=10
+  body: none
+  auth: none
+}
+
+params:query {
+  q: QueryEngine
+  limit: 10
+}
+
+tests {
+  test("Status code is 200", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+  
+  test("Response has results array", function() {
+    expect(res.getBody().results).to.be.an('array');
+  });
+  
+  test("Response has status", function() {
+    expect(res.getBody().status).to.be.oneOf(['fresh', 'stale']);
+  });
+}
+
+docs {
+  Basic full-text search that finds all occurrences of a pattern.
+  
+  Query Parameters:
+  - q: Search pattern (required)
+  - limit: Maximum number of results (optional)
+  
+  Returns: QueryResponse with status, results, and optional warnings
+}

@@ -91,6 +91,49 @@ impl Indexer {
         let total_files = files.len();
         log::info!("Discovered {} files to index", total_files);
 
+        // Step 1.5: Quick incremental check - are all files unchanged?
+        // If yes, skip expensive rebuild entirely and return cached stats
+        if !existing_hashes.is_empty() && total_files == existing_hashes.len() {
+            // Same number of files - check if any changed by comparing hashes
+            let mut any_changed = false;
+
+            for file_path in &files {
+                let path_str = file_path.to_string_lossy().to_string();
+
+                // Check if file exists in cache
+                if let Some(existing_hash) = existing_hashes.get(&path_str) {
+                    // Read and hash file to check if changed
+                    match std::fs::read_to_string(file_path) {
+                        Ok(content) => {
+                            let current_hash = self.hash_content(content.as_bytes());
+                            if &current_hash != existing_hash {
+                                any_changed = true;
+                                log::debug!("File changed: {}", path_str);
+                                break; // Early exit - we know we need to rebuild
+                            }
+                        }
+                        Err(_) => {
+                            any_changed = true;
+                            break;
+                        }
+                    }
+                } else {
+                    // File not in cache - something changed
+                    any_changed = true;
+                    break;
+                }
+            }
+
+            if !any_changed {
+                log::info!("No files changed - skipping index rebuild");
+                let stats = self.cache.stats()?;
+                return Ok(stats);
+            }
+        } else if total_files != existing_hashes.len() {
+            log::info!("File count changed ({} -> {}) - full reindex required",
+                       existing_hashes.len(), total_files);
+        }
+
         // Step 2: Build trigram index + content store
         let mut new_hashes = HashMap::new();
         let mut files_indexed = 0;

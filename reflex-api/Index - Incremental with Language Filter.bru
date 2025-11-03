@@ -1,0 +1,40 @@
+meta {
+  name: Index - Incremental with Language Filter
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/index
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "force": false,
+    "languages": ["rust", "typescript"]
+  }
+}
+
+docs {
+  Trigger incremental indexing for specific languages.
+
+  Request Body:
+  - force: boolean - Force full rebuild (false = incremental)
+  - languages: string[] - Languages to index
+
+  Supported languages: rust, typescript, javascript, python, go, java, php, c, cpp
+
+  With force=false, only changed files are reindexed.
+}
+
+tests {
+  test("Status code is 200", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("Response has files_by_language", function() {
+    expect(res.getBody().files_by_language).to.be.an('object');
+  });
+}

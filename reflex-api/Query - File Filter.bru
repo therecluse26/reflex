@@ -1,0 +1,44 @@
+meta {
+  name: Query - File Filter
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/query?q=parse&file=query.rs&limit=10
+  body: none
+  auth: none
+}
+
+params:query {
+  q: parse
+  file: query.rs
+  limit: 10
+}
+
+docs {
+  Search filtered by file path substring.
+
+  Query Parameters:
+  - q: Search pattern (required)
+  - file: File path substring (matches anywhere in path)
+  - limit: Maximum number of results
+
+  Examples:
+  - file=src/ - matches files in src/ directory
+  - file=test - matches test files
+  - file=query.rs - matches query.rs specifically
+}
+
+tests {
+  test("Status code is 200", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("All results match file filter", function() {
+    const results = res.getBody().results;
+    results.forEach(result => {
+      expect(result.path).to.include('query.rs');
+    });
+  });
+}

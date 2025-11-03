@@ -1,0 +1,49 @@
+meta {
+  name: Query - Combined Filters
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/query?q=search&lang=rust&kind=function&symbols=true&file=query&limit=5
+  body: none
+  auth: none
+}
+
+params:query {
+  q: search
+  lang: rust
+  kind: function
+  symbols: true
+  file: query
+  limit: 5
+}
+
+docs {
+  Complex query with multiple filters combined.
+
+  Query Parameters:
+  - q: Search pattern (required)
+  - lang: Filter by language
+  - kind: Filter by symbol kind
+  - symbols: Symbol-only mode
+  - file: File path filter
+  - limit: Maximum number of results
+
+  All filters are applied together (AND logic).
+}
+
+tests {
+  test("Status code is 200", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("Results match all filters", function() {
+    const results = res.getBody().results;
+    results.forEach(result => {
+      expect(result.lang).to.equal('rust');
+      expect(result.kind).to.equal('Function');
+      expect(result.path).to.include('query');
+    });
+  });
+}
