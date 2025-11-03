@@ -13,6 +13,7 @@ RefLex is a blazingly fast, trigram-based code search engine designed for develo
 - **🔍 Complete Coverage**: Find every occurrence, not just symbol definitions
 - **⚡ Blazing Fast**: Sub-100ms queries on 10k+ files via trigram indexing
 - **🎯 Symbol-Aware**: Runtime tree-sitter parsing for precise symbol filtering
+- **🌳 AST Pattern Matching**: Structure-aware search with Tree-sitter queries
 - **🔄 Incremental**: Only reindexes changed files (blake3 hashing)
 - **🌍 Multi-Language**: Rust, TypeScript/JavaScript, Vue, Svelte, PHP, Python, Go, Java, C, C++
 - **🤖 AI-Ready**: Clean JSON output built for LLM tools and automation
@@ -101,6 +102,7 @@ rfx query <PATTERN> [OPTIONS]
 Options:
   --symbols, -s        Symbol-only search (definitions, not usage)
   --regex, -r          Treat pattern as regex
+  --ast <PATTERN>      AST pattern matching (requires --lang)
   --exact, -e          Exact match (no substring matching)
   --lang <LANG>        Filter by language (rust, typescript, python, etc.)
   --kind <KIND>        Filter by symbol kind (function, class, struct, etc.)
@@ -133,7 +135,152 @@ rfx query "format!" --json --limit 5
 
 # Count matches
 rfx query "TODO" --count
+
+# AST pattern matching (structure-aware search)
+rfx query "fn" --ast "(function_item) @fn" --lang rust
 ```
+
+### AST Pattern Matching
+
+RefLex supports **structure-aware code search** using Tree-sitter AST queries. This allows you to search for specific code structures (like functions, classes, traits) rather than just text patterns.
+
+**Important:**
+- AST queries require `--lang` to be specified
+- AST queries must have trigram pre-filtering (pattern text) for performance
+- Query patterns must include captures using `@name` syntax
+
+```bash
+rfx query <TEXT_PATTERN> --ast <AST_PATTERN> --lang <LANGUAGE>
+```
+
+#### Supported Languages for AST Queries
+
+- **Rust** (`rust`)
+- **TypeScript** (`typescript`)
+- **JavaScript** (`javascript`)
+- **PHP** (`php`)
+
+#### S-Expression Query Syntax
+
+AST patterns use Lisp-like S-expressions with **captures** to match Tree-sitter AST nodes:
+
+**Basic pattern structure:**
+```
+(node_type) @capture_name           Match and capture any node of this type
+(node_type (child_type)) @parent    Match node with specific child
+(node_type field: (child)) @node    Match node with named field
+```
+
+**IMPORTANT**: You must use capture syntax `@name` to extract matched nodes. Without captures, matches will be found but not returned.
+
+#### Common AST Patterns by Language
+
+**Rust:**
+```bash
+# Find all functions
+rfx query "fn" --ast "(function_item) @fn" --lang rust
+
+# Find all struct definitions
+rfx query "struct" --ast "(struct_item) @struct" --lang rust
+
+# Find all enum definitions
+rfx query "enum" --ast "(enum_item) @enum" --lang rust
+
+# Find all trait definitions
+rfx query "trait" --ast "(trait_item) @trait" --lang rust
+
+# Find all impl blocks
+rfx query "impl" --ast "(impl_item) @impl" --lang rust
+```
+
+**TypeScript/JavaScript:**
+```bash
+# Find all function declarations
+rfx query "function" --ast "(function_declaration) @fn" --lang typescript
+
+# Find all class declarations
+rfx query "class" --ast "(class_declaration) @class" --lang typescript
+
+# Find all interface declarations
+rfx query "interface" --ast "(interface_declaration) @interface" --lang typescript
+
+# Find all arrow functions
+rfx query "=>" --ast "(arrow_function) @fn" --lang typescript
+
+# Find all method definitions
+rfx query "method" --ast "(method_definition) @method" --lang typescript
+```
+
+**PHP:**
+```bash
+# Find all function definitions
+rfx query "function" --ast "(function_definition) @fn" --lang php
+
+# Find all class declarations
+rfx query "class" --ast "(class_declaration) @class" --lang php
+
+# Find all trait declarations
+rfx query "trait" --ast "(trait_declaration) @trait" --lang php
+
+# Find all enum declarations (PHP 8.1+)
+rfx query "enum" --ast "(enum_declaration) @enum" --lang php
+```
+
+#### Advanced AST Pattern Examples
+
+**Multiple captures:**
+```bash
+# Find functions and extract the name
+rfx query "fn" --ast "(function_item name: (identifier) @name) @function" --lang rust
+
+# Find classes with specific body
+rfx query "class" --ast "(class_declaration name: (identifier) @name body: (class_body) @body) @class" --lang typescript
+```
+
+**Combining with other filters:**
+```bash
+# AST query + file filter
+rfx query "async" --ast "(function_item (async))" --lang rust --file src/
+
+# AST query + limit results
+rfx query "class" --ast "(class_declaration)" --lang typescript --limit 10
+
+# AST query + JSON output for AI agents
+rfx query "impl" --ast "(impl_item)" --lang rust --json
+```
+
+#### How AST Queries Work
+
+1. **Phase 1 - Trigram Filtering**: Text pattern narrows 10,000+ files → ~10-100 candidates
+2. **Phase 2 - AST Matching**: Parse candidate files with Tree-sitter and match AST pattern
+3. **Phase 3 - Results**: Return matching code structures with symbol names and spans
+
+**Performance:** AST queries add 2-224ms overhead (parsing only candidate files, not entire codebase)
+
+#### Finding Available Node Types
+
+To discover available AST node types for your language:
+
+1. Visit Tree-sitter playground: https://tree-sitter.github.io/tree-sitter/playground
+2. Select your language grammar
+3. Paste sample code to see AST structure
+4. Use node type names in parentheses: `(node_type)`
+
+**Example node types by language:**
+
+- **Rust**: `function_item`, `struct_item`, `enum_item`, `trait_item`, `impl_item`, `mod_item`, `const_item`, `static_item`
+- **TypeScript/JavaScript**: `function_declaration`, `class_declaration`, `interface_declaration`, `arrow_function`, `method_definition`, `variable_declarator`
+- **PHP**: `function_definition`, `class_declaration`, `trait_declaration`, `interface_declaration`, `enum_declaration`, `method_declaration`
+
+#### Difference from Symbol Search
+
+| Feature | Symbol Search (`--symbols`) | AST Query (`--ast`) |
+|---------|----------------------------|---------------------|
+| **Purpose** | Find symbol definitions | Match specific code structures |
+| **Filter by** | Symbol kind (function, class, etc.) | AST node patterns |
+| **Flexibility** | Predefined kinds only | Any Tree-sitter node pattern |
+| **Speed** | Fast (simple symbol extraction) | Slightly slower (full AST matching) |
+| **Use case** | "Find all functions" | "Find all async functions with pub modifier" |
 
 ### `rfx stats`
 
@@ -391,9 +538,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for implementation details.
 - [x] ARCHITECTURE.md with system design
 - [x] Rustdoc comments for all public APIs
 - [x] HTTP server for programmatic access
+- [x] AST pattern matching (Tree-sitter queries)
 
 ### Next Phase: Advanced Features
-- [ ] AST pattern matching (Tree-sitter queries)
 - [ ] MCP (Model Context Protocol) adapter for AI agents
 - [ ] LSP (Language Server Protocol) adapter
 - [ ] Background indexing daemon (`reflexd`)

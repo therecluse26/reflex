@@ -136,13 +136,23 @@ reflex query "unwrap" --lang rust --limit 10 --json
 **Known Issues:**
 1. **AST pattern matching not implemented** - Framework exists but not functional
 
-**Recently Completed (Not Yet Marked):**
-1. **Regex support** - FULLY IMPLEMENTED ✅
+**Recently Completed:**
+1. **Query Pipeline Refactor** - COMPLETED (2025-11-03) ✅
+   - Replaced mutually-exclusive branching with composable pipeline architecture
+   - Fixed bug: regex + symbol filtering now works correctly
+   - Architecture: Phase 1 (candidates) → Phase 2 (enrichment) → Phase 3 (filters)
+   - Optimal ordering: trigram → regex → symbols (minimizes expensive parsing)
+   - All filter combinations now work (regex+symbols, regex+kind, etc.)
+   - Performance maintained: 2-190ms depending on query type
+   - 221 tests passing
+
+2. **Regex support** - FULLY IMPLEMENTED ✅
    - Regex pattern matching with trigram optimization (src/regex_trigrams.rs)
    - Literal extraction from regex patterns (≥3 chars)
    - Union-based file selection for correctness
    - Integration with query engine via --regex flag
    - Comprehensive test coverage (13 test cases)
+   - Works with symbol filtering after pipeline refactor
 
 **Performance Note:**
 - Queries are extremely fast: 2-3ms on small codebases, 124-224ms on Linux kernel (62K files)

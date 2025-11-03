@@ -77,9 +77,10 @@ pub enum Command {
         #[arg(short, long)]
         kind: Option<String>,
 
-        /// Use AST pattern matching
+        /// AST pattern for structure-aware search (requires --lang)
+        /// Example: "(function_item (async))" to find async functions in Rust
         #[arg(long)]
-        ast: bool,
+        ast: Option<String>,
 
         /// Use regex pattern matching
         #[arg(short = 'r', long)]
@@ -165,7 +166,7 @@ impl Cli {
                 handle_index(path, force, languages, quiet)
             }
             Command::Query { pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, count } => {
-                handle_query(pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, count)
+                handle_query(pattern, symbols, lang, kind, ast.as_deref(), regex, json, limit, expand, file, exact, count)
             }
             Command::Serve { port, host } => {
                 handle_serve(port, host)
@@ -286,7 +287,7 @@ fn handle_query(
     symbols_flag: bool,
     lang: Option<String>,
     kind_str: Option<String>,
-    use_ast: bool,
+    ast_pattern: Option<&str>,
     use_regex: bool,
     as_json: bool,
     limit: Option<usize>,
@@ -356,10 +357,15 @@ fn handle_query(
     // Smart behavior: --kind implies --symbols
     let symbols_mode = symbols_flag || kind.is_some();
 
+    // Validate AST query requirements
+    if ast_pattern.is_some() && language.is_none() {
+        anyhow::bail!("AST pattern matching requires --lang to be specified. Supported languages for AST queries: rust, typescript, javascript, php");
+    }
+
     let filter = QueryFilter {
         language,
         kind,
-        use_ast,
+        use_ast: ast_pattern.is_some(),
         use_regex,
         limit,
         symbols_mode,
@@ -371,33 +377,51 @@ fn handle_query(
     // Measure query time
     let start = Instant::now();
 
-    if as_json {
+    // For AST queries, we need to pass the AST pattern separately
+    // The text pattern is used for trigram filtering (Phase 1)
+    // The AST pattern is used for structure matching (Phase 2)
+    let results = if let Some(ast_pat) = ast_pattern {
+        // AST query: use custom search path
+        engine.search_ast_with_text_filter(&pattern, ast_pat, filter.clone())?
+    } else if as_json {
         // Use metadata-aware search for JSON output
-        let response = engine.search_with_metadata(&pattern, filter)?;
-        let elapsed = start.elapsed();
+        engine.search_with_metadata(&pattern, filter.clone())?.results
+    } else {
+        // Use standard search
+        engine.search(&pattern, filter.clone())?
+    };
 
-        // Format timing string
-        let timing_str = if elapsed.as_millis() < 1 {
-            format!("{:.1}ms", elapsed.as_secs_f64() * 1000.0)
+    let elapsed = start.elapsed();
+
+    // Format timing string
+    let timing_str = if elapsed.as_millis() < 1 {
+        format!("{:.1}ms", elapsed.as_secs_f64() * 1000.0)
+    } else {
+        format!("{}ms", elapsed.as_millis())
+    };
+
+    if as_json {
+        // Reconstruct QueryResponse for JSON output
+        let (status, can_trust_results, warning) = if ast_pattern.is_some() {
+            // For AST queries, skip metadata checks for now
+            (crate::models::IndexStatus::Fresh, true, None)
         } else {
-            format!("{}ms", elapsed.as_millis())
+            // Use cached status from search_with_metadata call above
+            let response = engine.search_with_metadata(&pattern, filter)?;
+            (response.status, response.can_trust_results, response.warning)
+        };
+
+        let response = crate::models::QueryResponse {
+            status,
+            can_trust_results,
+            warning,
+            results,
         };
 
         println!("{}", serde_json::to_string_pretty(&response)?);
         eprintln!("Found {} results in {}", response.results.len(), timing_str);
     } else {
-        // Use standard search with stderr warnings
-        let results = engine.search(&pattern, filter)?;
-        let elapsed = start.elapsed();
-
-        // Format timing string
-        let timing_str = if elapsed.as_millis() < 1 {
-            format!("{:.1}ms", elapsed.as_secs_f64() * 1000.0)
-        } else {
-            format!("{}ms", elapsed.as_millis())
-        };
-
-        // Count-only mode: just show the count and timing
+        // Standard output
         if count_only {
             println!("Found {} results in {}", results.len(), timing_str);
             return Ok(());

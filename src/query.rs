@@ -127,9 +127,12 @@ impl QueryEngine {
             self.get_trigram_candidates(pattern)?
         };
 
-        // PHASE 2: Enrich with symbol information (if needed)
-        // Parse candidate files and extract symbol definitions
-        if filter.symbols_mode || filter.kind.is_some() {
+        // PHASE 2: Enrich with symbol information or AST pattern matching (if needed)
+        if filter.use_ast {
+            // AST pattern matching: Execute Tree-sitter query on candidate files
+            results = self.enrich_with_ast(results, pattern, filter.language)?;
+        } else if filter.symbols_mode || filter.kind.is_some() {
+            // Symbol enrichment: Parse candidate files and extract symbol definitions
             results = self.enrich_with_symbols(results, pattern, filter.use_regex)?;
         }
 
@@ -223,6 +226,112 @@ impl QueryEngine {
         };
 
         self.search(pattern, filter)
+    }
+
+    /// Search using AST pattern with separate text pattern for trigram filtering
+    ///
+    /// This allows efficient AST queries by:
+    /// 1. Using text_pattern for Phase 1 trigram filtering (narrows to candidate files)
+    /// 2. Using ast_pattern for Phase 2 AST matching (structure-aware filtering)
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Find async functions: trigram search for "fn ", AST match for function_item
+    /// engine.search_ast_with_text_filter("fn ", "(function_item (async))", filter)?;
+    /// ```
+    pub fn search_ast_with_text_filter(
+        &self,
+        text_pattern: &str,
+        ast_pattern: &str,
+        filter: QueryFilter,
+    ) -> Result<Vec<SearchResult>> {
+        log::info!("Executing AST query with text filter: text='{}', ast='{}', filter={:?}",
+                   text_pattern, ast_pattern, filter);
+
+        // Ensure cache exists
+        if !self.cache.exists() {
+            anyhow::bail!(
+                "Index not found. Run 'rfx index' to build the cache first."
+            );
+        }
+
+        // Show non-blocking warnings about branch state and staleness
+        self.check_index_freshness()?;
+
+        // PHASE 1: Get initial candidates using text pattern (trigram search)
+        let candidates = if filter.use_regex {
+            self.get_regex_candidates(text_pattern)?
+        } else {
+            self.get_trigram_candidates(text_pattern)?
+        };
+
+        log::debug!("Phase 1 found {} candidate locations", candidates.len());
+
+        // PHASE 2: Execute AST query on candidates
+        let mut results = self.enrich_with_ast(candidates, ast_pattern, filter.language)?;
+
+        log::debug!("Phase 2 AST matching found {} results", results.len());
+
+        // PHASE 3: Apply filters
+        if let Some(lang) = filter.language {
+            results.retain(|r| r.lang == lang);
+        }
+
+        if let Some(ref kind) = filter.kind {
+            results.retain(|r| {
+                if matches!(kind, SymbolKind::Function) {
+                    matches!(r.kind, SymbolKind::Function | SymbolKind::Method)
+                } else {
+                    r.kind == *kind
+                }
+            });
+        }
+
+        if let Some(ref file_pattern) = filter.file_pattern {
+            results.retain(|r| r.path.contains(file_pattern));
+        }
+
+        if filter.exact && filter.symbols_mode {
+            results.retain(|r| r.symbol.as_deref() == Some(text_pattern));
+        }
+
+        // Expand symbol bodies if requested
+        if filter.expand {
+            let content_path = self.cache.path().join("content.bin");
+            if let Ok(content_reader) = ContentReader::open(&content_path) {
+                for result in &mut results {
+                    if result.span.start_line < result.span.end_line {
+                        if let Some(file_id) = Self::find_file_id(&content_reader, &result.path) {
+                            if let Ok(content) = content_reader.get_file_content(file_id) {
+                                let lines: Vec<&str> = content.lines().collect();
+                                let start_idx = (result.span.start_line as usize).saturating_sub(1);
+                                let end_idx = (result.span.end_line as usize).min(lines.len());
+
+                                if start_idx < end_idx {
+                                    let full_body = lines[start_idx..end_idx].join("\n");
+                                    result.preview = full_body;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort results deterministically
+        results.sort_by(|a, b| {
+            a.path.cmp(&b.path)
+                .then_with(|| a.span.start_line.cmp(&b.span.start_line))
+        });
+
+        // Apply limit
+        if let Some(limit) = filter.limit {
+            results.truncate(limit);
+        }
+
+        log::info!("AST query returned {} results", results.len());
+
+        Ok(results)
     }
 
     /// List all symbols of a specific kind
@@ -338,6 +447,83 @@ impl QueryEngine {
         log::info!("Symbol enrichment found {} matches for pattern '{}'", filtered.len(), pattern);
 
         Ok(filtered)
+    }
+
+    /// Enrich text match candidates with AST pattern matching
+    ///
+    /// Takes a list of text match candidates and executes a Tree-sitter AST query
+    /// on the candidate files, returning only matches that satisfy the AST pattern.
+    ///
+    /// # Algorithm
+    /// 1. Extract unique file paths from candidates
+    /// 2. Load file contents for each candidate file
+    /// 3. Execute AST query pattern using Tree-sitter
+    /// 4. Return AST matches
+    ///
+    /// # Performance
+    /// Only parses files that have text matches, so typically 10-100 files
+    /// instead of the entire codebase (62K+ files).
+    ///
+    /// # Requirements
+    /// - Language must be specified (AST queries are language-specific)
+    /// - AST pattern must be valid S-expression syntax
+    fn enrich_with_ast(&self, candidates: Vec<SearchResult>, ast_pattern: &str, language: Option<Language>) -> Result<Vec<SearchResult>> {
+        // Require language for AST queries
+        let lang = language.ok_or_else(|| anyhow::anyhow!(
+            "Language must be specified for AST pattern matching. Use --lang to specify the language."
+        ))?;
+
+        // Load content store for file reading
+        let content_path = self.cache.path().join("content.bin");
+        let content_reader = ContentReader::open(&content_path)
+            .context("Failed to open content store")?;
+
+        // Load trigram index for file path lookups
+        let trigrams_path = self.cache.path().join("trigrams.bin");
+        let trigram_index = if trigrams_path.exists() {
+            TrigramIndex::load(&trigrams_path)?
+        } else {
+            Self::rebuild_trigram_index(&content_reader)?
+        };
+
+        // Collect unique file paths from candidates and load their contents
+        use std::collections::HashMap;
+        let mut file_contents: HashMap<String, String> = HashMap::new();
+
+        for candidate in &candidates {
+            if file_contents.contains_key(&candidate.path) {
+                continue;
+            }
+
+            // Find file_id for this path
+            let file_id = match Self::find_file_id_by_path(&content_reader, &trigram_index, &candidate.path) {
+                Some(id) => id,
+                None => {
+                    log::warn!("Could not find file_id for path: {}", candidate.path);
+                    continue;
+                }
+            };
+
+            // Load file content
+            let content = match content_reader.get_file_content(file_id) {
+                Ok(c) => c,
+                Err(e) => {
+                    log::warn!("Failed to read file {}: {}", candidate.path, e);
+                    continue;
+                }
+            };
+
+            file_contents.insert(candidate.path.clone(), content.to_string());
+        }
+
+        log::debug!("Executing AST query on {} candidate files with language {:?}", file_contents.len(), lang);
+
+        // Execute AST query using the ast_query module
+        let results = crate::ast_query::execute_ast_query(candidates, ast_pattern, lang, &file_contents)?;
+
+        log::info!("AST query found {} matches for pattern '{}'", results.len(), ast_pattern);
+
+        Ok(results)
     }
 
     /// Helper to find file_id by path string

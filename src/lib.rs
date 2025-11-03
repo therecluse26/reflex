@@ -25,6 +25,7 @@
 //! println!("Indexed {} files", stats.total_files);
 //! ```
 
+pub mod ast_query;
 pub mod cache;
 pub mod cli;
 pub mod content_store;
