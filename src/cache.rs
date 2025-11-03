@@ -755,6 +755,445 @@ mod tests {
 
         assert!(!cache.exists());
         cache.init().unwrap();
+        assert!(cache.exists());
         assert!(cache.path().exists());
+
+        // Verify all expected files were created
+        assert!(cache.path().join(META_DB).exists());
+        assert!(cache.path().join(TOKENS_BIN).exists());
+        assert!(cache.path().join(CONFIG_TOML).exists());
+    }
+
+    #[test]
+    fn test_cache_init_idempotent() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        // Initialize twice - should not error
+        cache.init().unwrap();
+        cache.init().unwrap();
+
+        assert!(cache.exists());
+    }
+
+    #[test]
+    fn test_cache_clear() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+        assert!(cache.exists());
+
+        cache.clear().unwrap();
+        assert!(!cache.exists());
+    }
+
+    #[test]
+    fn test_cache_clear_nonexistent() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        // Clearing non-existent cache should not error
+        assert!(!cache.exists());
+        cache.clear().unwrap();
+        assert!(!cache.exists());
+    }
+
+    #[test]
+    fn test_load_hashes_empty() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+        let hashes = cache.load_hashes().unwrap();
+        assert_eq!(hashes.len(), 0);
+    }
+
+    #[test]
+    fn test_load_hashes_before_init() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        // Loading hashes before init should return empty map
+        let hashes = cache.load_hashes().unwrap();
+        assert_eq!(hashes.len(), 0);
+    }
+
+    #[test]
+    fn test_update_file() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+        cache.update_file("src/main.rs", "abc123", "rust", 5, 100).unwrap();
+
+        // Verify file was stored
+        let hashes = cache.load_hashes().unwrap();
+        assert_eq!(hashes.get("src/main.rs"), Some(&"abc123".to_string()));
+    }
+
+    #[test]
+    fn test_update_file_multiple() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+        cache.update_file("src/main.rs", "abc123", "rust", 5, 100).unwrap();
+        cache.update_file("src/lib.rs", "def456", "rust", 10, 200).unwrap();
+        cache.update_file("README.md", "ghi789", "markdown", 0, 50).unwrap();
+
+        let hashes = cache.load_hashes().unwrap();
+        assert_eq!(hashes.len(), 3);
+        assert_eq!(hashes.get("src/main.rs"), Some(&"abc123".to_string()));
+        assert_eq!(hashes.get("src/lib.rs"), Some(&"def456".to_string()));
+        assert_eq!(hashes.get("README.md"), Some(&"ghi789".to_string()));
+    }
+
+    #[test]
+    fn test_update_file_replace() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+        cache.update_file("src/main.rs", "abc123", "rust", 5, 100).unwrap();
+        cache.update_file("src/main.rs", "xyz999", "rust", 8, 150).unwrap();
+
+        // Second update should replace the first
+        let hashes = cache.load_hashes().unwrap();
+        assert_eq!(hashes.len(), 1);
+        assert_eq!(hashes.get("src/main.rs"), Some(&"xyz999".to_string()));
+    }
+
+    #[test]
+    fn test_batch_update_files() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+
+        let files = vec![
+            ("src/main.rs".to_string(), "hash1".to_string(), "rust".to_string(), 5, 100),
+            ("src/lib.rs".to_string(), "hash2".to_string(), "rust".to_string(), 10, 200),
+            ("test.py".to_string(), "hash3".to_string(), "python".to_string(), 3, 50),
+        ];
+
+        cache.batch_update_files(&files).unwrap();
+
+        let hashes = cache.load_hashes().unwrap();
+        assert_eq!(hashes.len(), 3);
+        assert_eq!(hashes.get("src/main.rs"), Some(&"hash1".to_string()));
+        assert_eq!(hashes.get("src/lib.rs"), Some(&"hash2".to_string()));
+        assert_eq!(hashes.get("test.py"), Some(&"hash3".to_string()));
+    }
+
+    #[test]
+    fn test_update_stats() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+        cache.update_file("src/main.rs", "abc123", "rust", 5, 100).unwrap();
+        cache.update_file("src/lib.rs", "def456", "rust", 10, 200).unwrap();
+        cache.update_stats().unwrap();
+
+        let stats = cache.stats().unwrap();
+        assert_eq!(stats.total_files, 2);
+        assert_eq!(stats.total_symbols, 15); // 5 + 10
+    }
+
+    #[test]
+    fn test_stats_empty_cache() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+        let stats = cache.stats().unwrap();
+
+        assert_eq!(stats.total_files, 0);
+        assert_eq!(stats.total_symbols, 0);
+        assert_eq!(stats.files_by_language.len(), 0);
+    }
+
+    #[test]
+    fn test_stats_before_init() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        // Stats before init should return zeros
+        let stats = cache.stats().unwrap();
+        assert_eq!(stats.total_files, 0);
+        assert_eq!(stats.total_symbols, 0);
+    }
+
+    #[test]
+    fn test_stats_by_language() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+        cache.update_file("main.rs", "hash1", "rust", 5, 100).unwrap();
+        cache.update_file("lib.rs", "hash2", "rust", 10, 200).unwrap();
+        cache.update_file("script.py", "hash3", "python", 3, 50).unwrap();
+        cache.update_file("test.py", "hash4", "python", 7, 80).unwrap();
+        cache.update_stats().unwrap();
+
+        let stats = cache.stats().unwrap();
+        assert_eq!(stats.files_by_language.get("rust"), Some(&2));
+        assert_eq!(stats.files_by_language.get("python"), Some(&2));
+        assert_eq!(stats.symbols_by_language.get("rust"), Some(&15)); // 5 + 10
+        assert_eq!(stats.symbols_by_language.get("python"), Some(&10)); // 3 + 7
+        assert_eq!(stats.lines_by_language.get("rust"), Some(&300)); // 100 + 200
+        assert_eq!(stats.lines_by_language.get("python"), Some(&130)); // 50 + 80
+    }
+
+    #[test]
+    fn test_list_files_empty() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+        let files = cache.list_files().unwrap();
+        assert_eq!(files.len(), 0);
+    }
+
+    #[test]
+    fn test_list_files() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+        cache.update_file("src/main.rs", "hash1", "rust", 5, 100).unwrap();
+        cache.update_file("src/lib.rs", "hash2", "rust", 10, 200).unwrap();
+
+        let files = cache.list_files().unwrap();
+        assert_eq!(files.len(), 2);
+
+        // Files should be sorted by path
+        assert_eq!(files[0].path, "src/lib.rs");
+        assert_eq!(files[1].path, "src/main.rs");
+
+        assert_eq!(files[0].language, "rust");
+        assert_eq!(files[0].symbol_count, 10);
+        assert_eq!(files[1].symbol_count, 5);
+    }
+
+    #[test]
+    fn test_list_files_before_init() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        // Listing files before init should return empty vec
+        let files = cache.list_files().unwrap();
+        assert_eq!(files.len(), 0);
+    }
+
+    #[test]
+    fn test_branch_exists() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+
+        assert!(!cache.branch_exists("main").unwrap());
+
+        cache.record_branch_file("src/main.rs", "main", "hash1", Some("commit123")).unwrap();
+
+        assert!(cache.branch_exists("main").unwrap());
+        assert!(!cache.branch_exists("feature-branch").unwrap());
+    }
+
+    #[test]
+    fn test_record_branch_file() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+        cache.record_branch_file("src/main.rs", "main", "hash1", Some("commit123")).unwrap();
+
+        let files = cache.get_branch_files("main").unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files.get("src/main.rs"), Some(&"hash1".to_string()));
+    }
+
+    #[test]
+    fn test_get_branch_files_empty() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+        let files = cache.get_branch_files("nonexistent").unwrap();
+        assert_eq!(files.len(), 0);
+    }
+
+    #[test]
+    fn test_batch_record_branch_files() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+
+        let files = vec![
+            ("src/main.rs".to_string(), "hash1".to_string()),
+            ("src/lib.rs".to_string(), "hash2".to_string()),
+            ("README.md".to_string(), "hash3".to_string()),
+        ];
+
+        cache.batch_record_branch_files(&files, "main", Some("commit123")).unwrap();
+
+        let branch_files = cache.get_branch_files("main").unwrap();
+        assert_eq!(branch_files.len(), 3);
+        assert_eq!(branch_files.get("src/main.rs"), Some(&"hash1".to_string()));
+        assert_eq!(branch_files.get("src/lib.rs"), Some(&"hash2".to_string()));
+        assert_eq!(branch_files.get("README.md"), Some(&"hash3".to_string()));
+    }
+
+    #[test]
+    fn test_update_branch_metadata() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+        cache.update_branch_metadata("main", Some("commit123"), 10, false).unwrap();
+
+        let info = cache.get_branch_info("main").unwrap();
+        assert_eq!(info.branch, "main");
+        assert_eq!(info.commit_sha, "commit123");
+        assert_eq!(info.file_count, 10);
+        assert_eq!(info.is_dirty, false);
+    }
+
+    #[test]
+    fn test_update_branch_metadata_dirty() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+        cache.update_branch_metadata("feature", Some("commit456"), 5, true).unwrap();
+
+        let info = cache.get_branch_info("feature").unwrap();
+        assert_eq!(info.is_dirty, true);
+    }
+
+    #[test]
+    fn test_find_file_with_hash() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+        cache.record_branch_file("src/main.rs", "main", "unique_hash", Some("commit123")).unwrap();
+
+        let result = cache.find_file_with_hash("unique_hash").unwrap();
+        assert!(result.is_some());
+
+        let (path, branch) = result.unwrap();
+        assert_eq!(path, "src/main.rs");
+        assert_eq!(branch, "main");
+    }
+
+    #[test]
+    fn test_find_file_with_hash_not_found() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+
+        let result = cache.find_file_with_hash("nonexistent_hash").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_tokens_bin_header() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+
+        let tokens_path = cache.path().join(TOKENS_BIN);
+        let contents = std::fs::read(&tokens_path).unwrap();
+
+        // Verify magic bytes
+        assert_eq!(&contents[0..4], b"RFTK");
+
+        // Verify version (u32 = 4 bytes)
+        let version = u32::from_le_bytes([contents[4], contents[5], contents[6], contents[7]]);
+        assert_eq!(version, 1);
+    }
+
+    #[test]
+    fn test_config_toml_created() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+
+        let config_path = cache.path().join(CONFIG_TOML);
+        let config_content = std::fs::read_to_string(&config_path).unwrap();
+
+        // Verify config contains expected sections
+        assert!(config_content.contains("[index]"));
+        assert!(config_content.contains("[search]"));
+        assert!(config_content.contains("[performance]"));
+        assert!(config_content.contains("max_file_size"));
+    }
+
+    #[test]
+    fn test_meta_db_schema() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+
+        let db_path = cache.path().join(META_DB);
+        let conn = Connection::open(&db_path).unwrap();
+
+        // Verify tables exist
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'").unwrap()
+            .query_map([], |row| row.get(0)).unwrap()
+            .collect::<Result<Vec<_>, _>>().unwrap();
+
+        assert!(tables.contains(&"files".to_string()));
+        assert!(tables.contains(&"statistics".to_string()));
+        assert!(tables.contains(&"config".to_string()));
+        assert!(tables.contains(&"file_branches".to_string()));
+        assert!(tables.contains(&"branches".to_string()));
+    }
+
+    #[test]
+    fn test_concurrent_file_updates() {
+        use std::thread;
+
+        let temp = TempDir::new().unwrap();
+        let cache_path = temp.path().to_path_buf();
+
+        let cache = CacheManager::new(&cache_path);
+        cache.init().unwrap();
+
+        // Spawn multiple threads updating different files
+        let handles: Vec<_> = (0..10)
+            .map(|i| {
+                let path = cache_path.clone();
+                thread::spawn(move || {
+                    let cache = CacheManager::new(&path);
+                    cache
+                        .update_file(
+                            &format!("file_{}.rs", i),
+                            &format!("hash_{}", i),
+                            "rust",
+                            i,
+                            i * 10,
+                        )
+                        .unwrap();
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let cache = CacheManager::new(&cache_path);
+        let hashes = cache.load_hashes().unwrap();
+        assert_eq!(hashes.len(), 10);
     }
 }

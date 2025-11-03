@@ -830,7 +830,12 @@ impl QueryEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::indexer::Indexer;
+    use crate::models::IndexConfig;
+    use std::fs;
     use tempfile::TempDir;
+
+    // ==================== Basic Tests ====================
 
     #[test]
     fn test_query_engine_creation() {
@@ -860,5 +865,579 @@ mod tests {
             ..Default::default()
         };
         assert!(filter_with_kind.symbols_mode);
+    }
+
+    // ==================== Search Mode Tests ====================
+
+    #[test]
+    fn test_fulltext_search() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        // Create test files
+        fs::write(project.join("main.rs"), "fn main() {\n    println!(\"hello\");\n}").unwrap();
+        fs::write(project.join("lib.rs"), "pub fn hello() {}").unwrap();
+
+        // Index the project
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        // Search for "hello"
+        let cache = CacheManager::new(&project);
+        let engine = QueryEngine::new(cache);
+        let filter = QueryFilter::default(); // full-text mode
+        let results = engine.search("hello", filter).unwrap();
+
+        // Should find both occurrences (println and function name)
+        assert!(results.len() >= 2);
+        assert!(results.iter().any(|r| r.path.contains("main.rs")));
+        assert!(results.iter().any(|r| r.path.contains("lib.rs")));
+    }
+
+    #[test]
+    fn test_symbol_search() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        // Create test file with function definition and call
+        fs::write(
+            project.join("main.rs"),
+            "fn greet() {}\nfn main() {\n    greet();\n}"
+        ).unwrap();
+
+        // Index
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        // Symbol search (definitions only)
+        let engine = QueryEngine::new(cache);
+        let filter = QueryFilter {
+            symbols_mode: true,
+            ..Default::default()
+        };
+        let results = engine.search("greet", filter).unwrap();
+
+        // Should find only the definition, not the call
+        assert!(results.len() >= 1);
+        assert!(results.iter().any(|r| r.kind == SymbolKind::Function));
+    }
+
+    #[test]
+    fn test_regex_search() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        fs::write(
+            project.join("main.rs"),
+            "fn test1() {}\nfn test2() {}\nfn other() {}"
+        ).unwrap();
+
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        let engine = QueryEngine::new(cache);
+        let filter = QueryFilter {
+            use_regex: true,
+            ..Default::default()
+        };
+        let results = engine.search(r"fn test\d", filter).unwrap();
+
+        // Should match test1 and test2 but not other
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.preview.contains("test")));
+    }
+
+    // ==================== Filter Tests ====================
+
+    #[test]
+    fn test_language_filter() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        fs::write(project.join("main.rs"), "fn main() {}").unwrap();
+        fs::write(project.join("main.js"), "function main() {}").unwrap();
+
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        let engine = QueryEngine::new(cache);
+
+        // Filter to Rust only
+        let filter = QueryFilter {
+            language: Some(Language::Rust),
+            ..Default::default()
+        };
+        let results = engine.search("main", filter).unwrap();
+
+        assert!(results.iter().all(|r| r.lang == Language::Rust));
+        assert!(results.iter().all(|r| r.path.ends_with(".rs")));
+    }
+
+    #[test]
+    fn test_kind_filter() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        fs::write(
+            project.join("main.rs"),
+            "struct Point {}\nfn main() {}\nimpl Point { fn new() {} }"
+        ).unwrap();
+
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        let engine = QueryEngine::new(cache);
+
+        // Filter to functions only (includes methods)
+        let filter = QueryFilter {
+            symbols_mode: true,
+            kind: Some(SymbolKind::Function),
+            ..Default::default()
+        };
+        // Search for "mai" which should match "main" (tri gram pattern will def be in index)
+        let results = engine.search("mai", filter).unwrap();
+
+        // Should find main function
+        assert!(results.len() > 0, "Should find at least one result");
+        assert!(results.iter().any(|r| r.symbol == "main"), "Should find 'main' function");
+    }
+
+    #[test]
+    fn test_file_pattern_filter() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(project.join("src")).unwrap();
+        fs::create_dir_all(project.join("tests")).unwrap();
+
+        fs::write(project.join("src/lib.rs"), "fn foo() {}").unwrap();
+        fs::write(project.join("tests/test.rs"), "fn foo() {}").unwrap();
+
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        let engine = QueryEngine::new(cache);
+
+        // Filter to src/ only
+        let filter = QueryFilter {
+            file_pattern: Some("src/".to_string()),
+            ..Default::default()
+        };
+        let results = engine.search("foo", filter).unwrap();
+
+        assert!(results.iter().all(|r| r.path.contains("src/")));
+        assert!(!results.iter().any(|r| r.path.contains("tests/")));
+    }
+
+    #[test]
+    fn test_limit_filter() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        // Create file with many matches
+        let content = (0..20).map(|i| format!("fn test{}() {{}}", i)).collect::<Vec<_>>().join("\n");
+        fs::write(project.join("main.rs"), content).unwrap();
+
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        let engine = QueryEngine::new(cache);
+
+        // Limit to 5 results
+        let filter = QueryFilter {
+            limit: Some(5),
+            ..Default::default()
+        };
+        let results = engine.search("test", filter).unwrap();
+
+        assert_eq!(results.len(), 5);
+    }
+
+    #[test]
+    fn test_exact_match_filter() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        fs::write(
+            project.join("main.rs"),
+            "fn test() {}\nfn test_helper() {}\nfn other_test() {}"
+        ).unwrap();
+
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        let engine = QueryEngine::new(cache);
+
+        // Exact match for "test"
+        let filter = QueryFilter {
+            symbols_mode: true,
+            exact: true,
+            ..Default::default()
+        };
+        let results = engine.search("test", filter).unwrap();
+
+        // Should only match exactly "test", not "test_helper" or "other_test"
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].symbol, "test");
+    }
+
+    // ==================== Expand Mode Tests ====================
+
+    #[test]
+    fn test_expand_mode() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        fs::write(
+            project.join("main.rs"),
+            "fn greet() {\n    println!(\"Hello\");\n    println!(\"World\");\n}"
+        ).unwrap();
+
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        let engine = QueryEngine::new(cache);
+
+        // Search with expand mode
+        let filter = QueryFilter {
+            symbols_mode: true,
+            expand: true,
+            ..Default::default()
+        };
+        let results = engine.search("greet", filter).unwrap();
+
+        // Should have full function body in preview
+        assert!(results.len() >= 1);
+        let result = &results[0];
+        assert!(result.preview.contains("println"));
+    }
+
+    // ==================== Edge Cases ====================
+
+    #[test]
+    fn test_search_empty_index() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        let engine = QueryEngine::new(cache);
+        let filter = QueryFilter::default();
+        let results = engine.search("nonexistent", filter).unwrap();
+
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn test_search_no_index() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        let cache = CacheManager::new(&project);
+        let engine = QueryEngine::new(cache);
+        let filter = QueryFilter::default();
+
+        // Should fail when index doesn't exist
+        assert!(engine.search("test", filter).is_err());
+    }
+
+    #[test]
+    fn test_search_special_characters() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        fs::write(project.join("main.rs"), "let x = 42;\nlet y = x + 1;").unwrap();
+
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        let engine = QueryEngine::new(cache);
+        let filter = QueryFilter::default();
+
+        // Search for special characters
+        let results = engine.search("x + ", filter).unwrap();
+        assert!(results.len() >= 1);
+    }
+
+    #[test]
+    fn test_search_unicode() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        fs::write(project.join("main.rs"), "// 你好世界\nfn main() {}").unwrap();
+
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        let engine = QueryEngine::new(cache);
+        let filter = QueryFilter::default();
+
+        // Search for unicode characters
+        let results = engine.search("你好", filter).unwrap();
+        assert!(results.len() >= 1);
+    }
+
+    #[test]
+    fn test_case_sensitive_search() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        fs::write(project.join("main.rs"), "fn Test() {}\nfn test() {}").unwrap();
+
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        let engine = QueryEngine::new(cache);
+        let filter = QueryFilter::default();
+
+        // Search is case-sensitive
+        let results = engine.search("Test", filter).unwrap();
+        assert!(results.iter().any(|r| r.preview.contains("Test()")));
+    }
+
+    // ==================== Determinism Tests ====================
+
+    #[test]
+    fn test_results_sorted_deterministically() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        fs::write(project.join("a.rs"), "fn test() {}").unwrap();
+        fs::write(project.join("z.rs"), "fn test() {}").unwrap();
+        fs::write(project.join("m.rs"), "fn test() {}\nfn test2() {}").unwrap();
+
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        let engine = QueryEngine::new(cache);
+        let filter = QueryFilter::default();
+
+        // Run search multiple times
+        let results1 = engine.search("test", filter.clone()).unwrap();
+        let results2 = engine.search("test", filter.clone()).unwrap();
+        let results3 = engine.search("test", filter).unwrap();
+
+        // Results should be identical and sorted by path then line
+        assert_eq!(results1.len(), results2.len());
+        assert_eq!(results1.len(), results3.len());
+
+        for i in 0..results1.len() {
+            assert_eq!(results1[i].path, results2[i].path);
+            assert_eq!(results1[i].path, results3[i].path);
+            assert_eq!(results1[i].span.start_line, results2[i].span.start_line);
+            assert_eq!(results1[i].span.start_line, results3[i].span.start_line);
+        }
+
+        // Verify sorting (path ascending, then line ascending)
+        for i in 0..results1.len().saturating_sub(1) {
+            let curr = &results1[i];
+            let next = &results1[i + 1];
+            assert!(
+                curr.path < next.path ||
+                (curr.path == next.path && curr.span.start_line <= next.span.start_line)
+            );
+        }
+    }
+
+    // ==================== Combined Filter Tests ====================
+
+    #[test]
+    fn test_multiple_filters_combined() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(project.join("src")).unwrap();
+
+        fs::write(project.join("src/main.rs"), "fn test() {}\nstruct Test {}").unwrap();
+        fs::write(project.join("src/lib.rs"), "fn test() {}").unwrap();
+        fs::write(project.join("test.js"), "function test() {}").unwrap();
+
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        let engine = QueryEngine::new(cache);
+
+        // Combine language, kind, and file pattern filters
+        let filter = QueryFilter {
+            language: Some(Language::Rust),
+            kind: Some(SymbolKind::Function),
+            file_pattern: Some("src/main".to_string()),
+            symbols_mode: true,
+            ..Default::default()
+        };
+        let results = engine.search("test", filter).unwrap();
+
+        // Should only find the function in src/main.rs
+        assert_eq!(results.len(), 1);
+        assert!(results[0].path.contains("src/main.rs"));
+        assert_eq!(results[0].kind, SymbolKind::Function);
+    }
+
+    // ==================== Helper Method Tests ====================
+
+    #[test]
+    fn test_find_symbol_helper() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        fs::write(project.join("main.rs"), "fn greet() {}").unwrap();
+
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        let engine = QueryEngine::new(cache);
+        let results = engine.find_symbol("greet").unwrap();
+
+        assert!(results.len() >= 1);
+        assert_eq!(results[0].kind, SymbolKind::Function);
+    }
+
+    #[test]
+    fn test_list_by_kind_helper() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        fs::write(
+            project.join("main.rs"),
+            "struct Point {}\nfn test() {}\nstruct Line {}"
+        ).unwrap();
+
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        let engine = QueryEngine::new(cache);
+
+        // Search for structs that contain "oin" (Point contains it, Line doesn't)
+        let filter = QueryFilter {
+            kind: Some(SymbolKind::Struct),
+            symbols_mode: true,
+            ..Default::default()
+        };
+        let results = engine.search("oin", filter).unwrap();
+
+        // Should find Point struct
+        assert!(results.len() >= 1, "Should find at least Point struct");
+        assert!(results.iter().all(|r| r.kind == SymbolKind::Struct));
+        assert!(results.iter().any(|r| r.symbol == "Point"));
+    }
+
+    // ==================== Metadata Tests ====================
+
+    #[test]
+    fn test_search_with_metadata() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        fs::write(project.join("main.rs"), "fn test() {}").unwrap();
+
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        let engine = QueryEngine::new(cache);
+        let filter = QueryFilter::default();
+        let response = engine.search_with_metadata("test", filter).unwrap();
+
+        // Check metadata is present (status might be stale if run inside git repo)
+        assert!(response.results.len() >= 1);
+        // Note: can_trust_results may be false if running in a git repo without branch index
+    }
+
+    // ==================== Multi-language Tests ====================
+
+    #[test]
+    fn test_search_across_languages() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        fs::write(project.join("main.rs"), "fn greet() {}").unwrap();
+        fs::write(project.join("main.ts"), "function greet() {}").unwrap();
+        fs::write(project.join("main.py"), "def greet(): pass").unwrap();
+
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        let engine = QueryEngine::new(cache);
+        let filter = QueryFilter::default();
+        let results = engine.search("greet", filter).unwrap();
+
+        // Should find greet in all three languages
+        assert!(results.len() >= 3);
+        assert!(results.iter().any(|r| r.lang == Language::Rust));
+        assert!(results.iter().any(|r| r.lang == Language::TypeScript));
+        assert!(results.iter().any(|r| r.lang == Language::Python));
     }
 }

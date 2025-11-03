@@ -65,6 +65,27 @@
 
 ## 🎯 Current Status Summary (Updated: 2025-11-03)
 
+### 🚀 NEXT PRIORITY (After Testing & Documentation)
+**Decision Made: 2025-11-02**
+
+After completing testing and documentation phase, the next features to implement are:
+
+1. **HTTP Server** (P1) - Enable external tool/agent integration
+   - Use case: Editor plugins, AI agents, CI/CD tools that need high-frequency querying
+   - Benefit: Eliminate process spawn overhead for repeated queries
+   - Location: `src/cli.rs:313-331`
+   - Endpoints: GET /query, GET /stats, POST /index
+
+2. **AST Pattern Matching** (P1) - Structure-aware code search
+   - Use case: "Regex for code structure" - find patterns based on AST, not just text
+   - Benefit: Find security issues, refactoring targets, architectural patterns
+   - Example: "Find all functions that take String and return Result"
+   - Requires: Tree-sitter query support with S-expression patterns
+
+**Current Phase:** Testing & Documentation (to ensure reliability before adding advanced features)
+
+---
+
 ### ✅ FULLY FUNCTIONAL
 RefLex is **operational as a local code search engine** with the following capabilities:
 

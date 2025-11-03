@@ -422,6 +422,7 @@ impl Indexer {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use std::fs;
 
     #[test]
     fn test_indexer_creation() {
@@ -431,5 +432,463 @@ mod tests {
         let indexer = Indexer::new(cache, config);
 
         assert!(indexer.cache.path().ends_with(".reflex"));
+    }
+
+    #[test]
+    fn test_hash_content() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+
+        let content1 = b"hello world";
+        let content2 = b"hello world";
+        let content3 = b"different content";
+
+        let hash1 = indexer.hash_content(content1);
+        let hash2 = indexer.hash_content(content2);
+        let hash3 = indexer.hash_content(content3);
+
+        // Same content should produce same hash
+        assert_eq!(hash1, hash2);
+
+        // Different content should produce different hash
+        assert_ne!(hash1, hash3);
+
+        // Hash should be hex string
+        assert_eq!(hash1.len(), 64); // blake3 hash is 32 bytes = 64 hex chars
+    }
+
+    #[test]
+    fn test_should_index_rust_file() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+
+        // Create a small Rust file
+        let rust_file = temp.path().join("test.rs");
+        fs::write(&rust_file, "fn main() {}").unwrap();
+
+        assert!(indexer.should_index(&rust_file));
+    }
+
+    #[test]
+    fn test_should_index_unsupported_extension() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+
+        let unsupported_file = temp.path().join("test.txt");
+        fs::write(&unsupported_file, "plain text").unwrap();
+
+        assert!(!indexer.should_index(&unsupported_file));
+    }
+
+    #[test]
+    fn test_should_index_no_extension() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+
+        let no_ext_file = temp.path().join("Makefile");
+        fs::write(&no_ext_file, "all:\n\techo hello").unwrap();
+
+        assert!(!indexer.should_index(&no_ext_file));
+    }
+
+    #[test]
+    fn test_should_index_size_limit() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        // Config with 100 byte size limit
+        let mut config = IndexConfig::default();
+        config.max_file_size = 100;
+
+        let indexer = Indexer::new(cache, config);
+
+        // Create small file (should be indexed)
+        let small_file = temp.path().join("small.rs");
+        fs::write(&small_file, "fn main() {}").unwrap();
+        assert!(indexer.should_index(&small_file));
+
+        // Create large file (should be skipped)
+        let large_file = temp.path().join("large.rs");
+        let large_content = "a".repeat(150);
+        fs::write(&large_file, large_content).unwrap();
+        assert!(!indexer.should_index(&large_file));
+    }
+
+    #[test]
+    fn test_discover_files_empty_dir() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+
+        let files = indexer.discover_files(temp.path()).unwrap();
+        assert_eq!(files.len(), 0);
+    }
+
+    #[test]
+    fn test_discover_files_single_file() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+
+        // Create a Rust file
+        let rust_file = temp.path().join("main.rs");
+        fs::write(&rust_file, "fn main() {}").unwrap();
+
+        let files = indexer.discover_files(temp.path()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("main.rs"));
+    }
+
+    #[test]
+    fn test_discover_files_multiple_languages() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+
+        // Create files of different languages
+        fs::write(temp.path().join("main.rs"), "fn main() {}").unwrap();
+        fs::write(temp.path().join("script.py"), "print('hello')").unwrap();
+        fs::write(temp.path().join("app.js"), "console.log('hi')").unwrap();
+        fs::write(temp.path().join("README.md"), "# Project").unwrap(); // Should be skipped
+
+        let files = indexer.discover_files(temp.path()).unwrap();
+        assert_eq!(files.len(), 3); // Only supported languages
+    }
+
+    #[test]
+    fn test_discover_files_subdirectories() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+
+        // Create nested directory structure
+        let src_dir = temp.path().join("src");
+        fs::create_dir(&src_dir).unwrap();
+        fs::write(src_dir.join("main.rs"), "fn main() {}").unwrap();
+        fs::write(src_dir.join("lib.rs"), "pub mod test {}").unwrap();
+
+        let tests_dir = temp.path().join("tests");
+        fs::create_dir(&tests_dir).unwrap();
+        fs::write(tests_dir.join("test.rs"), "#[test] fn test() {}").unwrap();
+
+        let files = indexer.discover_files(temp.path()).unwrap();
+        assert_eq!(files.len(), 3);
+    }
+
+    #[test]
+    fn test_discover_files_respects_gitignore() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+
+        // Create .gitignore
+        fs::write(temp.path().join(".gitignore"), "ignored/\n").unwrap();
+
+        // Create files
+        fs::write(temp.path().join("included.rs"), "fn main() {}").unwrap();
+        fs::write(temp.path().join("also_included.py"), "print('hi')").unwrap();
+
+        let ignored_dir = temp.path().join("ignored");
+        fs::create_dir(&ignored_dir).unwrap();
+        fs::write(ignored_dir.join("excluded.rs"), "fn test() {}").unwrap();
+
+        let files = indexer.discover_files(temp.path()).unwrap();
+
+        // Should find included files but not excluded.rs in ignored/
+        assert!(files.len() >= 2);
+        assert!(files.iter().any(|f| f.ends_with("included.rs")));
+        assert!(files.iter().any(|f| f.ends_with("also_included.py")));
+        assert!(!files.iter().any(|f| f.ends_with("excluded.rs")));
+    }
+
+    #[test]
+    fn test_index_empty_directory() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+
+        let stats = indexer.index(temp.path(), false).unwrap();
+
+        assert_eq!(stats.total_files, 0);
+        assert_eq!(stats.total_symbols, 0);
+    }
+
+    #[test]
+    fn test_index_single_rust_file() {
+        let temp = TempDir::new().unwrap();
+        let project_root = temp.path().join("project");
+        fs::create_dir(&project_root).unwrap();
+
+        let cache = CacheManager::new(&project_root);
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+
+        // Create a Rust file
+        fs::write(
+            project_root.join("main.rs"),
+            "fn main() { println!(\"Hello\"); }"
+        ).unwrap();
+
+        let stats = indexer.index(&project_root, false).unwrap();
+
+        assert_eq!(stats.total_files, 1);
+        assert!(stats.files_by_language.get("Rust").is_some());
+    }
+
+    #[test]
+    fn test_index_multiple_files() {
+        let temp = TempDir::new().unwrap();
+        let project_root = temp.path().join("project");
+        fs::create_dir(&project_root).unwrap();
+
+        let cache = CacheManager::new(&project_root);
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+
+        // Create multiple files
+        fs::write(project_root.join("main.rs"), "fn main() {}").unwrap();
+        fs::write(project_root.join("lib.rs"), "pub fn test() {}").unwrap();
+        fs::write(project_root.join("script.py"), "def main(): pass").unwrap();
+
+        let stats = indexer.index(&project_root, false).unwrap();
+
+        assert_eq!(stats.total_files, 3);
+        assert_eq!(stats.files_by_language.get("Rust"), Some(&2));
+        assert_eq!(stats.files_by_language.get("Python"), Some(&1));
+    }
+
+    #[test]
+    fn test_index_creates_trigram_index() {
+        let temp = TempDir::new().unwrap();
+        let project_root = temp.path().join("project");
+        fs::create_dir(&project_root).unwrap();
+
+        let cache = CacheManager::new(&project_root);
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+
+        fs::write(project_root.join("main.rs"), "fn main() {}").unwrap();
+
+        indexer.index(&project_root, false).unwrap();
+
+        // Verify trigrams.bin was created
+        let trigrams_path = project_root.join(".reflex/trigrams.bin");
+        assert!(trigrams_path.exists());
+    }
+
+    #[test]
+    fn test_index_creates_content_store() {
+        let temp = TempDir::new().unwrap();
+        let project_root = temp.path().join("project");
+        fs::create_dir(&project_root).unwrap();
+
+        let cache = CacheManager::new(&project_root);
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+
+        fs::write(project_root.join("main.rs"), "fn main() {}").unwrap();
+
+        indexer.index(&project_root, false).unwrap();
+
+        // Verify content.bin was created
+        let content_path = project_root.join(".reflex/content.bin");
+        assert!(content_path.exists());
+    }
+
+    #[test]
+    fn test_index_incremental_no_changes() {
+        let temp = TempDir::new().unwrap();
+        let project_root = temp.path().join("project");
+        fs::create_dir(&project_root).unwrap();
+
+        let cache = CacheManager::new(&project_root);
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+
+        fs::write(project_root.join("main.rs"), "fn main() {}").unwrap();
+
+        // First index
+        let stats1 = indexer.index(&project_root, false).unwrap();
+        assert_eq!(stats1.total_files, 1);
+
+        // Second index without changes
+        let stats2 = indexer.index(&project_root, false).unwrap();
+        assert_eq!(stats2.total_files, 1);
+    }
+
+    #[test]
+    fn test_index_incremental_with_changes() {
+        let temp = TempDir::new().unwrap();
+        let project_root = temp.path().join("project");
+        fs::create_dir(&project_root).unwrap();
+
+        let cache = CacheManager::new(&project_root);
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+
+        let main_path = project_root.join("main.rs");
+        fs::write(&main_path, "fn main() {}").unwrap();
+
+        // First index
+        indexer.index(&project_root, false).unwrap();
+
+        // Modify file
+        fs::write(&main_path, "fn main() { println!(\"changed\"); }").unwrap();
+
+        // Second index should detect change
+        let stats = indexer.index(&project_root, false).unwrap();
+        assert_eq!(stats.total_files, 1);
+    }
+
+    #[test]
+    fn test_index_incremental_new_file() {
+        let temp = TempDir::new().unwrap();
+        let project_root = temp.path().join("project");
+        fs::create_dir(&project_root).unwrap();
+
+        let cache = CacheManager::new(&project_root);
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+
+        fs::write(project_root.join("main.rs"), "fn main() {}").unwrap();
+
+        // First index
+        let stats1 = indexer.index(&project_root, false).unwrap();
+        assert_eq!(stats1.total_files, 1);
+
+        // Add new file
+        fs::write(project_root.join("lib.rs"), "pub fn test() {}").unwrap();
+
+        // Second index should include new file
+        let stats2 = indexer.index(&project_root, false).unwrap();
+        assert_eq!(stats2.total_files, 2);
+    }
+
+    #[test]
+    fn test_index_parallel_threads_config() {
+        let temp = TempDir::new().unwrap();
+        let project_root = temp.path().join("project");
+        fs::create_dir(&project_root).unwrap();
+
+        let cache = CacheManager::new(&project_root);
+
+        // Test with explicit thread count
+        let mut config = IndexConfig::default();
+        config.parallel_threads = 2;
+
+        let indexer = Indexer::new(cache, config);
+
+        fs::write(project_root.join("main.rs"), "fn main() {}").unwrap();
+
+        let stats = indexer.index(&project_root, false).unwrap();
+        assert_eq!(stats.total_files, 1);
+    }
+
+    #[test]
+    fn test_index_parallel_threads_auto() {
+        let temp = TempDir::new().unwrap();
+        let project_root = temp.path().join("project");
+        fs::create_dir(&project_root).unwrap();
+
+        let cache = CacheManager::new(&project_root);
+
+        // Test with auto thread count (0 = auto)
+        let mut config = IndexConfig::default();
+        config.parallel_threads = 0;
+
+        let indexer = Indexer::new(cache, config);
+
+        fs::write(project_root.join("main.rs"), "fn main() {}").unwrap();
+
+        let stats = indexer.index(&project_root, false).unwrap();
+        assert_eq!(stats.total_files, 1);
+    }
+
+    #[test]
+    fn test_index_respects_size_limit() {
+        let temp = TempDir::new().unwrap();
+        let project_root = temp.path().join("project");
+        fs::create_dir(&project_root).unwrap();
+
+        let cache = CacheManager::new(&project_root);
+
+        // Very small size limit
+        let mut config = IndexConfig::default();
+        config.max_file_size = 50;
+
+        let indexer = Indexer::new(cache, config);
+
+        // Small file (should be indexed)
+        fs::write(project_root.join("small.rs"), "fn a() {}").unwrap();
+
+        // Large file (should be skipped)
+        let large_content = "fn main() {}\n".repeat(10);
+        fs::write(project_root.join("large.rs"), large_content).unwrap();
+
+        let stats = indexer.index(&project_root, false).unwrap();
+
+        // Only small file should be indexed
+        assert_eq!(stats.total_files, 1);
+    }
+
+    #[test]
+    fn test_index_mixed_languages() {
+        let temp = TempDir::new().unwrap();
+        let project_root = temp.path().join("project");
+        fs::create_dir(&project_root).unwrap();
+
+        let cache = CacheManager::new(&project_root);
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+
+        // Create files in multiple languages
+        fs::write(project_root.join("main.rs"), "fn main() {}").unwrap();
+        fs::write(project_root.join("test.py"), "def test(): pass").unwrap();
+        fs::write(project_root.join("app.js"), "function main() {}").unwrap();
+        fs::write(project_root.join("lib.go"), "func main() {}").unwrap();
+
+        let stats = indexer.index(&project_root, false).unwrap();
+
+        assert_eq!(stats.total_files, 4);
+        assert!(stats.files_by_language.contains_key("Rust"));
+        assert!(stats.files_by_language.contains_key("Python"));
+        assert!(stats.files_by_language.contains_key("JavaScript"));
+        assert!(stats.files_by_language.contains_key("Go"));
+    }
+
+    #[test]
+    fn test_index_updates_cache_stats() {
+        let temp = TempDir::new().unwrap();
+        let project_root = temp.path().join("project");
+        fs::create_dir(&project_root).unwrap();
+
+        let cache = CacheManager::new(&project_root);
+        let config = IndexConfig::default();
+        let indexer = Indexer::new(cache, config);
+
+        fs::write(project_root.join("main.rs"), "fn main() {}").unwrap();
+
+        indexer.index(&project_root, false).unwrap();
+
+        // Verify cache stats were updated
+        let cache = CacheManager::new(&project_root);
+        let stats = cache.stats().unwrap();
+
+        assert_eq!(stats.total_files, 1);
+        assert!(stats.index_size_bytes > 0);
     }
 }
