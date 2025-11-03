@@ -111,6 +111,7 @@ Options:
   --expand             Show full symbol body (not just signature)
   --json               Output as JSON
   --count              Show only match count
+  --timeout <SECS>     Query timeout in seconds (0 = no timeout, default: 30)
 ```
 
 **Examples:**
@@ -135,6 +136,9 @@ rfx query "format!" --json --limit 5
 
 # Count matches
 rfx query "TODO" --count
+
+# Set custom timeout (10 seconds)
+rfx query "complex.*pattern" --regex --timeout 10
 
 # AST pattern matching (structure-aware search)
 rfx query "fn" --ast "(function_item) @fn" --lang rust
@@ -341,7 +345,7 @@ Options:
 **API Endpoints:**
 
 - **GET /query** - Search the codebase
-  - Query params: `q`, `lang`, `kind`, `limit`, `symbols`, `regex`, `exact`, `expand`, `file`
+  - Query params: `q`, `lang`, `kind`, `limit`, `symbols`, `regex`, `exact`, `expand`, `file`, `timeout`
   - Returns: `QueryResponse` JSON with results and index status
 
 - **GET /stats** - Get index statistics

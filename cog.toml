@@ -1,0 +1,46 @@
+# Cocogitto configuration for RefLex
+# See: https://docs.cocogitto.io/config/
+
+# Conventional commits configuration
+[changelog]
+# Changelog path
+path = "CHANGELOG.md"
+
+# Repository information
+repository = "reflex"
+authors = [
+    { signature = "RefLex Contributors", username = "reflex" }
+]
+
+# Changelog template
+template = "remote"
+
+# Conventional commit types
+[commit_types]
+# Types that trigger version bumps
+feat = { changelog_title = "### Added", bump = "minor" }
+fix = { changelog_title = "### Fixed", bump = "patch" }
+perf = { changelog_title = "### Performance", bump = "patch" }
+
+# Types that don't trigger version bumps but appear in changelog
+refactor = { changelog_title = "### Refactored", bump = "none" }
+docs = { changelog_title = "### Documentation", bump = "none" }
+test = { changelog_title = "### Testing", bump = "none" }
+
+# Types that are skipped in changelog
+chore = { changelog_title = "Chore", omit_from_changelog = true }
+style = { changelog_title = "Style", omit_from_changelog = true }
+ci = { changelog_title = "CI", omit_from_changelog = true }
+build = { changelog_title = "Build", omit_from_changelog = true }
+
+# Bump profiles for pre-release versions
+[bump_profiles.default]
+# Pre-release tags (e.g., v1.0.0-alpha.1)
+pre_bump_hooks = []
+post_bump_hooks = []
+
+# Git hooks (optional)
+# Uncomment to enable automatic commit linting
+# [hooks]
+# pre_bump = "cargo test"
+# post_bump = "git push --follow-tags"

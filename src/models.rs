@@ -171,6 +171,8 @@ pub struct IndexConfig {
     pub max_file_size: usize,
     /// Number of threads for parallel indexing (0 = auto, 80% of available cores)
     pub parallel_threads: usize,
+    /// Query timeout in seconds (0 = no timeout)
+    pub query_timeout_secs: u64,
 }
 
 impl Default for IndexConfig {
@@ -182,6 +184,7 @@ impl Default for IndexConfig {
             follow_symlinks: false,
             max_file_size: 10 * 1024 * 1024, // 10 MB
             parallel_threads: 0, // 0 = auto (80% of available cores)
+            query_timeout_secs: 30, // 30 seconds default timeout
         }
     }
 }

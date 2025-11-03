@@ -260,6 +260,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 expand: expand.unwrap_or(false),
                 file_pattern: file,
                 exact: exact.unwrap_or(false),
+                timeout_secs: 30, // Default 30 second timeout for MCP queries
             };
 
             let cache = CacheManager::new(".");
@@ -295,6 +296,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 expand: false,
                 file_pattern: file,
                 exact: false,
+                timeout_secs: 30, // Default 30 second timeout for MCP queries
             };
 
             let cache = CacheManager::new(".");
@@ -340,6 +342,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 expand: false,
                 file_pattern: file,
                 exact: false,
+                timeout_secs: 30, // Default 30 second timeout for MCP queries
             };
 
             let cache = CacheManager::new(".");

@@ -37,6 +37,8 @@ pub struct QueryFilter {
     pub file_pattern: Option<String>,
     /// Exact symbol name match (no substring matching)
     pub exact: bool,
+    /// Query timeout in seconds (0 = no timeout)
+    pub timeout_secs: u64,
 }
 
 impl Default for QueryFilter {
@@ -51,6 +53,7 @@ impl Default for QueryFilter {
             expand: false,
             file_pattern: None,
             exact: false,
+            timeout_secs: 30, // 30 seconds default timeout
         }
     }
 }
@@ -117,15 +120,34 @@ impl QueryEngine {
 
     /// Internal search implementation (used by both search methods)
     fn search_internal(&self, pattern: &str, filter: QueryFilter) -> Result<Vec<SearchResult>> {
+        use std::time::{Duration, Instant};
+
+        // Start timeout timer if configured
+        let start_time = Instant::now();
+        let timeout = if filter.timeout_secs > 0 {
+            Some(Duration::from_secs(filter.timeout_secs))
+        } else {
+            None
+        };
 
         // PHASE 1: Get initial candidates (choose search strategy)
         let mut results = if filter.use_regex {
             // Regex pattern search with trigram optimization
-            self.get_regex_candidates(pattern)?
+            self.get_regex_candidates(pattern, timeout.as_ref(), &start_time)?
         } else {
             // Standard trigram-based full-text search
             self.get_trigram_candidates(pattern)?
         };
+
+        // Check timeout after Phase 1
+        if let Some(timeout_duration) = timeout {
+            if start_time.elapsed() > timeout_duration {
+                anyhow::bail!(
+                    "Query timeout exceeded ({} seconds). Consider using a more specific pattern or increasing the timeout.",
+                    filter.timeout_secs
+                );
+            }
+        }
 
         // PHASE 2: Enrich with symbol information or AST pattern matching (if needed)
         if filter.use_ast {
@@ -258,9 +280,18 @@ impl QueryEngine {
         // Show non-blocking warnings about branch state and staleness
         self.check_index_freshness()?;
 
+        // Start timeout timer if configured
+        use std::time::{Duration, Instant};
+        let start_time = Instant::now();
+        let timeout = if filter.timeout_secs > 0 {
+            Some(Duration::from_secs(filter.timeout_secs))
+        } else {
+            None
+        };
+
         // PHASE 1: Get initial candidates using text pattern (trigram search)
         let candidates = if filter.use_regex {
-            self.get_regex_candidates(text_pattern)?
+            self.get_regex_candidates(text_pattern, timeout.as_ref(), &start_time)?
         } else {
             self.get_trigram_candidates(text_pattern)?
         };
@@ -707,10 +738,20 @@ impl QueryEngine {
     /// - Best case (pattern with literals): <20ms (trigram optimization)
     /// - Typical case (alternation/sequential): 5-15ms on small codebases (<100 files)
     /// - Worst case (no literals like `.*`): ~100ms (full scan)
-    fn get_regex_candidates(&self, pattern: &str) -> Result<Vec<SearchResult>> {
+    fn get_regex_candidates(&self, pattern: &str, timeout: Option<&std::time::Duration>, start_time: &std::time::Instant) -> Result<Vec<SearchResult>> {
         // Step 1: Compile the regex
         let regex = Regex::new(pattern)
             .with_context(|| format!("Invalid regex pattern: {}", pattern))?;
+
+        // Check timeout before expensive operations
+        if let Some(timeout_duration) = timeout {
+            if start_time.elapsed() > *timeout_duration {
+                anyhow::bail!(
+                    "Query timeout exceeded ({} seconds) during regex compilation",
+                    timeout_duration.as_secs()
+                );
+            }
+        }
 
         // Step 2: Extract trigrams from regex
         let trigrams = extract_trigrams_from_regex(pattern);

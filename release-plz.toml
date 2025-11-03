@@ -1,0 +1,70 @@
+# release-plz configuration for RefLex
+# See: https://release-plz.ieni.dev/docs/config
+
+[workspace]
+# Enable changelog generation
+changelog_update = true
+
+# Changelog path (relative to repository root)
+changelog_path = "CHANGELOG.md"
+
+# Git tag template (e.g., v1.0.0)
+git_tag_name = "v{{ version }}"
+
+# Release commit message template
+git_release_enable = true
+
+# PR labels to apply to release PRs
+pr_labels = ["release", "automated"]
+
+# Conventional commit parsing
+# This allows release-plz to determine version bumps from commit messages
+[workspace.changelog]
+# Changelog header
+header = """# Changelog
+
+All notable changes to RefLex will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/),
+and this project adheres to [Semantic Versioning](https://semver.org/).
+"""
+
+# Commit parsers to extract conventional commit types
+[[workspace.changelog.commit_parsers]]
+message = "^feat"
+group = "### Added"
+
+[[workspace.changelog.commit_parsers]]
+message = "^fix"
+group = "### Fixed"
+
+[[workspace.changelog.commit_parsers]]
+message = "^perf"
+group = "### Performance"
+
+[[workspace.changelog.commit_parsers]]
+message = "^refactor"
+group = "### Refactored"
+
+[[workspace.changelog.commit_parsers]]
+message = "^docs"
+group = "### Documentation"
+
+[[workspace.changelog.commit_parsers]]
+message = "^test"
+group = "### Testing"
+
+[[workspace.changelog.commit_parsers]]
+message = "^chore"
+skip = true
+
+[[workspace.changelog.commit_parsers]]
+message = "^style"
+skip = true
+
+# Package-specific configuration
+[[package]]
+name = "reflex"
+
+# Don't publish to crates.io automatically (can be enabled later)
+publish = false

@@ -112,6 +112,10 @@ pub enum Command {
         /// Only show count and timing, not the actual results
         #[arg(short, long)]
         count: bool,
+
+        /// Query timeout in seconds (0 = no timeout, default: 30)
+        #[arg(short = 't', long, default_value = "30")]
+        timeout: u64,
     },
 
     /// Start a local HTTP API server
@@ -207,8 +211,8 @@ impl Cli {
             Command::Index { path, force, languages, quiet } => {
                 handle_index(path, force, languages, quiet)
             }
-            Command::Query { pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, count } => {
-                handle_query(pattern, symbols, lang, kind, ast.as_deref(), regex, json, limit, expand, file, exact, count)
+            Command::Query { pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, count, timeout } => {
+                handle_query(pattern, symbols, lang, kind, ast.as_deref(), regex, json, limit, expand, file, exact, count, timeout)
             }
             Command::Serve { port, host } => {
                 handle_serve(port, host)
@@ -343,6 +347,7 @@ fn handle_query(
     file_pattern: Option<String>,
     exact: bool,
     count_only: bool,
+    timeout_secs: u64,
 ) -> Result<()> {
     log::info!("Starting query command");
 
@@ -420,6 +425,7 @@ fn handle_query(
         expand,
         file_pattern,
         exact,
+        timeout_secs,
     };
 
     // Measure query time
@@ -502,7 +508,7 @@ fn handle_serve(port: u16, host: String) -> Result<()> {
     println!("Starting RefLex HTTP server...");
     println!("  Address: http://{}:{}", host, port);
     println!("\nEndpoints:");
-    println!("  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&expand=true&file=<pattern>");
+    println!("  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&expand=true&file=<pattern>&timeout=<secs>");
     println!("  GET  /stats");
     println!("  POST /index");
     println!("\nPress Ctrl+C to stop.");
@@ -552,6 +558,13 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         expand: bool,
         #[serde(default)]
         file: Option<String>,
+        #[serde(default = "default_timeout")]
+        timeout: u64,
+    }
+
+    // Default timeout for HTTP queries (30 seconds)
+    fn default_timeout() -> u64 {
+        30
     }
 
     // Request body for POST /index
@@ -629,6 +642,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             expand: params.expand,
             file_pattern: params.file,
             exact: params.exact,
+            timeout_secs: params.timeout,
         };
 
         match engine.search_with_metadata(&params.q, filter) {
