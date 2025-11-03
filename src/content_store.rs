@@ -50,45 +50,121 @@ pub struct FileEntry {
 
 /// Writer for building content.bin
 ///
-/// Accumulates file contents and builds the index, then writes everything
-/// to disk in one pass.
+/// Supports two modes:
+/// 1. **Streaming mode** (init() called): Writes file contents to disk incrementally to avoid RAM buildup
+/// 2. **In-memory mode** (default): Accumulates content in RAM for backward compatibility with tests
 pub struct ContentWriter {
     files: Vec<FileEntry>,
+    writer: Option<std::io::BufWriter<File>>,
+    current_offset: u64,
+    file_path: Option<PathBuf>,
+    // In-memory content buffer (only used if streaming mode not enabled)
     content: Vec<u8>,
 }
 
 impl ContentWriter {
-    /// Create a new content writer
+    /// Create a new content writer (in-memory mode by default)
+    ///
+    /// Call init() to enable streaming mode before adding files.
     pub fn new() -> Self {
         Self {
             files: Vec::new(),
+            writer: None,
+            current_offset: 0,
+            file_path: None,
             content: Vec::new(),
         }
     }
 
+    /// Initialize the writer by creating the output file and writing header placeholder
+    pub fn init(&mut self, path: PathBuf) -> Result<()> {
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .with_context(|| format!("Failed to create {}", path.display()))?;
+
+        // Use a large buffer (16MB) for better write performance
+        let mut writer = std::io::BufWriter::with_capacity(16 * 1024 * 1024, file);
+
+        // Write placeholder header (will be overwritten in finalize())
+        writer.write_all(MAGIC)?;
+        writer.write_all(&VERSION.to_le_bytes())?;
+        writer.write_all(&0u64.to_le_bytes())?; // num_files (placeholder)
+        writer.write_all(&0u64.to_le_bytes())?; // index_offset (placeholder)
+        writer.write_all(&[0u8; 8])?; // reserved
+
+        self.writer = Some(writer);
+        self.current_offset = 0; // Content starts after header
+        self.file_path = Some(path);
+
+        Ok(())
+    }
+
     /// Add a file to the content store
+    ///
+    /// **Streaming mode** (if init() was called): Writes content to disk immediately.
+    /// **In-memory mode** (default): Accumulates content in RAM.
     ///
     /// Returns the file_id (index into files array)
     pub fn add_file(&mut self, path: PathBuf, content: &str) -> u32 {
         let file_id = self.files.len() as u32;
-        let offset = self.content.len() as u64;
-        let length = content.len() as u64;
+        let content_bytes = content.as_bytes();
+        let length = content_bytes.len() as u64;
 
-        // Append content
-        self.content.extend_from_slice(content.as_bytes());
+        if let Some(ref mut w) = self.writer {
+            // Streaming mode: write content immediately to disk
+            let offset = self.current_offset;
+            w.write_all(content_bytes)
+                .expect("Failed to write file content to content.bin");
+            self.current_offset += length;
 
-        // Record metadata
-        self.files.push(FileEntry {
-            path,
-            offset,
-            length,
-        });
+            self.files.push(FileEntry {
+                path,
+                offset,
+                length,
+            });
+        } else {
+            // In-memory mode: accumulate in RAM (for backward compatibility)
+            let offset = self.content.len() as u64;
+            self.content.extend_from_slice(content_bytes);
+
+            self.files.push(FileEntry {
+                path,
+                offset,
+                length,
+            });
+        }
 
         file_id
     }
 
     /// Write the content store to disk
-    pub fn write(&self, path: impl AsRef<Path>) -> Result<()> {
+    ///
+    /// This is the main entry point for the old API. It initializes the writer (if needed),
+    /// and finalizes the file.
+    pub fn write(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
+
+        // Initialize writer if not already done
+        if self.writer.is_none() && self.file_path.is_none() {
+            // Old API: no files written yet, need to write them now in-memory
+            // This is a fallback for tests that don't call init()
+            return self.write_legacy(path);
+        }
+
+        // New streaming API: already been writing, just finalize
+        self.finalize_if_needed()?;
+
+        Ok(())
+    }
+
+    /// Legacy write path for in-memory mode (backward compatibility)
+    ///
+    /// This is only used when write() is called without init() first.
+    /// Content is accumulated in RAM and written all at once.
+    fn write_legacy(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
         let file = OpenOptions::new()
             .create(true)
@@ -110,7 +186,7 @@ impl ContentWriter {
         writer.write_all(&index_offset.to_le_bytes())?;
         writer.write_all(&[0u8; 8])?; // reserved
 
-        // Write file contents
+        // Write all accumulated file contents
         writer.write_all(&self.content)?;
 
         // Write file index
@@ -128,6 +204,53 @@ impl ContentWriter {
         Ok(())
     }
 
+    /// Finalize the content.bin file by writing the file index and updating the header
+    fn finalize(&mut self) -> Result<()> {
+        let writer = self.writer.as_mut()
+            .ok_or_else(|| anyhow::anyhow!("ContentWriter not initialized"))?;
+
+        // Write file index at current position
+        let index_offset = HEADER_SIZE as u64 + self.current_offset;
+
+        for entry in &self.files {
+            let path_str = entry.path.to_string_lossy();
+            let path_bytes = path_str.as_bytes();
+
+            writer.write_all(&(path_bytes.len() as u32).to_le_bytes())?;
+            writer.write_all(path_bytes)?;
+            writer.write_all(&entry.offset.to_le_bytes())?;
+            writer.write_all(&entry.length.to_le_bytes())?;
+        }
+
+        // Flush all writes
+        writer.flush()?;
+
+        // Get mutable reference to underlying file
+        let file = writer.get_mut();
+
+        // Rewind to header and update with correct values
+        use std::io::Seek;
+        file.seek(std::io::SeekFrom::Start(0))?;
+
+        // Write correct header
+        file.write_all(MAGIC)?;
+        file.write_all(&VERSION.to_le_bytes())?;
+        file.write_all(&(self.files.len() as u64).to_le_bytes())?;
+        file.write_all(&index_offset.to_le_bytes())?;
+        file.write_all(&[0u8; 8])?; // reserved
+
+        // Final sync to disk
+        file.sync_all()?;
+
+        log::debug!(
+            "Finalized content.bin: {} files, {} bytes of content",
+            self.files.len(),
+            self.current_offset
+        );
+
+        Ok(())
+    }
+
     /// Get the number of files
     pub fn file_count(&self) -> usize {
         self.files.len()
@@ -135,7 +258,25 @@ impl ContentWriter {
 
     /// Get total content size
     pub fn content_size(&self) -> usize {
-        self.content.len()
+        if self.writer.is_some() || self.file_path.is_some() {
+            // Streaming mode
+            self.current_offset as usize
+        } else {
+            // In-memory mode
+            self.content.len()
+        }
+    }
+
+    /// Finalize content store if it hasn't been finalized yet
+    ///
+    /// This is safe to call multiple times - subsequent calls are no-ops.
+    pub fn finalize_if_needed(&mut self) -> Result<()> {
+        if self.writer.is_some() {
+            self.finalize()?;
+            // Clear writer to mark as finalized
+            self.writer = None;
+        }
+        Ok(())
     }
 }
 

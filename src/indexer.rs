@@ -100,6 +100,19 @@ impl Indexer {
         let mut trigram_index = TrigramIndex::new();
         let mut content_writer = ContentWriter::new();
 
+        // Enable batch-flush mode for trigram index if we have lots of files
+        if total_files > 10000 {
+            let temp_dir = self.cache.path().join("trigram_temp");
+            trigram_index.enable_batch_flush(temp_dir)
+                .context("Failed to enable batch-flush mode for trigram index")?;
+            log::info!("Enabled batch-flush mode for {} files", total_files);
+        }
+
+        // Initialize content writer to start streaming writes immediately
+        let content_path = self.cache.path().join("content.bin");
+        content_writer.init(content_path.clone())
+            .context("Failed to initialize content writer")?;
+
         // Create progress bar (only if requested via --progress flag)
         let pb = if show_progress {
             let pb = ProgressBar::new(total_files as u64);
@@ -227,6 +240,15 @@ impl Indexer {
 
                 new_hashes.insert(result.path_str, result.hash);
             }
+
+            // Flush trigram index batch to disk if batch-flush mode is enabled
+            if total_files > 10000 {
+                if show_progress {
+                    pb.set_message(format!("Flushing batch {}/{}...", batch_idx + 1, num_batches));
+                }
+                trigram_index.flush_batch()
+                    .context("Failed to flush trigram batch")?;
+            }
         }
 
         // Wait for progress thread to finish
@@ -303,13 +325,12 @@ impl Indexer {
             .context("Failed to write trigram index")?;
         log::info!("Wrote {} files to trigrams.bin", trigram_index.file_count());
 
-        // Step 4: Write content store
+        // Step 4: Finalize content store (already been writing incrementally)
         if show_progress {
-            pb.set_message("Writing content store...".to_string());
+            pb.set_message("Finalizing content store...".to_string());
         }
-        let content_path = self.cache.path().join("content.bin");
-        content_writer.write(&content_path)
-            .context("Failed to write content store")?;
+        content_writer.finalize_if_needed()
+            .context("Failed to finalize content store")?;
         log::info!("Wrote {} files ({} bytes) to content.bin",
                    content_writer.file_count(), content_writer.content_size());
 

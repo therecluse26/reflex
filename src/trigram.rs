@@ -191,9 +191,10 @@ struct DirectoryEntry {
 /// Posting lists are kept sorted by (file_id, line_no) for efficient intersection.
 /// The index itself is kept sorted by trigram for O(log n) binary search.
 ///
-/// Supports two modes:
-/// 1. In-memory mode (during indexing): All posting lists in RAM
-/// 2. Lazy-loaded mode (after loading): Compressed posting lists in mmap, decompressed on-demand
+/// Supports three modes:
+/// 1. **In-memory mode** (during indexing): All posting lists in RAM
+/// 2. **Batch-flush mode** (large codebases): Periodically flushes partial indices to disk to limit RAM
+/// 3. **Lazy-loaded mode** (after loading): Compressed posting lists in mmap, decompressed on-demand
 pub struct TrigramIndex {
     /// Inverted index: sorted Vec of (trigram, locations) for binary search
     /// Used in in-memory mode (during indexing)
@@ -206,6 +207,10 @@ pub struct TrigramIndex {
     mmap: Option<memmap2::Mmap>,
     /// Directory of (trigram, offset, size) for lazy loading
     directory: Vec<DirectoryEntry>,
+    /// Partial index files created during batch flushing (for k-way merge at finalize)
+    partial_indices: Vec<PathBuf>,
+    /// Temporary directory for partial indices
+    temp_dir: Option<PathBuf>,
 }
 
 impl TrigramIndex {
@@ -217,7 +222,104 @@ impl TrigramIndex {
             temp_index: Some(HashMap::new()),
             mmap: None,
             directory: Vec::new(),
+            partial_indices: Vec::new(),
+            temp_dir: None,
         }
+    }
+
+    /// Enable batch-flush mode for large codebases
+    ///
+    /// Creates a temporary directory for partial indices that will be merged at finalize().
+    /// Call this before indexing to enable memory-efficient indexing for huge codebases.
+    pub fn enable_batch_flush(&mut self, temp_dir: PathBuf) -> Result<()> {
+        std::fs::create_dir_all(&temp_dir)
+            .context("Failed to create temp directory for batch flushing")?;
+        self.temp_dir = Some(temp_dir);
+        log::info!("Enabled batch-flush mode for trigram index");
+        Ok(())
+    }
+
+    /// Flush current temp_index to a partial index file
+    ///
+    /// This clears the in-memory HashMap and writes a sorted partial index to disk.
+    /// Called periodically during indexing to limit memory usage.
+    pub fn flush_batch(&mut self) -> Result<()> {
+        let temp_dir = self.temp_dir.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Batch flush not enabled - call enable_batch_flush() first"))?;
+
+        // Take ownership of temp_index to finalize it
+        let temp_map = self.temp_index.take()
+            .ok_or_else(|| anyhow::anyhow!("No temp index to flush"))?;
+
+        if temp_map.is_empty() {
+            // Nothing to flush, restore empty map
+            self.temp_index = Some(HashMap::new());
+            return Ok(());
+        }
+
+        // Convert HashMap to sorted Vec
+        let mut partial_index: Vec<(Trigram, Vec<FileLocation>)> = temp_map.into_iter().collect();
+
+        // Sort and deduplicate posting lists
+        for (_, list) in partial_index.iter_mut() {
+            list.sort_unstable();
+            list.dedup();
+        }
+
+        // Sort by trigram
+        partial_index.sort_unstable_by_key(|(trigram, _)| *trigram);
+
+        // Write to temp file
+        let partial_file = temp_dir.join(format!("partial_{}.bin", self.partial_indices.len()));
+        self.write_partial_index(&partial_file, &partial_index)?;
+
+        self.partial_indices.push(partial_file);
+
+        // Create new empty temp_index for next batch
+        self.temp_index = Some(HashMap::new());
+
+        log::debug!(
+            "Flushed batch {} with {} trigrams to disk",
+            self.partial_indices.len(),
+            partial_index.len()
+        );
+
+        Ok(())
+    }
+
+    /// Write a partial index to disk (simplified format for merging)
+    fn write_partial_index(
+        &self,
+        path: &Path,
+        index: &[(Trigram, Vec<FileLocation>)],
+    ) -> Result<()> {
+        use std::io::BufWriter;
+
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)?;
+
+        let mut writer = BufWriter::with_capacity(16 * 1024 * 1024, file);
+
+        // Write number of trigrams
+        writer.write_all(&(index.len() as u64).to_le_bytes())?;
+
+        // Write each (trigram, posting_list)
+        for (trigram, locations) in index {
+            writer.write_all(&trigram.to_le_bytes())?;
+            writer.write_all(&(locations.len() as u32).to_le_bytes())?;
+
+            for loc in locations {
+                writer.write_all(&loc.file_id.to_le_bytes())?;
+                writer.write_all(&loc.line_no.to_le_bytes())?;
+                writer.write_all(&loc.byte_offset.to_le_bytes())?;
+            }
+        }
+
+        writer.flush()?;
+        Ok(())
     }
 
     /// Add a file to the index and return its file_id
@@ -297,7 +399,26 @@ impl TrigramIndex {
     ///
     /// Must be called after all files are indexed, before querying.
     /// Converts the HashMap to a sorted Vec for fast binary search.
+    ///
+    /// If batch flushing was enabled, this will merge all partial indices.
     pub fn finalize(&mut self) {
+        // If we have partial indices from batch flushing, merge them
+        if !self.partial_indices.is_empty() {
+            log::info!("Merging {} partial indices...", self.partial_indices.len() + 1);
+
+            // Flush final batch if temp_index is not empty
+            if let Some(ref temp_map) = self.temp_index {
+                if !temp_map.is_empty() {
+                    self.flush_batch().expect("Failed to flush final batch");
+                }
+            }
+
+            // Now merge all partial indices
+            self.merge_partial_indices().expect("Failed to merge partial indices");
+            return;
+        }
+
+        // Standard finalization (no batch flushing)
         // Convert HashMap to Vec if we have a temp index
         if let Some(temp_map) = self.temp_index.take() {
             self.index = temp_map.into_iter().collect();
@@ -311,6 +432,86 @@ impl TrigramIndex {
 
         // Sort the index by trigram for binary search
         self.index.sort_unstable_by_key(|(trigram, _)| *trigram);
+    }
+
+    /// Merge all partial indices into self.index using k-way merge
+    fn merge_partial_indices(&mut self) -> Result<()> {
+        use std::io::{BufReader, Read};
+
+        // Read all partial indices into memory (simplified approach for now)
+        let mut all_entries: Vec<(Trigram, FileLocation)> = Vec::new();
+
+        for partial_path in &self.partial_indices {
+            let file = File::open(partial_path)
+                .with_context(|| format!("Failed to open partial index: {:?}", partial_path))?;
+            let mut reader = BufReader::with_capacity(16 * 1024 * 1024, file);
+
+            // Read number of trigrams
+            let mut buf = [0u8; 8];
+            reader.read_exact(&mut buf)?;
+            let num_trigrams = u64::from_le_bytes(buf) as usize;
+
+            // Read each (trigram, posting_list)
+            for _ in 0..num_trigrams {
+                // Read trigram
+                let mut trigram_buf = [0u8; 4];
+                reader.read_exact(&mut trigram_buf)?;
+                let trigram = u32::from_le_bytes(trigram_buf);
+
+                // Read posting list size
+                let mut len_buf = [0u8; 4];
+                reader.read_exact(&mut len_buf)?;
+                let list_len = u32::from_le_bytes(len_buf) as usize;
+
+                // Read all locations
+                for _ in 0..list_len {
+                    let mut loc_buf = [0u8; 12]; // 3 * u32
+                    reader.read_exact(&mut loc_buf)?;
+
+                    let file_id = u32::from_le_bytes([loc_buf[0], loc_buf[1], loc_buf[2], loc_buf[3]]);
+                    let line_no = u32::from_le_bytes([loc_buf[4], loc_buf[5], loc_buf[6], loc_buf[7]]);
+                    let byte_offset = u32::from_le_bytes([loc_buf[8], loc_buf[9], loc_buf[10], loc_buf[11]]);
+
+                    all_entries.push((trigram, FileLocation { file_id, line_no, byte_offset }));
+                }
+            }
+        }
+
+        log::info!("Read {} total trigram entries from {} partial indices",
+                   all_entries.len(), self.partial_indices.len());
+
+        // Group by trigram
+        let mut index_map: HashMap<Trigram, Vec<FileLocation>> = HashMap::new();
+        for (trigram, location) in all_entries {
+            index_map
+                .entry(trigram)
+                .or_insert_with(Vec::new)
+                .push(location);
+        }
+
+        // Convert to sorted vec
+        self.index = index_map.into_iter().collect();
+
+        // Sort and deduplicate posting lists
+        for (_, list) in self.index.iter_mut() {
+            list.sort_unstable();
+            list.dedup();
+        }
+
+        // Sort by trigram
+        self.index.sort_unstable_by_key(|(trigram, _)| *trigram);
+
+        // Clean up partial index files
+        for partial_path in &self.partial_indices {
+            let _ = std::fs::remove_file(partial_path);
+        }
+        if let Some(ref temp_dir) = self.temp_dir {
+            let _ = std::fs::remove_dir(temp_dir);
+        }
+
+        log::info!("Merged into final index with {} trigrams", self.index.len());
+
+        Ok(())
     }
 
     /// Search for a plain text pattern
@@ -646,6 +847,8 @@ impl TrigramIndex {
             temp_index: None,
             mmap: Some(mmap),  // Keep mmap alive for lazy decompression!
             directory,
+            partial_indices: Vec::new(),
+            temp_dir: None,
         })
     }
 }
