@@ -273,23 +273,34 @@ fn extract_symbols(
     let mut matches = cursor.matches(query, *root, source.as_bytes());
 
     let mut symbols = Vec::new();
+    let mut seen_names = std::collections::HashSet::new();
 
     while let Some(match_) = matches.next() {
         // Find the name capture and the full node
         let mut name = None;
+        let mut name_node = None;
         let mut full_node = None;
 
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
             if capture_name == "name" {
                 name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                name_node = Some(capture.node);
             } else {
                 // Assume any other capture is the full node
                 full_node = Some(capture.node);
             }
         }
 
-        if let (Some(name), Some(node)) = (name, full_node) {
+        if let (Some(name), Some(name_node), Some(node)) = (name, name_node, full_node) {
+            // Deduplicate by name position - this handles cases where template patterns
+            // match the same symbol twice (e.g., both template_declaration and class_specifier)
+            let name_key = (name_node.start_byte(), name_node.end_byte(), name.clone());
+            if seen_names.contains(&name_key) {
+                continue; // Skip duplicate
+            }
+            seen_names.insert(name_key);
+
             let span = node_to_span(&node);
             let preview = extract_preview(source, &span);
 

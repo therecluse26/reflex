@@ -191,10 +191,10 @@ fn extract_variables(
     root: &tree_sitter::Node,
     language: &tree_sitter::Language,
 ) -> Result<Vec<SearchResult>> {
+    // Match var_spec directly to capture all variables in both single and block declarations
     let query_str = r#"
-        (var_declaration
-            (var_spec
-                name: (identifier) @name)) @var
+        (var_spec
+            name: (identifier) @name)
     "#;
 
     let query = Query::new(language, query_str)
@@ -215,7 +215,7 @@ fn extract_variables(
                 if !seen_vars.contains(&name) {
                     seen_vars.insert(name.clone());
 
-                    // Find the var_declaration node
+                    // Find the var_declaration node (walk up from var_spec)
                     let mut current = capture.node;
                     let mut var_node = None;
                     while let Some(parent) = current.parent() {

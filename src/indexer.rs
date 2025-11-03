@@ -355,8 +355,15 @@ impl Indexer {
     fn discover_files(&self, root: &Path) -> Result<Vec<PathBuf>> {
         let mut files = Vec::new();
 
+        // WalkBuilder from ignore crate automatically respects:
+        // - .gitignore (when in a git repo)
+        // - .ignore files
+        // - Hidden files (can be configured)
         let walker = WalkBuilder::new(root)
             .follow_links(self.config.follow_symlinks)
+            .git_ignore(true)  // Explicitly enable gitignore support (enabled by default, but be explicit)
+            .git_global(false) // Don't use global gitignore
+            .git_exclude(false) // Don't use .git/info/exclude
             .build();
 
         for entry in walker {
@@ -590,11 +597,20 @@ mod tests {
     #[test]
     fn test_discover_files_respects_gitignore() {
         let temp = TempDir::new().unwrap();
+
+        // Initialize git repo (required for .gitignore to work with WalkBuilder)
+        std::process::Command::new("git")
+            .arg("init")
+            .current_dir(temp.path())
+            .output()
+            .expect("Failed to initialize git repo");
+
         let cache = CacheManager::new(temp.path());
         let config = IndexConfig::default();
         let indexer = Indexer::new(cache, config);
 
-        // Create .gitignore
+        // Create .gitignore - use "ignored/" pattern to ignore the directory
+        // Note: WalkBuilder respects .gitignore ONLY in git repositories
         fs::write(temp.path().join(".gitignore"), "ignored/\n").unwrap();
 
         // Create files
@@ -607,11 +623,20 @@ mod tests {
 
         let files = indexer.discover_files(temp.path()).unwrap();
 
-        // Should find included files but not excluded.rs in ignored/
-        assert!(files.len() >= 2);
-        assert!(files.iter().any(|f| f.ends_with("included.rs")));
-        assert!(files.iter().any(|f| f.ends_with("also_included.py")));
-        assert!(!files.iter().any(|f| f.ends_with("excluded.rs")));
+        // Verify the expected files are found
+        assert!(files.iter().any(|f| f.ends_with("included.rs")), "Should find included.rs");
+        assert!(files.iter().any(|f| f.ends_with("also_included.py")), "Should find also_included.py");
+
+        // Verify excluded.rs in ignored/ directory is NOT found
+        // This is the key test - gitignore should filter it out
+        assert!(!files.iter().any(|f| {
+            let path_str = f.to_string_lossy();
+            path_str.contains("ignored") && f.ends_with("excluded.rs")
+        }), "Should NOT find excluded.rs in ignored/ directory (gitignore pattern)");
+
+        // Should find exactly 2 files (included.rs and also_included.py)
+        // .gitignore file itself has no supported language extension, so it won't be indexed
+        assert_eq!(files.len(), 2, "Should find exactly 2 files (not including .gitignore or ignored/excluded.rs)");
     }
 
     #[test]
