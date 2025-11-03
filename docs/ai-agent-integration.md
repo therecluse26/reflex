@@ -19,7 +19,7 @@ When using the `--json` flag, RefLex returns a structured response with metadata
     "indexed_branch": "main",
     "current_commit": "74eb454...",
     "indexed_commit": "74eb454...",
-    "action_required": "reflex index"
+    "action_required": "rfx index"
   },
   "results": [
     {
@@ -52,7 +52,7 @@ When using the `--json` flag, RefLex returns a structured response with metadata
 Human-readable explanation of why the index is stale (omitted if fresh).
 
 ### `action_required` (optional)
-Command to run to fix staleness (typically `"reflex index"`). Omitted if fresh.
+Command to run to fix staleness (typically `"rfx index"`). Omitted if fresh.
 
 ### Git fields (optional)
 Only present if in a git repository:
@@ -65,13 +65,13 @@ Only present if in a git repository:
 
 ```bash
 #!/bin/bash
-response=$(reflex query "pattern" --json)
+response=$(rfx query "pattern" --json)
 status=$(echo "$response" | jq -r '.metadata.status')
 
 if [ "$status" != "fresh" ]; then
     echo "⚠️  Index is stale, re-indexing..." >&2
-    reflex index
-    response=$(reflex query "pattern" --json)
+    rfx index
+    response=$(rfx query "pattern" --json)
 fi
 
 # Use results
@@ -87,16 +87,16 @@ import json
 def query_with_auto_reindex(pattern: str):
     """Query RefLex, automatically re-index if stale."""
     response = json.loads(
-        subprocess.check_output(["reflex", "query", pattern, "--json"])
+        subprocess.check_output(["rfx", "query", pattern, "--json"])
     )
 
     if response["metadata"]["status"] != "fresh":
         print(f"⚠️  Index stale: {response['metadata']['reason']}")
-        subprocess.run(["reflex", "index"], check=True)
+        subprocess.run(["rfx", "index"], check=True)
 
         # Re-query with fresh index
         response = json.loads(
-            subprocess.check_output(["reflex", "query", pattern, "--json"])
+            subprocess.check_output(["rfx", "query", pattern, "--json"])
         )
 
     return response["results"]
@@ -116,15 +116,15 @@ import { promisify } from 'util';
 const execAsync = promisify(exec);
 
 async function queryWithAutoReindex(pattern: string) {
-  const { stdout } = await execAsync(`reflex query "${pattern}" --json`);
+  const { stdout } = await execAsync(`rfx query "${pattern}" --json`);
   let response = JSON.parse(stdout);
 
   if (response.metadata.status !== 'fresh') {
     console.error(`⚠️  Index stale: ${response.metadata.reason}`);
-    await execAsync('reflex index');
+    await execAsync('rfx index');
 
     // Re-query
-    const { stdout: newStdout } = await execAsync(`reflex query "${pattern}" --json`);
+    const { stdout: newStdout } = await execAsync(`rfx query "${pattern}" --json`);
     response = JSON.parse(newStdout);
   }
 
@@ -170,8 +170,8 @@ RefLex uses standard exit codes:
 Without `--json`, RefLex prints warnings to stderr:
 
 ```bash
-$ reflex query "pattern"
-⚠️  WARNING: Index may be stale (commit changed: abc1234 → def5678). Consider running 'reflex index'.
+$ rfx query "pattern"
+⚠️  WARNING: Index may be stale (commit changed: abc1234 → def5678). Consider running 'rfx index'.
 Found 42 results in 5ms:
 ...
 ```

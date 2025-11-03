@@ -41,24 +41,24 @@ RefLex uses **trigram-based indexing** to enable sub-100ms full-text search acro
 ## CLI Usage
 
     # Build or update the local cache
-    reflex index
+    rfx index
 
     # Full-text search (default - finds all occurrences)
-    reflex query "extract_symbols"
+    rfx query "extract_symbols"
     → Finds function definition + all call sites (11 total)
 
     # Filter to symbol definitions only (uses runtime tree-sitter parsing)
-    reflex query "extract_symbols" --symbols
+    rfx query "extract_symbols" --symbols
     → Finds only the function definition (1 result)
 
     # Full-text search with language filter
-    reflex query "unwrap" --lang rust
+    rfx query "unwrap" --lang rust
 
     # Export results as JSON (for AI agents)
-    reflex query "format!" --json
+    rfx query "format!" --json
 
     # Serve a local HTTP API (optional)
-    reflex serve --port 7878
+    rfx serve --port 7878
 
 ---
 
@@ -139,10 +139,10 @@ RefLex currently supports symbol extraction for the following languages and fram
     cargo test
 
 ### Refresh Index
-    reflex index
+    rfx index
 
 ### Debug Queries
-    RUST_LOG=debug reflex query "fn main"
+    RUST_LOG=debug rfx query "fn main"
 
 ---
 

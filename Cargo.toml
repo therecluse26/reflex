@@ -77,7 +77,7 @@ indicatif = "0.17"
 tempfile = "3.12"
 
 [[bin]]
-name = "reflex"
+name = "rfx"
 path = "src/main.rs"
 
 [lib]

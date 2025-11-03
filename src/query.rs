@@ -76,7 +76,7 @@ impl QueryEngine {
         // Ensure cache exists
         if !self.cache.exists() {
             anyhow::bail!(
-                "Index not found. Run 'reflex index' to build the cache first."
+                "Index not found. Run 'rfx index' to build the cache first."
             );
         }
 
@@ -104,7 +104,7 @@ impl QueryEngine {
         // Ensure cache exists
         if !self.cache.exists() {
             anyhow::bail!(
-                "Index not found. Run 'reflex index' to build the cache first."
+                "Index not found. Run 'rfx index' to build the cache first."
             );
         }
 
@@ -667,7 +667,7 @@ impl QueryEngine {
                 if !self.cache.branch_exists(&current_branch).unwrap_or(false) {
                     let warning = IndexWarning {
                         reason: format!("Branch '{}' has not been indexed", current_branch),
-                        action_required: "reflex index".to_string(),
+                        action_required: "rfx index".to_string(),
                         details: Some(IndexWarningDetails {
                             current_branch: Some(current_branch),
                             indexed_branch: None,
@@ -689,7 +689,7 @@ impl QueryEngine {
                                 &branch_info.commit_sha[..7],
                                 &current_commit[..7]
                             ),
-                            action_required: "reflex index".to_string(),
+                            action_required: "rfx index".to_string(),
                             details: Some(IndexWarningDetails {
                                 current_branch: Some(current_branch.clone()),
                                 indexed_branch: Some(current_branch.clone()),
@@ -732,7 +732,7 @@ impl QueryEngine {
                         if changed > 0 {
                             let warning = IndexWarning {
                                 reason: format!("{} of {} sampled files modified", changed, checked),
-                                action_required: "reflex index".to_string(),
+                                action_required: "rfx index".to_string(),
                                 details: Some(IndexWarningDetails {
                                     current_branch: Some(current_branch.clone()),
                                     indexed_branch: Some(branch_info.branch.clone()),
@@ -768,7 +768,7 @@ impl QueryEngine {
             if let Ok(current_branch) = crate::git::get_current_branch(&root) {
                 // Check if we're on a different branch than what was indexed
                 if !self.cache.branch_exists(&current_branch).unwrap_or(false) {
-                    eprintln!("⚠️  WARNING: Index not found for branch '{}'. Run 'reflex index' to index this branch.", current_branch);
+                    eprintln!("⚠️  WARNING: Index not found for branch '{}'. Run 'rfx index' to index this branch.", current_branch);
                     return Ok(());
                 }
 
@@ -777,7 +777,7 @@ impl QueryEngine {
                     (crate::git::get_current_commit(&root), self.cache.get_branch_info(&current_branch)) {
 
                     if branch_info.commit_sha != current_commit {
-                        eprintln!("⚠️  WARNING: Index may be stale (commit changed: {} → {}). Consider running 'reflex index'.",
+                        eprintln!("⚠️  WARNING: Index may be stale (commit changed: {} → {}). Consider running 'rfx index'.",
                                  &branch_info.commit_sha[..7], &current_commit[..7]);
                         return Ok(());
                     }
@@ -816,7 +816,7 @@ impl QueryEngine {
                         }
 
                         if changed > 0 {
-                            eprintln!("⚠️  WARNING: {} of {} sampled files changed since indexing. Consider running 'reflex index'.", changed, checked);
+                            eprintln!("⚠️  WARNING: {} of {} sampled files changed since indexing. Consider running 'rfx index'.", changed, checked);
                         }
                     }
                 }

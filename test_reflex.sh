@@ -18,8 +18,8 @@ cd "$TEST_DIR"
 
 echo "2️⃣  Testing cache initialization..."
 # Test stats (should initialize cache)
-echo "   Running: reflex stats"
-/home/brad/Code/personal/reflex/target/release/reflex stats 2>/dev/null
+echo "   Running: rfx stats"
+/home/brad/Code/personal/reflex/target/release/rfx stats 2>/dev/null
 echo ""
 
 # Check cache was created
@@ -77,9 +77,9 @@ echo "   - Hash persistence: ✅ Working"
 echo "   - Statistics: ✅ Working"
 echo ""
 echo "🚀 Next steps to fully test RefLex:"
-echo "   1. Run: reflex index          # Index current project"
-echo "   2. Run: reflex query 'User'   # Search for symbols"
-echo "   3. Run: reflex stats          # View statistics"
+echo "   1. Run: rfx index          # Index current project"
+echo "   2. Run: rfx query 'User'   # Search for symbols"
+echo "   3. Run: rfx stats          # View statistics"
 echo ""
 echo "📍 Test directory: $TEST_DIR"
 

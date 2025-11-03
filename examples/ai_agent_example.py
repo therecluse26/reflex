@@ -14,7 +14,7 @@ import subprocess
 import sys
 
 
-def query_reflex(pattern: str, limit: int = 10, reflex_bin: str = "reflex") -> dict:
+def query_reflex(pattern: str, limit: int = 10, reflex_bin: str = "rfx") -> dict:
     """Query RefLex and return JSON response with metadata."""
     cmd = [reflex_bin, "query", pattern, "--json", "--limit", str(limit)]
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -36,8 +36,8 @@ def ensure_fresh_index(response: dict) -> dict:
         if "reason" in metadata:
             print(f"   Reason: {metadata['reason']}", file=sys.stderr)
 
-        # Get the suggested action (defaults to 'reflex index')
-        action = metadata.get("action_required", "reflex index")
+        # Get the suggested action (defaults to 'rfx index')
+        action = metadata.get("action_required", "rfx index")
 
         print(f"🔄 Running: {action}", file=sys.stderr)
         subprocess.run(action.split(), check=True)
@@ -52,18 +52,18 @@ def ensure_fresh_index(response: dict) -> dict:
 
 def main():
     # Example usage
-    # Note: Assumes 'reflex' is in PATH or replace with full path to binary
+    # Note: Assumes 'rfx' is in PATH or replace with full path to binary
     pattern = "CacheManager"
 
     print(f"Searching for: {pattern}", file=sys.stderr)
-    # Try to find reflex binary (cargo build output location)
+    # Try to find rfx binary (cargo build output location)
     import os
     reflex_candidates = [
-        "/ramdisk/target/release/reflex",  # Cargo build on ramdisk
-        "./target/release/reflex",  # Standard cargo build
-        "reflex",  # System PATH
+        "/ramdisk/target/release/rfx",  # Cargo build on ramdisk
+        "./target/release/rfx",  # Standard cargo build
+        "rfx",  # System PATH
     ]
-    reflex_bin = next((p for p in reflex_candidates if os.path.exists(p) or p == "reflex"), "reflex")
+    reflex_bin = next((p for p in reflex_candidates if os.path.exists(p) or p == "rfx"), "rfx")
 
     response = query_reflex(pattern, limit=5, reflex_bin=reflex_bin)
 

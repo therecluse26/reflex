@@ -13,7 +13,7 @@ use crate::query::{QueryEngine, QueryFilter};
 /// RefLex: Local-first, structure-aware code search for AI agents
 #[derive(Parser, Debug)]
 #[command(
-    name = "reflex",
+    name = "rfx",
     version,
     about = "A fast, deterministic code search engine built for AI",
     long_about = "RefLex is a local-first, structure-aware code search engine that returns \
@@ -54,11 +54,11 @@ pub enum Command {
     ///
     /// Search modes:
     ///   - Default: Full-text trigram search (finds all occurrences)
-    ///     Example: reflex query "extract_symbols"
+    ///     Example: rfx query "extract_symbols"
     ///
     ///   - Symbol search: Search symbol definitions only
-    ///     Example: reflex query "parse" --symbols
-    ///     Example: reflex query "parse" --kind function  (implies --symbols)
+    ///     Example: rfx query "parse" --symbols
+    ///     Example: rfx query "parse" --kind function  (implies --symbols)
     Query {
         /// Search pattern
         pattern: String,
@@ -448,7 +448,7 @@ fn handle_stats(as_json: bool) -> Result<()> {
     let cache = CacheManager::new(".");
 
     if !cache.exists() {
-        anyhow::bail!("No index found. Run 'reflex index' first.");
+        anyhow::bail!("No index found. Run 'rfx index' first.");
     }
 
     let stats = cache.stats()?;
@@ -536,7 +536,7 @@ fn handle_list_files(as_json: bool) -> Result<()> {
     let cache = CacheManager::new(".");
 
     if !cache.exists() {
-        anyhow::bail!("No index found. Run 'reflex index' first.");
+        anyhow::bail!("No index found. Run 'rfx index' first.");
     }
 
     let files = cache.list_files()?;
