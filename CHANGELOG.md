@@ -7,6 +7,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/therecluse26/reflex/compare/v0.1.1...v0.1.2) - 2025-11-03
+
+### Fixed
+
+- *(ci)* use default GITHUB_TOKEN and correct repository URL
+- *(ci)* remove rfx symlink to fix release-plz
+- *(ci)* correct release-plz.toml configuration format
+- *(ci)* correct release-plz GitHub Action reference
+
+### Other
+
+- release v0.1.1
+- (feat) initial release
+- Some test fixes
+- Added test file corpus for various languages
+- Renamed folder to .bruno
+- Added MCP support
+- Added a "watch" command for rebuilding index on the fly with debounce
+- Added AST query support
+- Rebuilt query engine to use a builder pipeline instead of conditional cases and fixed symbol searches when using regex
+- Make symbol field optional for regex matches
+- Revert "Fix regex queries to return actual symbol names instead of regex matches"
+- Fix regex queries to return actual symbol names instead of regex matches
+- Removed symbol counts from stats, because they're deprecated
+- Added bruno collection and incremental index rebuild
+- Added HTTP server
+- Updated default index flag to -p and updated docs
+- Renamed binary to "rfx"
+- Fix tests
+- Filled out test suite comprehensively
+- Fixed indexing memory ballooning on massive codebases
+- Flushing memory between indexing batches to save system memory
+- Had an idea that resulted in unbelievably fast lookups - removing the symbol index entirely and doing a 2-stage lookup for symbols
+- More performance enhancements, needs more work to handle the largest codebases like linux and chromium
+- Massive performance boosts on reindexing and query retrieval for huge codebases
+- Fixed Java parser
+- Added many missing language parsers
+- Updated todo and fixed another regex bug
+- Fixed some more regex issues
+- Added some better warning handling for stale indexes to json output
+- Added --json flag for programmatic parsing
+- Update warning messages to use ⚠️ emoji and WARNING prefix
+- Replace blocking validation with non-blocking warnings
+- Fix branch recording performance issue
+- Fixed another bug with regex
+- Refining regex
+- Got regex working
+- Reduced number of indexing CPU threads to 80% of available threads
+- Added lines and symbols output for indexer
+- Added PHP support
+- Updated todo
+- Updated --kind function filter to include class methods
+- Fixed some ts parsing issues with functions
+- Fixed lang parameter to only accept supported languages
+- Added react/vue/svelte support and fixed some warnings
+- Added Unknown fallback type to SymbolKind to ensure 100% indexing coverage consistently
+- Added missing symbol types
+- Added file type breakdown in indexing summary
+- Ignoring unsupported languages entirely
+- Massive performance gains
+- Fixed progress bar issues
+- Added some perf enhancements, a --count flag and progress bar for the indexer
+- Some performance improvements
+- Added retrieval time measurement
+- update todo
+- More filter options and suppressing logs
+- Further refining querying. added "kind" "expand" and "file" filters
+- Refining query capabilities
+- Some fixes
+- Fixed indexing truncation bug
+- Added query and list-files commands
+- Added basic parser functionality
+- Some context engineering instructions
+- Updated some todos
+- Initial commit
+
 ## [0.1.1](https://github.com/therecluse26/reflex/compare/v0.1.0...v0.1.1) - 2025-11-03
 
 ### Fixed
