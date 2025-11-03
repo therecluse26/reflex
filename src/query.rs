@@ -497,10 +497,14 @@ impl QueryEngine {
                     .context("Invalid file_id")?;
                 let content = content_reader.get_file_content(file_id as u32)?;
 
+                // Parse file to extract symbols (for accurate symbol metadata)
+                let file_symbols = Self::parse_file_for_symbols(file_path, content);
+
                 self.find_regex_matches_in_file(
                     &regex,
                     file_path,
                     content,
+                    file_symbols.as_deref(),
                     &mut results,
                 )?;
             }
@@ -527,7 +531,11 @@ impl QueryEngine {
                     let file_path = content_reader.get_file_path(file_id as u32)
                         .context("Invalid file_id")?;
                     let content = content_reader.get_file_content(file_id as u32)?;
-                    self.find_regex_matches_in_file(&regex, file_path, content, &mut results)?;
+
+                    // Parse file to extract symbols (for accurate symbol metadata)
+                    let file_symbols = Self::parse_file_for_symbols(file_path, content);
+
+                    self.find_regex_matches_in_file(&regex, file_path, content, file_symbols.as_deref(), &mut results)?;
                 }
             } else {
                 // Search for each literal sequence and union the results
@@ -558,10 +566,14 @@ impl QueryEngine {
                         .context("Invalid file_id from trigram search")?;
                     let content = content_reader.get_file_content(file_id)?;
 
+                    // Parse file to extract symbols (for accurate symbol metadata)
+                    let file_symbols = Self::parse_file_for_symbols(file_path, content);
+
                     self.find_regex_matches_in_file(
                         &regex,
                         file_path,
                         content,
+                        file_symbols.as_deref(),
                         &mut results,
                     )?;
                 }
@@ -572,12 +584,53 @@ impl QueryEngine {
         Ok(results)
     }
 
+    /// Parse a file to extract symbols (helper for regex search)
+    /// Returns None if parsing fails or language is unsupported
+    fn parse_file_for_symbols(file_path: &std::path::Path, content: &str) -> Option<Vec<SearchResult>> {
+        // Detect language from file extension
+        let ext = file_path.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        let lang = Language::from_extension(ext);
+
+        // Only parse if we have parser support
+        if matches!(lang, Language::Unknown) {
+            return None;
+        }
+
+        let file_path_str = file_path.to_string_lossy().to_string();
+        match ParserFactory::parse(&file_path_str, content, lang) {
+            Ok(symbols) => {
+                log::debug!("Parsed {} symbols from {} for regex matching", symbols.len(), file_path_str);
+                Some(symbols)
+            }
+            Err(e) => {
+                log::debug!("Failed to parse {} for symbols: {}", file_path_str, e);
+                None
+            }
+        }
+    }
+
+    /// Find a symbol at a specific line number from parsed symbols
+    /// Returns the first symbol that overlaps with the target line
+    fn find_symbol_at_line(
+        symbols: &[SearchResult],
+        target_line: usize,
+    ) -> Option<&SearchResult> {
+        symbols.iter().find(|sym| {
+            let start = sym.span.start_line as usize;
+            let end = sym.span.end_line as usize;
+            target_line >= start && target_line <= end
+        })
+    }
+
     /// Find all regex matches in a single file
     fn find_regex_matches_in_file(
         &self,
         regex: &Regex,
         file_path: &std::path::Path,
         content: &str,
+        file_symbols: Option<&[SearchResult]>,
         results: &mut Vec<SearchResult>,
     ) -> Result<()> {
         let file_path_str = file_path.to_string_lossy().to_string();
@@ -598,8 +651,24 @@ impl QueryEngine {
                     .map(|m| m.as_str().to_string())
                     .unwrap_or_else(|| line.to_string());
 
-                // Create text match result
-                // TODO: Add runtime tree-sitter parsing to detect symbol kind
+                // Try to find the actual symbol at this line (if symbols are available)
+                if let Some(symbols) = file_symbols {
+                    if let Some(found_symbol) = Self::find_symbol_at_line(symbols, line_no) {
+                        // Use the actual symbol information from parsing
+                        results.push(SearchResult {
+                            path: file_path_str.clone(),
+                            lang: lang.clone(),
+                            kind: found_symbol.kind.clone(),
+                            symbol: found_symbol.symbol.clone(),
+                            span: found_symbol.span.clone(),
+                            scope: found_symbol.scope.clone(),
+                            preview: line.to_string(), // Use the matched line as preview
+                        });
+                        continue;
+                    }
+                }
+
+                // Fall back to regex match result (no symbol found at this line)
                 results.push(SearchResult {
                     path: file_path_str.clone(),
                     lang: lang.clone(),
@@ -1439,5 +1508,52 @@ mod tests {
         assert!(results.iter().any(|r| r.lang == Language::Rust));
         assert!(results.iter().any(|r| r.lang == Language::TypeScript));
         assert!(results.iter().any(|r| r.lang == Language::Python));
+    }
+
+    // ==================== Regex with Symbol Extraction Tests ====================
+
+    #[test]
+    fn test_regex_search_extracts_correct_symbol_names() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        // Create a Rust file with a pattern similar to the user's PHP example
+        // Regex: "Helper([A-Z][a-zA-Z0-9]*)Function"
+        // Should find: MyHelperFunction, UserHelperFunction, DataHelperFunction
+        fs::write(
+            project.join("main.rs"),
+            "fn my_helper_function() {}\nfn user_helper_function() {}\nfn data_helper_function() {}\nfn other_function() {}"
+        ).unwrap();
+
+        let cache = CacheManager::new(&project);
+        let indexer = Indexer::new(cache, IndexConfig::default());
+        indexer.index(&project, false).unwrap();
+
+        let cache = CacheManager::new(&project);
+
+        let engine = QueryEngine::new(cache);
+        let filter = QueryFilter {
+            use_regex: true,
+            ..Default::default()
+        };
+
+        // Search for functions matching pattern "helper([a-z_]+)function"
+        let results = engine.search(r"helper([a-z_]+)function", filter).unwrap();
+
+        // Should match the three helper functions
+        assert_eq!(results.len(), 3, "Should find exactly 3 helper functions");
+
+        // Verify that symbol names are extracted correctly (not just the regex match)
+        assert!(results.iter().any(|r| r.symbol == "my_helper_function"),
+                "Should find symbol 'my_helper_function'");
+        assert!(results.iter().any(|r| r.symbol == "user_helper_function"),
+                "Should find symbol 'user_helper_function'");
+        assert!(results.iter().any(|r| r.symbol == "data_helper_function"),
+                "Should find symbol 'data_helper_function'");
+
+        // Verify that all results have the correct kind (Function, not Unknown)
+        assert!(results.iter().all(|r| r.kind == SymbolKind::Function),
+                "All results should be classified as Function, not Unknown");
     }
 }
