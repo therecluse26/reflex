@@ -429,21 +429,261 @@ fn handle_query(
 fn handle_serve(port: u16, host: String) -> Result<()> {
     log::info!("Starting HTTP server on {}:{}", host, port);
 
-    // TODO: Implement HTTP server using axum
-    // - GET /query?q=pattern&lang=rust
-    // - GET /stats
-    // - POST /index
-
     println!("Starting RefLex HTTP server...");
     println!("  Address: http://{}:{}", host, port);
     println!("\nEndpoints:");
-    println!("  GET  /query?q=<pattern>&lang=<lang>");
+    println!("  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&expand=true&file=<pattern>");
     println!("  GET  /stats");
     println!("  POST /index");
     println!("\nPress Ctrl+C to stop.");
 
-    // Placeholder until full implementation
-    anyhow::bail!("HTTP server not yet implemented");
+    // Start the server using tokio runtime
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async {
+        run_server(port, host).await
+    })
+}
+
+/// Run the HTTP server
+async fn run_server(port: u16, host: String) -> Result<()> {
+    use axum::{
+        extract::{Query as AxumQuery, State},
+        http::StatusCode,
+        response::{IntoResponse, Json},
+        routing::{get, post},
+        Router,
+    };
+    use tower_http::cors::{CorsLayer, Any};
+    use std::sync::Arc;
+
+    // Server state shared across requests
+    #[derive(Clone)]
+    struct AppState {
+        cache_path: String,
+    }
+
+    // Query parameters for GET /query
+    #[derive(Debug, serde::Deserialize)]
+    struct QueryParams {
+        q: String,
+        #[serde(default)]
+        lang: Option<String>,
+        #[serde(default)]
+        kind: Option<String>,
+        #[serde(default)]
+        limit: Option<usize>,
+        #[serde(default)]
+        symbols: bool,
+        #[serde(default)]
+        regex: bool,
+        #[serde(default)]
+        exact: bool,
+        #[serde(default)]
+        expand: bool,
+        #[serde(default)]
+        file: Option<String>,
+    }
+
+    // Request body for POST /index
+    #[derive(Debug, serde::Deserialize)]
+    struct IndexRequest {
+        #[serde(default)]
+        force: bool,
+        #[serde(default)]
+        languages: Vec<String>,
+    }
+
+    // GET /query endpoint
+    async fn handle_query_endpoint(
+        State(state): State<Arc<AppState>>,
+        AxumQuery(params): AxumQuery<QueryParams>,
+    ) -> Result<Json<crate::models::QueryResponse>, (StatusCode, String)> {
+        log::info!("Query request: pattern={}", params.q);
+
+        let cache = CacheManager::new(&state.cache_path);
+        let engine = QueryEngine::new(cache);
+
+        // Parse language filter
+        let language = if let Some(lang_str) = params.lang.as_deref() {
+            match lang_str.to_lowercase().as_str() {
+                "rust" | "rs" => Some(Language::Rust),
+                "javascript" | "js" => Some(Language::JavaScript),
+                "typescript" | "ts" => Some(Language::TypeScript),
+                "vue" => Some(Language::Vue),
+                "svelte" => Some(Language::Svelte),
+                "php" => Some(Language::PHP),
+                "python" | "py" => Some(Language::Python),
+                "go" => Some(Language::Go),
+                "java" => Some(Language::Java),
+                "c" => Some(Language::C),
+                "cpp" | "c++" => Some(Language::Cpp),
+                _ => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        format!("Unknown language '{}'. Supported languages: rust, javascript (js), typescript (ts), vue, svelte, php, python (py), go, java, c, cpp (c++)", lang_str)
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+
+        // Parse symbol kind
+        let kind = params.kind.as_deref().and_then(|s| {
+            let capitalized = {
+                let mut chars = s.chars();
+                match chars.next() {
+                    None => String::new(),
+                    Some(first) => first.to_uppercase().chain(chars.flat_map(|c| c.to_lowercase())).collect(),
+                }
+            };
+
+            capitalized.parse::<crate::models::SymbolKind>()
+                .ok()
+                .or_else(|| {
+                    log::debug!("Treating '{}' as unknown symbol kind for filtering", s);
+                    Some(crate::models::SymbolKind::Unknown(s.to_string()))
+                })
+        });
+
+        // Smart behavior: --kind implies --symbols
+        let symbols_mode = params.symbols || kind.is_some();
+
+        let filter = QueryFilter {
+            language,
+            kind,
+            use_ast: false,
+            use_regex: params.regex,
+            limit: params.limit,
+            symbols_mode,
+            expand: params.expand,
+            file_pattern: params.file,
+            exact: params.exact,
+        };
+
+        match engine.search_with_metadata(&params.q, filter) {
+            Ok(response) => Ok(Json(response)),
+            Err(e) => {
+                log::error!("Query error: {}", e);
+                Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Query failed: {}", e)))
+            }
+        }
+    }
+
+    // GET /stats endpoint
+    async fn handle_stats_endpoint(
+        State(state): State<Arc<AppState>>,
+    ) -> Result<Json<crate::models::IndexStats>, (StatusCode, String)> {
+        log::info!("Stats request");
+
+        let cache = CacheManager::new(&state.cache_path);
+
+        if !cache.exists() {
+            return Err((StatusCode::NOT_FOUND, "No index found. Run 'rfx index' first.".to_string()));
+        }
+
+        match cache.stats() {
+            Ok(stats) => Ok(Json(stats)),
+            Err(e) => {
+                log::error!("Stats error: {}", e);
+                Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to get stats: {}", e)))
+            }
+        }
+    }
+
+    // POST /index endpoint
+    async fn handle_index_endpoint(
+        State(state): State<Arc<AppState>>,
+        Json(req): Json<IndexRequest>,
+    ) -> Result<Json<crate::models::IndexStats>, (StatusCode, String)> {
+        log::info!("Index request: force={}, languages={:?}", req.force, req.languages);
+
+        let cache = CacheManager::new(&state.cache_path);
+
+        if req.force {
+            log::info!("Force rebuild requested, clearing existing cache");
+            if let Err(e) = cache.clear() {
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to clear cache: {}", e)));
+            }
+        }
+
+        // Parse language filters
+        let lang_filters: Vec<Language> = req.languages
+            .iter()
+            .filter_map(|s| match s.to_lowercase().as_str() {
+                "rust" | "rs" => Some(Language::Rust),
+                "python" | "py" => Some(Language::Python),
+                "javascript" | "js" => Some(Language::JavaScript),
+                "typescript" | "ts" => Some(Language::TypeScript),
+                "vue" => Some(Language::Vue),
+                "svelte" => Some(Language::Svelte),
+                "go" => Some(Language::Go),
+                "java" => Some(Language::Java),
+                "php" => Some(Language::PHP),
+                "c" => Some(Language::C),
+                "cpp" | "c++" => Some(Language::Cpp),
+                _ => {
+                    log::warn!("Unknown language: {}", s);
+                    None
+                }
+            })
+            .collect();
+
+        let config = IndexConfig {
+            languages: lang_filters,
+            ..Default::default()
+        };
+
+        let indexer = Indexer::new(cache, config);
+        let path = std::path::PathBuf::from(&state.cache_path);
+
+        match indexer.index(&path, false) {
+            Ok(stats) => Ok(Json(stats)),
+            Err(e) => {
+                log::error!("Index error: {}", e);
+                Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Indexing failed: {}", e)))
+            }
+        }
+    }
+
+    // Health check endpoint
+    async fn handle_health() -> impl IntoResponse {
+        (StatusCode::OK, "RefLex is running")
+    }
+
+    // Create shared state
+    let state = Arc::new(AppState {
+        cache_path: ".".to_string(),
+    });
+
+    // Configure CORS
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
+    // Build the router
+    let app = Router::new()
+        .route("/query", get(handle_query_endpoint))
+        .route("/stats", get(handle_stats_endpoint))
+        .route("/index", post(handle_index_endpoint))
+        .route("/health", get(handle_health))
+        .layer(cors)
+        .with_state(state);
+
+    // Bind to the specified address
+    let addr = format!("{}:{}", host, port);
+    let listener = tokio::net::TcpListener::bind(&addr).await
+        .map_err(|e| anyhow::anyhow!("Failed to bind to {}: {}", addr, e))?;
+
+    log::info!("Server listening on {}", addr);
+
+    // Run the server
+    axum::serve(listener, app)
+        .await
+        .map_err(|e| anyhow::anyhow!("Server error: {}", e))?;
+
+    Ok(())
 }
 
 /// Handle the `stats` subcommand

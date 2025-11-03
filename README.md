@@ -16,6 +16,7 @@ RefLex is a blazingly fast, trigram-based code search engine designed for develo
 - **🔄 Incremental**: Only reindexes changed files (blake3 hashing)
 - **🌍 Multi-Language**: Rust, TypeScript/JavaScript, Vue, Svelte, PHP, Python, Go, Java, C, C++
 - **🤖 AI-Ready**: Clean JSON output built for LLM tools and automation
+- **🌐 HTTP API**: REST API for editor plugins and external tools
 - **📦 Local-First**: Fully offline, all data stays on your machine
 - **🎨 Regex Support**: Trigram-optimized regex search with pattern matching
 - **🔒 Deterministic**: Same query → same results (no probabilistic ranking)
@@ -178,6 +179,57 @@ Options:
   --json    Output as JSON
 ```
 
+### `rfx serve`
+
+Start an HTTP API server for programmatic access.
+
+```bash
+rfx serve [OPTIONS]
+
+Options:
+  --port <PORT>    Port to listen on (default: 7878)
+  --host <HOST>    Host to bind to (default: 127.0.0.1)
+```
+
+**API Endpoints:**
+
+- **GET /query** - Search the codebase
+  - Query params: `q`, `lang`, `kind`, `limit`, `symbols`, `regex`, `exact`, `expand`, `file`
+  - Returns: `QueryResponse` JSON with results and index status
+
+- **GET /stats** - Get index statistics
+  - Returns: `IndexStats` JSON with file counts, sizes, language breakdowns
+
+- **POST /index** - Trigger reindexing
+  - Body: `{"force": boolean, "languages": [string]}`
+  - Returns: `IndexStats` JSON after indexing completes
+
+- **GET /health** - Health check
+  - Returns: "RefLex is running"
+
+**Example Usage:**
+```bash
+# Start the server
+rfx serve --port 7878
+
+# Query from another terminal (or use in AI tools/editor plugins)
+curl 'http://localhost:7878/query?q=QueryEngine&limit=5' | jq '.'
+
+# Get stats
+curl http://localhost:7878/stats | jq '.'
+
+# Trigger indexing
+curl -X POST http://localhost:7878/index \
+  -H "Content-Type: application/json" \
+  -d '{"force": false, "languages": ["rust"]}'
+```
+
+**Features:**
+- CORS enabled for browser clients
+- Supports all CLI query options via query parameters
+- JSON responses compatible with AI agents and automation tools
+- Synchronous indexing (returns after completion)
+
 ## 🌐 Supported Languages
 
 | Language | Extensions | Symbol Extraction |
@@ -333,17 +385,18 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for implementation details.
 
 ## 🛣️ Roadmap
 
-### Current Phase: Documentation ✅
+### Completed ✅
 - [x] Comprehensive testing (221 tests)
-- [x] README.md
-- [ ] ARCHITECTURE.md
-- [ ] Rustdoc comments
+- [x] README.md with full documentation
+- [x] ARCHITECTURE.md with system design
+- [x] Rustdoc comments for all public APIs
+- [x] HTTP server for programmatic access
 
 ### Next Phase: Advanced Features
-- [ ] HTTP server for editor plugins and AI agents
 - [ ] AST pattern matching (Tree-sitter queries)
-- [ ] MCP (Model Context Protocol) adapter
+- [ ] MCP (Model Context Protocol) adapter for AI agents
 - [ ] LSP (Language Server Protocol) adapter
+- [ ] Background indexing daemon (`reflexd`)
 
 ## 📄 License
 

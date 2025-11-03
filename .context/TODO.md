@@ -134,8 +134,7 @@ reflex query "unwrap" --lang rust --limit 10 --json
 ### ⚠️ LIMITATIONS / TODO
 
 **Known Issues:**
-1. **HTTP server not implemented** - CLI works, serve command is stub only
-2. **AST pattern matching not implemented** - Framework exists but not functional
+1. **AST pattern matching not implemented** - Framework exists but not functional
 
 **Recently Completed (Not Yet Marked):**
 1. **Regex support** - FULLY IMPLEMENTED ✅
@@ -172,10 +171,10 @@ reflex query "unwrap" --lang rust --limit 10 --json
 | **Java Parser** | ✅ Complete | 100% |
 | **C Parser** | ✅ Complete | 100% |
 | **C++ Parser** | ✅ Complete | 100% |
-| **CLI** | ✅ Complete | 95% (serve stub) |
-| **HTTP Server** | ⚠️ Stub | 0% |
+| **CLI** | ✅ Complete | 100% |
+| **HTTP Server** | ✅ Complete | 100% |
 | **Tests** | ✅ Complete | 100% (221 total tests) |
-| **Documentation** | ✅ Complete | 82% (README, ARCHITECTURE, rustdoc) |
+| **Documentation** | ✅ Complete | 85% (README, ARCHITECTURE, rustdoc, HTTP API) |
 
 ---
 
@@ -467,32 +466,39 @@ reflex query  →  [Query Engine] → [Mode: Full-text or Symbol-only]
 
 ---
 
-### 4. HTTP Server (`src/cli.rs`)
+### 4. HTTP Server (`src/cli.rs`) ✅ COMPLETED
 
-#### P1: Axum Server Setup ⚠️ STUB ONLY
-- [ ] **Implement HTTP server** (cli.rs:313-331)
-  - Create axum router with routes
-  - Bind to configured host:port
-  - Handle graceful shutdown (Ctrl+C)
-  - **Status:** Placeholder implementation, returns error
+#### P1: Axum Server Setup ✅ COMPLETED
+- [x] **Implement HTTP server** (cli.rs:428-687)
+  - Create axum router with routes ✅
+  - Bind to configured host:port ✅
+  - Handle graceful shutdown (Ctrl+C) ✅
+  - **Status:** Fully implemented and tested
 
-#### P1: API Endpoints ⚠️ NOT IMPLEMENTED
-- [ ] **GET /query** endpoint
-  - Query parameters: `q` (pattern), `lang`, `limit`, `ast`
-  - Return JSON array of SearchResults
+#### P1: API Endpoints ✅ COMPLETED
+- [x] **GET /query** endpoint ✅
+  - Query parameters: `q` (pattern), `lang`, `kind`, `limit`, `symbols`, `regex`, `exact`, `expand`, `file`
+  - Return QueryResponse (status, results, warnings) as JSON
   - Handle errors with proper HTTP status codes
+  - Tested with multiple filters and options
 
-- [ ] **GET /stats** endpoint
+- [x] **GET /stats** endpoint ✅
   - Return IndexStats as JSON
-  - Include cache size, file count, symbol count
+  - Include cache size, file count, symbol count, language breakdowns
+  - Returns 404 if index not found
 
-- [ ] **POST /index** endpoint
+- [x] **POST /index** endpoint ✅
   - Trigger reindexing
-  - Accept optional body with IndexConfig
-  - Return 202 Accepted (async indexing)
+  - Accept optional body with IndexRequest (force, languages)
+  - Return IndexStats as JSON
+  - Synchronous indexing (returns after completion)
+
+- [x] **GET /health** endpoint ✅
+  - Simple health check endpoint
+  - Returns "RefLex is running"
 
 #### P2: Advanced Server Features
-- [ ] Add CORS support for browser clients
+- [x] Add CORS support for browser clients ✅
 - [ ] Add request logging middleware
 - [ ] Implement rate limiting
 - [ ] Add API authentication (optional)
@@ -777,7 +783,14 @@ Located in tests/performance_test.rs:
 
 #### Long-term Features
 - [ ] `reflexd`: Background indexing daemon
-- [ ] MCP (Model Context Protocol) adapter
+- [ ] **MCP (Model Context Protocol) Server** - NEW P1 PRIORITY
+  - Implement MCP server for AI agent integration
+  - Use case: Direct integration with Claude Desktop, Cline, and other MCP clients
+  - Benefit: Native tool calling interface for AI coding agents
+  - Resources available in MCP spec
+  - Tools to expose: `search_code`, `get_symbol`, `index_project`, `get_stats`
+  - Context to provide: File content, symbol definitions, code structure
+  - Prompts to offer: "Find usages", "Explain symbol", "Show related code"
 - [ ] LSP (Language Server Protocol) adapter
 - [ ] Graph queries (imports/exports, call graph)
 - [ ] Branch-aware context diffing (`--since`, `--branch`)
