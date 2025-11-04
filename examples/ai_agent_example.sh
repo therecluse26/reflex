@@ -1,5 +1,5 @@
 #!/bin/bash
-# Example: AI agent using RefLex with automatic re-indexing
+# Example: AI agent using Reflex with automatic re-indexing
 
 # Query the codebase
 response=$(rfx query "CacheManager" --json --limit 5)

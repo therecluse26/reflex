@@ -10,7 +10,7 @@ use tempfile::TempDir;
 fn main() -> anyhow::Result<()> {
     env_logger::init();
 
-    println!("🧪 Testing RefLex Cache System\n");
+    println!("🧪 Testing Reflex Cache System\n");
 
     // Create temporary directory
     let temp = TempDir::new()?;
@@ -67,7 +67,7 @@ fn main() -> anyhow::Result<()> {
     println!("   ✅ Cache cleared successfully\n");
 
     println!("✅ All cache tests passed!\n");
-    println!("🎉 RefLex cache system is working correctly");
+    println!("🎉 Reflex cache system is working correctly");
 
     Ok(())
 }

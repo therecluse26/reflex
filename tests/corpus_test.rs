@@ -1,6 +1,6 @@
 //! Comprehensive Corpus-Based Tests
 //!
-//! This test suite exercises RefLex against a comprehensive corpus of test files
+//! This test suite exercises Reflex against a comprehensive corpus of test files
 //! covering all supported languages, edge cases, and real-world patterns.
 //!
 //! Test categories:

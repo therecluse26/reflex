@@ -1,10 +1,10 @@
-# RefLex API - Bruno Collection
+# Reflex API - Bruno Collection
 
-This is a [Bruno](https://www.usebruno.com/) API collection for testing the RefLex HTTP server.
+This is a [Bruno](https://www.usebruno.com/) API collection for testing the Reflex HTTP server.
 
 ## Prerequisites
 
-1. **Start the RefLex server:**
+1. **Start the Reflex server:**
    ```bash
    rfx serve --port 7878 --host 127.0.0.1
    ```
@@ -181,7 +181,7 @@ You can create additional environments (e.g., `Production`, `Development`) by co
 
 ## CORS
 
-The RefLex HTTP server has CORS enabled, so you can use these endpoints from browser-based tools and applications.
+The Reflex HTTP server has CORS enabled, so you can use these endpoints from browser-based tools and applications.
 
 ## Notes
 

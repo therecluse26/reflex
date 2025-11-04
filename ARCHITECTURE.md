@@ -1,8 +1,8 @@
-# RefLex Architecture
+# Reflex Architecture
 
-**Technical deep-dive into RefLex's design and implementation**
+**Technical deep-dive into Reflex's design and implementation**
 
-This document provides a comprehensive overview of RefLex's architecture, data formats, algorithms, and extension points for developers contributing to the project.
+This document provides a comprehensive overview of Reflex's architecture, data formats, algorithms, and extension points for developers contributing to the project.
 
 ---
 
@@ -23,7 +23,7 @@ This document provides a comprehensive overview of RefLex's architecture, data f
 
 ## System Overview
 
-RefLex is a **trigram-based full-text code search engine** with optional symbol-aware filtering. The architecture prioritizes:
+Reflex is a **trigram-based full-text code search engine** with optional symbol-aware filtering. The architecture prioritizes:
 
 1. **Speed**: Sub-100ms queries via trigram indexing + memory-mapped I/O
 2. **Completeness**: Find every occurrence (not just definitions)
@@ -34,7 +34,7 @@ RefLex is a **trigram-based full-text code search engine** with optional symbol-
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         RefLex CLI                              │
+│                         Reflex CLI                              │
 │  (index | query | stats | clear | list-files | serve)          │
 └────────────────────┬────────────────────────────────────────────┘
                      │
@@ -704,7 +704,7 @@ impl TrigramIndex {
 
 ## Adding New Languages
 
-RefLex makes it easy to add support for new languages.
+Reflex makes it easy to add support for new languages.
 
 ### Step 1: Add Tree-Sitter Grammar
 
@@ -807,7 +807,7 @@ mod tests {
 
 ## Testing Strategy
 
-RefLex has **221 comprehensive tests** across 3 categories:
+Reflex has **221 comprehensive tests** across 3 categories:
 
 ### 1. Unit Tests (194 tests)
 
@@ -1018,7 +1018,7 @@ let matches = ast_search(pattern)?;
 
 ## Design Principles
 
-RefLex follows these core principles:
+Reflex follows these core principles:
 
 1. **Performance First**
    - Sub-100ms queries via trigram indexing
@@ -1049,7 +1049,7 @@ RefLex follows these core principles:
 
 ## Contributing
 
-When adding features to RefLex:
+When adding features to Reflex:
 
 1. **Maintain Performance**: Keep queries <100ms on medium codebases
 2. **Add Tests**: Unit + integration tests for all new code
@@ -1080,4 +1080,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 ---
 
 **Last Updated**: 2025-11-03
-**Author**: RefLex Contributors
+**Author**: Reflex Contributors

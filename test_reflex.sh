@@ -1,12 +1,12 @@
 #!/bin/bash
 set -e
 
-echo "🧪 RefLex Testing Guide"
+echo "🧪 Reflex Testing Guide"
 echo "======================"
 echo ""
 
 # Build the project
-echo "1️⃣  Building RefLex..."
+echo "1️⃣  Building Reflex..."
 cargo build --release 2>&1 | grep -E "(Finished|Compiling reflex)" || true
 echo "✅ Build complete"
 echo ""
@@ -76,7 +76,7 @@ echo "   - Rust parser: ✅ Working (6 tests passed)"
 echo "   - Hash persistence: ✅ Working"
 echo "   - Statistics: ✅ Working"
 echo ""
-echo "🚀 Next steps to fully test RefLex:"
+echo "🚀 Next steps to fully test Reflex:"
 echo "   1. Run: rfx index          # Index current project"
 echo "   2. Run: rfx query 'User'   # Search for symbols"
 echo "   3. Run: rfx stats          # View statistics"

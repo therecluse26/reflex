@@ -1,4 +1,4 @@
-# RefLex TODO
+# Reflex TODO
 
 **Last Updated:** 2025-11-03
 **Project Status:** Testing & Quality Phase Complete - Production Ready
@@ -9,7 +9,7 @@
 
 ## 🔄 MAJOR ARCHITECTURAL DECISION #1 (2025-10-31)
 
-**Decision:** RefLex is being redesigned from a **symbol-only index** to a **trigram-based full-text code search engine** (like Sourcegraph/Zoekt).
+**Decision:** Reflex is being redesigned from a **symbol-only index** to a **trigram-based full-text code search engine** (like Sourcegraph/Zoekt).
 
 **Rationale:**
 - User requirement: "Local, fast replacement for Sourcegraph Code Search for AI workflows"
@@ -55,7 +55,7 @@
 - Full-text: `124ms` (unchanged)
 - Regex: `156ms` (unchanged)
 - Symbol search: `224ms` (parse ~3 C files vs 4125ms loading all symbols)
-- This makes RefLex the **fastest structure-aware local code search tool**
+- This makes Reflex the **fastest structure-aware local code search tool**
 
 **Implementation Status:** ✅ COMPLETED
 
@@ -87,7 +87,7 @@ After completing testing and documentation phase, the next features to implement
 ---
 
 ### ✅ FULLY FUNCTIONAL
-RefLex is **operational as a local code search engine** with the following capabilities:
+Reflex is **operational as a local code search engine** with the following capabilities:
 
 **Working Features:**
 - ✅ Full-text trigram-based search (finds ALL occurrences of patterns)
@@ -190,7 +190,7 @@ reflex query "unwrap" --lang rust --limit 10 --json
 
 ## Executive Summary
 
-RefLex has **successfully transitioned to a trigram-based full-text search engine** with the following architecture:
+Reflex has **successfully transitioned to a trigram-based full-text search engine** with the following architecture:
 
 **Implemented:**
 - ✅ Trigram indexing module (src/trigram.rs) - FULLY FUNCTIONAL
@@ -391,7 +391,7 @@ reflex query  →  [Query Engine] → [Mode: Full-text or Symbol-only]
   - Use heuristics: nodes with "name" fields, declaration-pattern node kinds, etc.
   - Classify unknown symbols with generic types (e.g., `SymbolKind::Unknown`)
   - Extract basic metadata (name, span, scope) even without language-specific handling
-  - **Goal:** RefLex should work with newer language versions without crashing or missing symbols entirely
+  - **Goal:** Reflex should work with newer language versions without crashing or missing symbols entirely
 
 - [ ] **Add language version tracking**
   - Track which Tree-sitter grammar version was used during indexing
@@ -505,7 +505,7 @@ reflex query  →  [Query Engine] → [Mode: Full-text or Symbol-only]
 
 - [x] **GET /health** endpoint ✅
   - Simple health check endpoint
-  - Returns "RefLex is running"
+  - Returns "Reflex is running"
 
 #### P2: Advanced Server Features
 - [x] Add CORS support for browser clients ✅
@@ -705,7 +705,7 @@ Located in tests/performance_test.rs:
 #### P2: End-to-End Tests ✅ VALIDATED
 - [x] Test on real-world codebases
   - Linux kernel (62K files): 124ms full-text, 224ms symbol search
-  - RefLex codebase: 2-3ms all query types
+  - Reflex codebase: 2-3ms all query types
 - [x] Verify correctness of extracted symbols
   - Runtime symbol detection tested on candidate files
   - All 8 language parsers validated
@@ -809,18 +809,18 @@ Located in tests/performance_test.rs:
   - Implementation: `ratatui` (formerly `tui-rs`) for terminal UI framework
   - Integration with existing query engine
   - Use case: Exploratory code search without leaving the terminal
-- [ ] **Semantic Query Building** - Natural language to RefLex query translation
+- [ ] **Semantic Query Building** - Natural language to Reflex query translation
   - Use tiny local instruction-following models (1B-4B params) to interpret user intent
   - Key insight: No code understanding needed - pure NL→API mapping task
   - Convert natural language queries to one or more `rfx query` commands
   - Model candidates: Phi-3-mini (3.8B), Qwen2.5-1.5B-Instruct, Llama-3.2-1B, SmolLM2-1.7B-Instruct, Gemma-2-2B-IT
   - Quantized models (4-bit/8-bit) for CPU-only inference (<500MB RAM, <100ms latency)
-  - Few-shot prompting with RefLex API examples (no codebase context needed)
+  - Few-shot prompting with Reflex API examples (no codebase context needed)
   - Multi-query execution: generate multiple queries, execute in parallel, merge results
   - Result collation: deduplicate, rank, and present unified result set
   - Implementation: ONNX Runtime or `candle` for local inference
   - Optional feature (requires model download on first use)
-  - Future: Fine-tune specialized tiny model for RefLex query generation
+  - Future: Fine-tune specialized tiny model for Reflex query generation
   - Use case: "Find all error handlers" → `rfx query "Result" --symbols --kind function`
 - [ ] LSP (Language Server Protocol) adapter
 - [ ] Graph queries (imports/exports, call graph)
@@ -1096,7 +1096,7 @@ Tree-sitter Grammars ──────────→ AST Extraction ───�
   - Scalability (large files, many files)
 - [x] **Real-world validation**
   - Linux kernel (62K files): 124-224ms queries
-  - RefLex codebase: 2-3ms queries
+  - Reflex codebase: 2-3ms queries
   - All performance targets met ✅
 
 ---
@@ -1127,20 +1127,20 @@ Tree-sitter Grammars ──────────→ AST Extraction ───�
 
 ### Maintenance & Updates
 
-**Will RefLex need updates when languages evolve?**
+**Will Reflex need updates when languages evolve?**
 
 Yes, but we can minimize the impact:
 
 1. **Tree-sitter Grammar Dependencies**
-   - RefLex depends on external Tree-sitter grammars (e.g., `tree-sitter-php = "0.23"`)
+   - Reflex depends on external Tree-sitter grammars (e.g., `tree-sitter-php = "0.23"`)
    - When languages add new syntax (PHP enums, Java records, etc.), grammars are updated
-   - RefLex must periodically update grammar versions and test compatibility
+   - Reflex must periodically update grammar versions and test compatibility
 
 2. **Future-Proofing Strategy**
    - **Explicit handling:** Common, stable symbols get full support with complete metadata
    - **Generic fallback:** Unknown/new symbols are still extracted with basic info (name, location, scope)
-   - **Graceful degradation:** New language features won't crash RefLex, just may be classified generically
-   - **Periodic updates:** Release RefLex updates when major language versions add significant new syntax
+   - **Graceful degradation:** New language features won't crash Reflex, just may be classified generically
+   - **Periodic updates:** Release Reflex updates when major language versions add significant new syntax
 
 3. **Update Frequency**
    - **Minor updates:** Bug fixes, grammar version bumps (quarterly)
@@ -1148,8 +1148,8 @@ Yes, but we can minimize the impact:
    - **Grammar updates are opt-in:** Users can update Cargo.toml to newer grammars independently
 
 4. **Compatibility Promise**
-   - Cache format versioning allows migration between RefLex versions
-   - Older caches can be rebuilt with newer RefLex versions
+   - Cache format versioning allows migration between Reflex versions
+   - Older caches can be rebuilt with newer Reflex versions
    - Breaking changes will be clearly documented with migration guides
 
 ---

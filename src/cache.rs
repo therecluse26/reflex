@@ -25,7 +25,7 @@ pub const TOKENS_BIN: &str = "tokens.bin";
 pub const HASHES_JSON: &str = "hashes.json";
 pub const CONFIG_TOML: &str = "config.toml";
 
-/// Manages the RefLex cache directory
+/// Manages the Reflex cache directory
 pub struct CacheManager {
     cache_path: PathBuf,
 }
@@ -169,7 +169,7 @@ impl CacheManager {
         let mut file = File::create(&tokens_path)?;
 
         // Write header: magic bytes + version + compression type + sizes
-        let magic_bytes = b"RFTK"; // RefLex Tokens
+        let magic_bytes = b"RFTK"; // Reflex Tokens
         let version: u32 = 1;
         let compression_type: u32 = 1; // 1 = zstd
         let uncompressed_size: u64 = 0;

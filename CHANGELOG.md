@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to RefLex will be documented in this file.
+All notable changes to Reflex will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
@@ -171,7 +171,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.0.0] - 2025-11-03
 
-Initial release of RefLex - a local-first, structure-aware code search engine for AI coding workflows.
+Initial release of Reflex - a local-first, structure-aware code search engine for AI coding workflows.
 
 ### Added
 
@@ -307,5 +307,5 @@ Initial release of RefLex - a local-first, structure-aware code search engine fo
 - **Async**: tokio runtime for HTTP server
 - **Parallelism**: rayon for multi-threaded indexing
 
-[Unreleased]: https://github.com/yourusername/reflex/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/yourusername/reflex/releases/tag/v1.0.0
+[Unreleased]: https://github.com/therecluse26/reflex/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/therecluse26/reflex/releases/tag/v1.0.0

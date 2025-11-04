@@ -1,4 +1,4 @@
-//! Integration tests for RefLex
+//! Integration tests for Reflex
 
 use reflex::{CacheManager, IndexConfig, Indexer, QueryEngine, QueryFilter, SymbolKind};
 use std::fs;
@@ -15,7 +15,7 @@ fn test_full_workflow() {
     // Create a sample source file
     let sample_code = r#"
 fn main() {
-    println!("Hello, RefLex!");
+    println!("Hello, Reflex!");
 }
 
 fn greet(name: &str) {

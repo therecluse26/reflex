@@ -10,13 +10,13 @@ use crate::indexer::Indexer;
 use crate::models::{IndexConfig, Language};
 use crate::query::{QueryEngine, QueryFilter};
 
-/// RefLex: Local-first, structure-aware code search for AI agents
+/// Reflex: Local-first, structure-aware code search for AI agents
 #[derive(Parser, Debug)]
 #[command(
     name = "rfx",
     version,
     about = "A fast, deterministic code search engine built for AI",
-    long_about = "RefLex is a local-first, structure-aware code search engine that returns \
+    long_about = "Reflex is a local-first, structure-aware code search engine that returns \
                   structured results (symbols, spans, scopes) with sub-100ms latency. \
                   Designed for AI coding agents and automation."
 )]
@@ -180,7 +180,7 @@ pub enum Command {
 
     /// Start MCP server for AI agent integration
     ///
-    /// Runs RefLex as a Model Context Protocol (MCP) server using stdio transport.
+    /// Runs Reflex as a Model Context Protocol (MCP) server using stdio transport.
     /// This command is automatically invoked by MCP clients like Claude Code and
     /// should not be run manually.
     ///
@@ -505,7 +505,7 @@ fn handle_query(
 fn handle_serve(port: u16, host: String) -> Result<()> {
     log::info!("Starting HTTP server on {}:{}", host, port);
 
-    println!("Starting RefLex HTTP server...");
+    println!("Starting Reflex HTTP server...");
     println!("  Address: http://{}:{}", host, port);
     println!("\nEndpoints:");
     println!("  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&expand=true&file=<pattern>&timeout=<secs>");
@@ -732,7 +732,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
 
     // Health check endpoint
     async fn handle_health() -> impl IntoResponse {
-        (StatusCode::OK, "RefLex is running")
+        (StatusCode::OK, "Reflex is running")
     }
 
     // Create shared state
@@ -785,7 +785,7 @@ fn handle_stats(as_json: bool) -> Result<()> {
     if as_json {
         println!("{}", serde_json::to_string_pretty(&stats)?);
     } else {
-        println!("RefLex Index Statistics");
+        println!("Reflex Index Statistics");
         println!("=======================");
 
         // Show git branch info if in git repo
@@ -839,7 +839,7 @@ fn handle_clear(skip_confirm: bool) -> Result<()> {
     }
 
     if !skip_confirm {
-        println!("This will delete the local RefLex cache at: {:?}", cache.path());
+        println!("This will delete the local Reflex cache at: {:?}", cache.path());
         print!("Are you sure? [y/N] ");
         use std::io::{self, Write};
         io::stdout().flush()?;
@@ -901,7 +901,7 @@ fn handle_watch(path: PathBuf, debounce_ms: u64, quiet: bool) -> Result<()> {
     }
 
     if !quiet {
-        println!("Starting RefLex watch mode...");
+        println!("Starting Reflex watch mode...");
         println!("  Directory: {}", path.display());
         println!("  Debounce: {}ms ({}s)", debounce_ms, debounce_ms / 1000);
         println!("  Press Ctrl+C to stop.\n");

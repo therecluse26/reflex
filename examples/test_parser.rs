@@ -6,7 +6,7 @@
 use reflex::parsers::rust;
 
 fn main() -> anyhow::Result<()> {
-    println!("🧪 Testing RefLex Rust Parser\n");
+    println!("🧪 Testing Reflex Rust Parser\n");
 
     let rust_code = r#"
 // Example Rust code
@@ -76,7 +76,7 @@ pub fn main() {
     }
 
     println!("\n✅ Parser test complete!");
-    println!("🎉 RefLex Rust parser is working correctly");
+    println!("🎉 Reflex Rust parser is working correctly");
 
     Ok(())
 }

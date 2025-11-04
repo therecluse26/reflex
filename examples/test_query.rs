@@ -11,7 +11,7 @@ use tempfile::TempDir;
 fn main() -> anyhow::Result<()> {
     env_logger::init();
 
-    println!("🧪 Testing RefLex Query Engine\n");
+    println!("🧪 Testing Reflex Query Engine\n");
 
     // Create temporary directory with test Rust files
     let temp = TempDir::new()?;
@@ -110,7 +110,7 @@ pub enum Status {
     println!("   ✅ List all works\n");
 
     println!("✅ All query engine tests passed!");
-    println!("🎉 RefLex query engine is working correctly");
+    println!("🎉 Reflex query engine is working correctly");
 
     Ok(())
 }

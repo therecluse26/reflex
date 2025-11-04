@@ -1,6 +1,6 @@
 //! Trigram-based inverted index for fast full-text code search
 //!
-//! This module implements the core trigram indexing algorithm used by RefLex.
+//! This module implements the core trigram indexing algorithm used by Reflex.
 //! A trigram is a sequence of 3 consecutive bytes. By building an inverted index
 //! mapping trigrams to file locations, we can quickly narrow down search candidates
 //! and achieve sub-100ms query times even on large codebases.

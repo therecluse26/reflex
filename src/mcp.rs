@@ -1,7 +1,7 @@
 //! MCP (Model Context Protocol) server implementation
 //!
 //! This module implements the MCP protocol directly over stdio using JSON-RPC 2.0.
-//! It exposes RefLex's code search capabilities as MCP tools for AI coding assistants.
+//! It exposes Reflex's code search capabilities as MCP tools for AI coding assistants.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -435,7 +435,7 @@ fn process_request(request: JsonRpcRequest) -> JsonRpcResponse {
 
 /// Run the MCP server on stdio
 pub fn run_mcp_server() -> Result<()> {
-    log::info!("Starting RefLex MCP server on stdio");
+    log::info!("Starting Reflex MCP server on stdio");
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -471,6 +471,6 @@ pub fn run_mcp_server() -> Result<()> {
         log::debug!("MCP output: {}", response_json);
     }
 
-    log::info!("RefLex MCP server stopped");
+    log::info!("Reflex MCP server stopped");
     Ok(())
 }

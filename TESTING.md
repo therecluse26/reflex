@@ -1,6 +1,6 @@
-# Testing RefLex
+# Testing Reflex
 
-This document shows how to test the currently implemented features of RefLex.
+This document shows how to test the currently implemented features of Reflex.
 
 ## Current Implementation Status
 
@@ -69,7 +69,7 @@ cargo run --example test_cache
 
 **Expected output:**
 ```
-🧪 Testing RefLex Cache System
+🧪 Testing Reflex Cache System
 
 1️⃣  Initializing cache...
    ✅ Cache initialized
@@ -105,7 +105,7 @@ cargo run --example test_parser
 
 **Expected output:**
 ```
-🧪 Testing RefLex Rust Parser
+🧪 Testing Reflex Rust Parser
 
 📝 Parsing Rust code...
    ✅ Found 9 symbols
@@ -144,7 +144,7 @@ cargo run --example test_indexer
 
 **Expected output:**
 ```
-🧪 Testing RefLex Indexer
+🧪 Testing Reflex Indexer
 
 📁 Test directory: "/tmp/..."
 
@@ -167,7 +167,7 @@ cargo run --example test_indexer
    - Files indexed: 2
 
 ✅ All indexer tests passed!
-🎉 RefLex indexer is working correctly
+🎉 Reflex indexer is working correctly
 ```
 
 ### 5. Test the CLI
@@ -198,7 +198,7 @@ Indexing complete!
   Last updated: 2025-11-01T...
 
 $ cargo run -- stats
-RefLex Index Statistics
+Reflex Index Statistics
 =======================
 Files indexed:  14
 Symbols found:  157
@@ -238,7 +238,7 @@ After running the cache test, you can inspect the generated files:
 cd /tmp
 mkdir reflex_test && cd reflex_test
 
-# Run RefLex (this will create .reflex/)
+# Run Reflex (this will create .reflex/)
 /home/brad/Code/personal/reflex/target/release/reflex stats
 
 # Inspect cache files

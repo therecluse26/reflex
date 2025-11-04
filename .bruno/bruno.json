@@ -1,6 +1,6 @@
 {
   "version": "1",
-  "name": "RefLex API",
+  "name": "Reflex API",
   "type": "collection",
   "ignore": [
     "node_modules",

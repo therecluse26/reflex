@@ -11,7 +11,7 @@ use tempfile::TempDir;
 fn main() -> anyhow::Result<()> {
     env_logger::init();
 
-    println!("🧪 Testing RefLex Indexer\n");
+    println!("🧪 Testing Reflex Indexer\n");
 
     // Create temporary directory with test Rust files
     let temp = TempDir::new()?;
@@ -86,7 +86,7 @@ pub enum Status {
     println!("   - Files indexed: {}", stats2.total_files);
 
     println!("\n✅ All indexer tests passed!");
-    println!("🎉 RefLex indexer is working correctly");
+    println!("🎉 Reflex indexer is working correctly");
 
     Ok(())
 }

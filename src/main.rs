@@ -1,4 +1,4 @@
-//! RefLex CLI entrypoint
+//! Reflex CLI entrypoint
 
 use anyhow::Result;
 use clap::Parser;

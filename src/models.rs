@@ -1,7 +1,7 @@
-//! Core data models for RefLex
+//! Core data models for Reflex
 //!
 //! These structures represent the normalized, deterministic output format
-//! that RefLex provides to AI agents and other programmatic consumers.
+//! that Reflex provides to AI agents and other programmatic consumers.
 
 use serde::{Deserialize, Serialize};
 use strum::{EnumString, Display};
@@ -104,7 +104,7 @@ impl Language {
     /// Check if this language has a parser implementation
     ///
     /// Returns true only for languages with working Tree-sitter parsers.
-    /// This determines which files will be indexed by RefLex.
+    /// This determines which files will be indexed by Reflex.
     pub fn is_supported(&self) -> bool {
         match self {
             Language::Rust => true,

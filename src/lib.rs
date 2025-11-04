@@ -1,6 +1,6 @@
-//! RefLex: Local-first, structure-aware code search engine
+//! Reflex: Local-first, structure-aware code search engine
 //!
-//! RefLex is a fast, deterministic code search tool designed specifically
+//! Reflex is a fast, deterministic code search tool designed specifically
 //! for AI coding agents. It provides structured results (symbols, spans,
 //! scopes) with sub-100ms latency by maintaining a lightweight, incremental
 //! cache in `.reflex/`.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Example: AI agent using RefLex with automatic re-indexing
+Example: AI agent using Reflex with automatic re-indexing
 
 This shows how an AI coding agent can:
 1. Query the codebase
@@ -15,7 +15,7 @@ import sys
 
 
 def query_reflex(pattern: str, limit: int = 10, reflex_bin: str = "rfx") -> dict:
-    """Query RefLex and return JSON response with metadata."""
+    """Query Reflex and return JSON response with metadata."""
     cmd = [reflex_bin, "query", pattern, "--json", "--limit", str(limit)]
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return json.loads(result.stdout)

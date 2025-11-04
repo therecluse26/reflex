@@ -5,7 +5,7 @@
 
 ## Overview
 
-This document captures the research, decision-making process, and implementation details for RefLex's runtime symbol detection architecture.
+This document captures the research, decision-making process, and implementation details for Reflex's runtime symbol detection architecture.
 
 ---
 
@@ -97,7 +97,7 @@ fn search_with_trigrams_and_parse(&self, pattern: &str) -> Result<Vec<SearchResu
 
 ## Performance Validation
 
-### RefLex Codebase (Small - 87 files)
+### Reflex Codebase (Small - 87 files)
 
 | Query Type | Time | Notes |
 |------------|------|-------|
@@ -264,11 +264,11 @@ If trigrams return too many candidates:
 
 ## Conclusion
 
-**Runtime symbol detection is the right architecture for RefLex.**
+**Runtime symbol detection is the right architecture for Reflex.**
 
 **Key insight**: Lazy evaluation (parse 10 files at query time) beats eager evaluation (load 3.3M symbols on every query) by 18-2000x.
 
-**Result**: RefLex is now the **fastest structure-aware local code search tool** with:
+**Result**: Reflex is now the **fastest structure-aware local code search tool** with:
 - 2-3ms queries on small codebases
 - 124-224ms queries on Linux kernel (62K files)
 - Simpler architecture (~500 lines removed)

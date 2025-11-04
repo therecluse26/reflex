@@ -1,9 +1,9 @@
 # CLAUDE.md
 
 ## Project Overview
-**RefLex** is a local-first, full-text code search engine written in Rust. It's a fast, deterministic replacement for Sourcegraph Code Search, designed specifically for AI coding workflows and automation.
+**Reflex** is a local-first, full-text code search engine written in Rust. It's a fast, deterministic replacement for Sourcegraph Code Search, designed specifically for AI coding workflows and automation.
 
-RefLex uses **trigram-based indexing** to enable sub-100ms full-text search across large codebases (10k+ files). Unlike symbol-only tools, RefLex finds **every occurrence** of patterns—function calls, variable usage, comments, and more—not just definitions. Results include file paths, line numbers, and surrounding context, with optional symbol-aware filtering.
+Reflex uses **trigram-based indexing** to enable sub-100ms full-text search across large codebases (10k+ files). Unlike symbol-only tools, Reflex finds **every occurrence** of patterns—function calls, variable usage, comments, and more—not just definitions. Results include file paths, line numbers, and surrounding context, with optional symbol-aware filtering.
 
 ---
 
@@ -69,7 +69,7 @@ RefLex uses **trigram-based indexing** to enable sub-100ms full-text search acro
 
 ## Supported Languages & Frameworks
 
-RefLex currently supports symbol extraction for the following languages and frameworks:
+Reflex currently supports symbol extraction for the following languages and frameworks:
 
 ### Fully Supported (Tree-sitter parsers implemented)
 
@@ -87,7 +87,7 @@ RefLex currently supports symbol extraction for the following languages and fram
 | **PHP** | `.php` | Functions, classes, interfaces, traits, methods, properties, constants, namespaces, enums | Full PHP support including PHP 8.1+ enums |
 | **Ruby** | `.rb`, `.rake`, `.gemspec` | Classes, modules, methods, singleton methods, constants, blocks | Full Ruby support including Rails patterns |
 | **Kotlin** | `.kt`, `.kts` | Classes, objects, interfaces, functions, properties, data classes, sealed classes | Full Kotlin support including Android development |
-| **~~Swift~~** | `.swift` | ~~Classes, structs, enums, protocols, functions, extensions, properties, actors~~ | **Temporarily disabled** - requires tree-sitter 0.23 (RefLex uses 0.24) |
+| **~~Swift~~** | `.swift` | ~~Classes, structs, enums, protocols, functions, extensions, properties, actors~~ | **Temporarily disabled** - requires tree-sitter 0.23 (Reflex uses 0.24) |
 | **Zig** | `.zig` | Functions, structs, enums, constants, tests, error sets | Full Zig support |
 | **Vue** | `.vue` | Functions, constants, methods from `<script>` blocks | Supports both Options API and Composition API |
 | **Svelte** | `.svelte` | Functions, variables, reactive declarations (`$:`), module context | Full Svelte component support |
@@ -121,9 +121,9 @@ RefLex currently supports symbol extraction for the following languages and fram
 - **Namespaces**: Full namespace support
 - **Enums**: PHP 8.1+ enum declarations
 
-**Coverage**: RefLex supports **90%+ of all codebases** across web, mobile, systems, enterprise, and AI/ML development (15 languages: Rust, Python, TypeScript, JavaScript, Go, Java, C, C++, C#, PHP, Ruby, Kotlin, Zig, Vue, Svelte).
+**Coverage**: Reflex supports **90%+ of all codebases** across web, mobile, systems, enterprise, and AI/ML development (15 languages: Rust, Python, TypeScript, JavaScript, Go, Java, C, C++, C#, PHP, Ruby, Kotlin, Zig, Vue, Svelte).
 
-**Note on Swift**: Swift support is temporarily disabled due to tree-sitter version incompatibility. The tree-sitter-swift grammar requires tree-sitter 0.23, while RefLex uses tree-sitter 0.24 for better performance and compatibility with other languages. Swift support will be restored when the grammar is updated to 0.24+.
+**Note on Swift**: Swift support is temporarily disabled due to tree-sitter version incompatibility. The tree-sitter-swift grammar requires tree-sitter 0.23, while Reflex uses tree-sitter 0.24 for better performance and compatibility with other languages. Swift support will be restored when the grammar is updated to 0.24+.
 
 **Note**: Full-text trigram search works for **all file types** regardless of parser support. Symbol filtering (`symbol:` queries) requires a language parser.
 
@@ -160,7 +160,7 @@ RefLex currently supports symbol extraction for the following languages and fram
 
 ## Runtime Symbol Detection Architecture
 
-RefLex uses a unique **runtime symbol detection** approach that combines the speed of trigram indexing with the precision of tree-sitter parsing:
+Reflex uses a unique **runtime symbol detection** approach that combines the speed of trigram indexing with the precision of tree-sitter parsing:
 
 ### How It Works
 
@@ -239,9 +239,9 @@ Result: **Simpler, faster, smaller cache, more flexible symbol filtering**
 - **Full-text search**: 124ms
 - **Regex search**: 156ms
 - **Symbol search**: 224ms (runtime parsing of ~3 candidate C files)
-- **RefLex codebase** (small): 2-3ms for all query types
+- **Reflex codebase** (small): 2-3ms for all query types
 
-**Result**: RefLex is the **fastest structure-aware local code search tool** available.
+**Result**: Reflex is the **fastest structure-aware local code search tool** available.
 
 ---
 
@@ -270,7 +270,7 @@ Result: **Simpler, faster, smaller cache, more flexible symbol filtering**
 
 ### `.context/` Directory Structure
 
-The `.context/` directory contains planning documents, research notes, and decision logs to maintain context across development sessions. **All AI assistants working on RefLex must actively use and update these files.**
+The `.context/` directory contains planning documents, research notes, and decision logs to maintain context across development sessions. **All AI assistants working on Reflex must actively use and update these files.**
 
 #### Required Files
 
@@ -322,7 +322,7 @@ Create RESEARCH.md files as needed to cache important findings:
 
 ### AI Assistant Workflow
 
-When working on RefLex, AI assistants should:
+When working on Reflex, AI assistants should:
 
 1. **Start Every Session:**
    - Read `CLAUDE.md` for project overview
@@ -387,7 +387,7 @@ The `.context/` directory enables:
 ---
 
 ## Project Philosophy
-RefLex favors local autonomy, speed, and clarity.
+Reflex favors local autonomy, speed, and clarity.
 
 - Fast enough to call multiple times per agent step.
 - Deterministic for repeatable reasoning.
@@ -399,7 +399,7 @@ RefLex favors local autonomy, speed, and clarity.
 
 ## Release Management
 
-RefLex follows **semantic versioning** (SemVer) and uses automated release tooling for changelog generation and version bumping.
+Reflex follows **semantic versioning** (SemVer) and uses automated release tooling for changelog generation and version bumping.
 
 ### Semantic Versioning
 
@@ -416,7 +416,7 @@ Version format: `MAJOR.MINOR.PATCH` (e.g., `1.2.3`)
 
 ### Conventional Commits
 
-RefLex uses **Conventional Commits** for automatic changelog generation and version bumping:
+Reflex uses **Conventional Commits** for automatic changelog generation and version bumping:
 
 ```
 <type>(<scope>): <description>
@@ -456,7 +456,7 @@ Use /query instead.
 
 ### Release Automation with release-plz
 
-RefLex uses **[release-plz](https://release-plz.ieni.dev/)** for automated releases:
+Reflex uses **[release-plz](https://release-plz.ieni.dev/)** for automated releases:
 
 1. **On every commit to `main`:**
    - Analyzes commits since last release
@@ -549,7 +549,7 @@ git push origin main
 git push origin v1.1.0
 
 # 6. Create GitHub Release manually
-# - Go to https://github.com/yourusername/reflex/releases/new
+# - Go to https://github.com/therecluse26/reflex/releases/new
 # - Select tag: v1.1.0
 # - Copy changelog content into release notes
 # - Publish release
@@ -560,7 +560,7 @@ git push origin v1.1.0
 ```markdown
 # Changelog
 
-All notable changes to RefLex will be documented in this file.
+All notable changes to Reflex will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
@@ -609,7 +609,7 @@ cargo dist build
 
 **Install script:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yourusername/reflex/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/therecluse26/reflex/main/install.sh | sh
 ```
 
 ### Release Checklist

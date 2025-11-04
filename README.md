@@ -1,8 +1,8 @@
-# RefLex
+# Reflex
 
 **Local-first, full-text code search engine for AI coding workflows**
 
-RefLex is a blazingly fast, trigram-based code search engine designed for developers and AI coding assistants. Unlike symbol-only tools, RefLex finds **every occurrence** of patterns—function calls, variable usage, comments, and more—with sub-100ms query times on large codebases.
+Reflex is a blazingly fast, trigram-based code search engine designed for developers and AI coding assistants. Unlike symbol-only tools, Reflex finds **every occurrence** of patterns—function calls, variable usage, comments, and more—with sub-100ms query times on large codebases.
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
 [![Tests](https://img.shields.io/badge/tests-221%20passing-brightgreen)]()
@@ -28,7 +28,7 @@ RefLex is a blazingly fast, trigram-based code search engine designed for develo
 
 ```bash
 # Clone and build from source
-git clone https://github.com/yourusername/reflex.git
+git clone https://github.com/therecluse26/reflex.git
 cd reflex
 cargo build --release
 
@@ -146,7 +146,7 @@ rfx query "fn" --ast "(function_item) @fn" --lang rust
 
 ### AST Pattern Matching
 
-RefLex supports **structure-aware code search** using Tree-sitter AST queries. This allows you to search for specific code structures (like functions, classes, traits) rather than just text patterns.
+Reflex supports **structure-aware code search** using Tree-sitter AST queries. This allows you to search for specific code structures (like functions, classes, traits) rather than just text patterns.
 
 **Important:**
 - AST queries require `--lang` to be specified
@@ -299,7 +299,7 @@ Options:
 
 **Example output:**
 ```
-RefLex Index Statistics
+Reflex Index Statistics
 -----------------------
 Total Files: 1,247
 Total Size: 12.4 MB
@@ -356,7 +356,7 @@ Options:
   - Returns: `IndexStats` JSON after indexing completes
 
 - **GET /health** - Health check
-  - Returns: "RefLex is running"
+  - Returns: "Reflex is running"
 
 **Example Usage:**
 ```bash
@@ -391,7 +391,7 @@ rfx mcp
 
 **What is MCP?**
 
-MCP is an open standard for connecting AI assistants to external tools and data sources. RefLex implements MCP over stdio, allowing AI coding assistants to search your codebase directly.
+MCP is an open standard for connecting AI assistants to external tools and data sources. Reflex implements MCP over stdio, allowing AI coding assistants to search your codebase directly.
 
 **Configuration for Claude Code:**
 
@@ -431,7 +431,7 @@ Add to `~/.claude/claude_code_config.json`:
 
 Once configured, Claude Code will automatically:
 - Spawn `rfx mcp` when the session starts
-- Expose RefLex tools for natural language queries
+- Expose Reflex tools for natural language queries
 - Handle process lifecycle (start/stop/restart)
 
 Example prompts:
@@ -467,7 +467,7 @@ Example prompts:
 
 ## 🏗️ Architecture
 
-RefLex uses a **trigram-based inverted index** combined with **runtime symbol detection**:
+Reflex uses a **trigram-based inverted index** combined with **runtime symbol detection**:
 
 ### Indexing Phase
 1. Extract trigrams (3-character substrings) from all files
@@ -492,11 +492,11 @@ RefLex uses a **trigram-based inverted index** combined with **runtime symbol de
 
 ## ⚡ Performance
 
-RefLex is the **fastest structure-aware local code search tool** available:
+Reflex is the **fastest structure-aware local code search tool** available:
 
 | Codebase | Files | Full-Text Query | Symbol Query | Regex Query |
 |----------|-------|-----------------|--------------|-------------|
-| **RefLex** | 50 | 2-3 ms | 2-3 ms | 2-3 ms |
+| **Reflex** | 50 | 2-3 ms | 2-3 ms | 2-3 ms |
 | **Linux Kernel** | 62,000 | 124 ms | 224 ms | 156 ms |
 | **Medium Project** | 1,000 | 15-30 ms | 20-40 ms | 25-45 ms |
 
@@ -507,7 +507,7 @@ RefLex is the **fastest structure-aware local code search tool** available:
 
 ## 🔧 Configuration
 
-RefLex respects `.gitignore` files automatically. Additional configuration via `.reflex/config.toml`:
+Reflex respects `.gitignore` files automatically. Additional configuration via `.reflex/config.toml`:
 
 ```toml
 # Example configuration (auto-generated on first index)
@@ -524,7 +524,7 @@ compression = false
 
 ## 🤖 AI Integration
 
-RefLex outputs clean JSON for AI coding assistants:
+Reflex outputs clean JSON for AI coding assistants:
 
 ```bash
 rfx query "parse_tree" --json --symbols
@@ -569,7 +569,7 @@ rfx query "parse_tree" --json --symbols
 
 ## 🧪 Testing
 
-RefLex has **221 comprehensive tests**:
+Reflex has **221 comprehensive tests**:
 - **194 unit tests** (cache, indexer, query, parsers, core modules)
 - **17 integration tests** (workflows, multi-language, error handling)
 - **10 performance tests** (indexing speed, query latency, scalability)
@@ -587,7 +587,7 @@ cargo test test_full_workflow
 
 ## 🤝 Contributing
 
-Contributions welcome! RefLex is built to be:
+Contributions welcome! Reflex is built to be:
 - **Fast**: Sub-100ms queries on large codebases
 - **Accurate**: Complete coverage with deterministic results
 - **Extensible**: Easy to add new language parsers

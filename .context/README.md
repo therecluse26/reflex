@@ -4,7 +4,7 @@ This directory contains planning documents, research notes, and decision logs to
 
 ## Purpose
 
-The `.context/` directory serves as a **persistent knowledge base** for RefLex development, enabling:
+The `.context/` directory serves as a **persistent knowledge base** for Reflex development, enabling:
 - Continuity across development sessions (human and AI)
 - Decision tracking and rationale
 - Research caching to avoid duplicate work

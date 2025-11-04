@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-RefLex uses three distinct storage formats optimized for their specific use cases:
+Reflex uses three distinct storage formats optimized for their specific use cases:
 
 1. **symbols.bin** - Zero-copy memory-mapped symbol table (rkyv)
 2. **tokens.bin** - Compressed lexical token index (zstd)
@@ -337,7 +337,7 @@ let symbols = parse_symbols(&mmap)?;
 4. **Safety:** `unsafe` is required but safe if:
    - File is not modified while mapped
    - File is not truncated
-   - RefLex only writes during indexing, never during queries ✅
+   - Reflex only writes during indexing, never during queries ✅
 
 ---
 
@@ -419,7 +419,7 @@ match version {
 Trigger full reindex on:
 - Format version mismatch
 - Magic bytes corruption
-- RefLex version upgrade (major)
+- Reflex version upgrade (major)
 - User request (`reflex clear`)
 
 **Simple strategy:** Delete `.reflex/` and rebuild

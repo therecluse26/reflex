@@ -8,7 +8,7 @@
 
 ## Overview
 
-RefLex is implementing **trigram-based full-text code search** modeled after Sourcegraph's Zoekt and Google Code Search.
+Reflex is implementing **trigram-based full-text code search** modeled after Sourcegraph's Zoekt and Google Code Search.
 
 **Goal:** Enable <100ms queries that find **every occurrence** of patterns across 10k+ files.
 
@@ -369,7 +369,7 @@ fn extract_trigrams_from_regex(pattern: &str) -> Vec<Trigram> {
 - **Compressed posting lists** → smaller index, slower decompression
 - **Memory-mapped I/O** → zero-copy, fast cold start
 
-**Decision for RefLex:** Uncompressed posting lists for <100ms queries.
+**Decision for Reflex:** Uncompressed posting lists for <100ms queries.
 
 ---
 

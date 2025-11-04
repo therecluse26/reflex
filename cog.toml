@@ -1,4 +1,4 @@
-# Cocogitto configuration for RefLex
+# Cocogitto configuration for Reflex
 # See: https://docs.cocogitto.io/config/
 
 # Conventional commits configuration
@@ -9,7 +9,7 @@ path = "CHANGELOG.md"
 # Repository information
 repository = "reflex"
 authors = [
-    { signature = "RefLex Contributors", username = "reflex" }
+    { signature = "Reflex Contributors", username = "reflex" }
 ]
 
 # Changelog template

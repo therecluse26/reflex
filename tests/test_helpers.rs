@@ -1,6 +1,6 @@
 //! Test Helper Functions for Corpus-Based Testing
 //!
-//! This module provides utilities for testing RefLex against the test corpus.
+//! This module provides utilities for testing Reflex against the test corpus.
 
 use reflex::{CacheManager, IndexConfig, Indexer, QueryEngine, QueryFilter, SearchResult, SymbolKind};
 use std::path::{Path, PathBuf};

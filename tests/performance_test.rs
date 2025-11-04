@@ -1,6 +1,6 @@
-//! Performance tests for RefLex
+//! Performance tests for Reflex
 //!
-//! These tests verify that RefLex meets its performance goals:
+//! These tests verify that Reflex meets its performance goals:
 //! - Indexing: Fast enough for large codebases
 //! - Queries: Sub-100ms on 10k+ files
 //! - Incremental updates: Efficient reindexing

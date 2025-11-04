@@ -1,6 +1,6 @@
 # AI Agent Integration Guide
 
-RefLex is designed to be AI-agent-friendly with JSON output that includes index metadata. This allows agents to:
+Reflex is designed to be AI-agent-friendly with JSON output that includes index metadata. This allows agents to:
 
 1. **Detect stale indices** automatically
 2. **Re-index when needed** without user intervention
@@ -8,7 +8,7 @@ RefLex is designed to be AI-agent-friendly with JSON output that includes index 
 
 ## JSON Output Format
 
-When using the `--json` flag, RefLex returns a structured response with metadata:
+When using the `--json` flag, Reflex returns a structured response with metadata:
 
 ```json
 {
@@ -85,7 +85,7 @@ import subprocess
 import json
 
 def query_with_auto_reindex(pattern: str):
-    """Query RefLex, automatically re-index if stale."""
+    """Query Reflex, automatically re-index if stale."""
     response = json.loads(
         subprocess.check_output(["rfx", "query", pattern, "--json"])
     )
@@ -160,14 +160,14 @@ results.forEach(r => {
 
 ## Exit Codes
 
-RefLex uses standard exit codes:
+Reflex uses standard exit codes:
 - `0`: Success (results found and index fresh)
 - `1`: No results found or error
 - (Future) `2`: Results found but index stale
 
 ## Non-JSON Fallback
 
-Without `--json`, RefLex prints warnings to stderr:
+Without `--json`, Reflex prints warnings to stderr:
 
 ```bash
 $ rfx query "pattern"
