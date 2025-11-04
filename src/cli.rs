@@ -116,6 +116,10 @@ pub enum Command {
         /// Query timeout in seconds (0 = no timeout, default: 30)
         #[arg(short = 't', long, default_value = "30")]
         timeout: u64,
+
+        /// Use plain text output (disable colors and syntax highlighting)
+        #[arg(long)]
+        plain: bool,
     },
 
     /// Start a local HTTP API server
@@ -211,8 +215,8 @@ impl Cli {
             Command::Index { path, force, languages, quiet } => {
                 handle_index(path, force, languages, quiet)
             }
-            Command::Query { pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, count, timeout } => {
-                handle_query(pattern, symbols, lang, kind, ast.as_deref(), regex, json, limit, expand, file, exact, count, timeout)
+            Command::Query { pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, count, timeout, plain } => {
+                handle_query(pattern, symbols, lang, kind, ast.as_deref(), regex, json, limit, expand, file, exact, count, timeout, plain)
             }
             Command::Serve { port, host } => {
                 handle_serve(port, host)
@@ -348,6 +352,7 @@ fn handle_query(
     exact: bool,
     count_only: bool,
     timeout_secs: u64,
+    plain: bool,
 ) -> Result<()> {
     log::info!("Starting query command");
 
@@ -475,27 +480,22 @@ fn handle_query(
         println!("{}", serde_json::to_string_pretty(&response)?);
         eprintln!("Found {} results in {}", response.results.len(), timing_str);
     } else {
-        // Standard output
+        // Standard output with formatting
         if count_only {
             println!("Found {} results in {}", results.len(), timing_str);
             return Ok(());
         }
+
+        // Print summary line
         if results.is_empty() {
             println!("No results found (searched in {}).", timing_str);
         } else {
             println!("Found {} results in {}:\n", results.len(), timing_str);
-            for result in results {
-                println!("{}:{} - {} {}",
-                         result.path,
-                         result.span.start_line,
-                         format!("{:?}", result.kind),
-                         result.symbol.as_deref().unwrap_or(""));
-                if let Some(scope) = result.scope {
-                    println!("  Scope: {}", scope);
-                }
-                println!("  {}\n", result.preview);
-            }
         }
+
+        // Use formatter for pretty output
+        let formatter = crate::formatter::OutputFormatter::new(plain);
+        formatter.format_results(&results, &pattern)?;
     }
 
     Ok(())

@@ -29,6 +29,7 @@ pub mod ast_query;
 pub mod cache;
 pub mod cli;
 pub mod content_store;
+pub mod formatter;
 pub mod git;
 pub mod indexer;
 pub mod mcp;

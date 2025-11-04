@@ -800,6 +800,28 @@ Located in tests/performance_test.rs:
   - Configuration: Add to Claude Code's `claude_code_config.json`
   - Benefits: Zero port conflicts, automatic lifecycle, per-session isolation
   - Implementation: src/mcp.rs (clean, maintainable, no macro magic)
+- [ ] **Interactive Mode (TUI)** - Terminal-based query browser
+  - Interactive query session with live result browsing
+  - Features: query input with autocomplete, scrollable results, expand/collapse code blocks
+  - Keyboard and mouse navigation (up/down, page up/down, expand/collapse)
+  - Live filtering and result refinement
+  - Session history and command recall
+  - Implementation: `ratatui` (formerly `tui-rs`) for terminal UI framework
+  - Integration with existing query engine
+  - Use case: Exploratory code search without leaving the terminal
+- [ ] **Semantic Query Building** - Natural language to RefLex query translation
+  - Use tiny local instruction-following models (1B-4B params) to interpret user intent
+  - Key insight: No code understanding needed - pure NL→API mapping task
+  - Convert natural language queries to one or more `rfx query` commands
+  - Model candidates: Phi-3-mini (3.8B), Qwen2.5-1.5B-Instruct, Llama-3.2-1B, SmolLM2-1.7B-Instruct, Gemma-2-2B-IT
+  - Quantized models (4-bit/8-bit) for CPU-only inference (<500MB RAM, <100ms latency)
+  - Few-shot prompting with RefLex API examples (no codebase context needed)
+  - Multi-query execution: generate multiple queries, execute in parallel, merge results
+  - Result collation: deduplicate, rank, and present unified result set
+  - Implementation: ONNX Runtime or `candle` for local inference
+  - Optional feature (requires model download on first use)
+  - Future: Fine-tune specialized tiny model for RefLex query generation
+  - Use case: "Find all error handlers" → `rfx query "Result" --symbols --kind function`
 - [ ] LSP (Language Server Protocol) adapter
 - [ ] Graph queries (imports/exports, call graph)
 - [ ] Branch-aware context diffing (`--since`, `--branch`)
