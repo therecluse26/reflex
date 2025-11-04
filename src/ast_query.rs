@@ -97,7 +97,7 @@ pub fn execute_ast_query(
     for candidate in candidates {
         files_to_parse
             .entry(candidate.path.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(candidate);
     }
 

@@ -83,6 +83,14 @@ impl QueryEngine {
             );
         }
 
+        // Validate cache integrity
+        if let Err(e) = self.cache.validate() {
+            anyhow::bail!(
+                "Cache appears to be corrupted: {}. Run 'rfx clear' followed by 'rfx index' to rebuild.",
+                e
+            );
+        }
+
         // Get index status and warning (without printing warnings to stderr)
         let (status, can_trust_results, warning) = self.get_index_status()?;
 
@@ -108,6 +116,14 @@ impl QueryEngine {
         if !self.cache.exists() {
             anyhow::bail!(
                 "Index not found. Run 'rfx index' to build the cache first."
+            );
+        }
+
+        // Validate cache integrity
+        if let Err(e) = self.cache.validate() {
+            anyhow::bail!(
+                "Cache appears to be corrupted: {}. Run 'rfx clear' followed by 'rfx index' to rebuild.",
+                e
             );
         }
 
@@ -143,8 +159,17 @@ impl QueryEngine {
         if let Some(timeout_duration) = timeout {
             if start_time.elapsed() > timeout_duration {
                 anyhow::bail!(
-                    "Query timeout exceeded ({} seconds). Consider using a more specific pattern or increasing the timeout.",
-                    filter.timeout_secs
+                    "Query timeout exceeded ({} seconds).\n\
+                     \n\
+                     The query took too long to complete. Try one of these approaches:\n\
+                     • Use a more specific search pattern (longer patterns = faster search)\n\
+                     • Add a language filter with --lang to narrow the search space\n\
+                     • Add a file filter with --file to search specific directories\n\
+                     • Increase the timeout with --timeout <seconds>\n\
+                     \n\
+                     Example: rfx query \"{}\" --lang rust --timeout 60",
+                    filter.timeout_secs,
+                    pattern
                 );
             }
         }

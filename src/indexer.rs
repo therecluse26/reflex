@@ -82,6 +82,9 @@ impl Indexer {
         // Ensure cache is initialized
         self.cache.init()?;
 
+        // Check available disk space after cache is initialized
+        self.check_disk_space(root)?;
+
         // Load existing hashes for incremental indexing
         let existing_hashes = self.cache.load_hashes()?;
         log::debug!("Loaded {} existing file hashes", existing_hashes.len());
@@ -205,7 +208,7 @@ impl Indexer {
         // Process files in batches to avoid OOM on huge codebases
         // Batch size: process 5000 files at a time to limit memory usage
         const BATCH_SIZE: usize = 5000;
-        let num_batches = (total_files + BATCH_SIZE - 1) / BATCH_SIZE;
+        let num_batches = total_files.div_ceil(BATCH_SIZE);
         log::info!("Processing {} files in {} batches of up to {} files",
                    total_files, num_batches, BATCH_SIZE);
 
@@ -464,6 +467,90 @@ impl Indexer {
     fn hash_content(&self, content: &[u8]) -> String {
         let hash = blake3::hash(content);
         hash.to_hex().to_string()
+    }
+
+    /// Check available disk space before indexing
+    ///
+    /// Ensures there's enough free space to create the index. Warns if disk space is low.
+    /// This prevents partial index writes and confusing error messages.
+    fn check_disk_space(&self, root: &Path) -> Result<()> {
+        // Get available space on the filesystem containing the cache directory
+        let cache_path = self.cache.path();
+
+        // Use statvfs on Unix systems
+        #[cfg(unix)]
+        {
+            // On Linux, we can use statvfs to get available space
+            // For now, we'll use a simple heuristic: warn if we can't write a test file
+            let test_file = cache_path.join(".space_check");
+            match std::fs::write(&test_file, b"test") {
+                Ok(_) => {
+                    let _ = std::fs::remove_file(&test_file);
+
+                    // Try to estimate available space using df command
+                    if let Ok(output) = std::process::Command::new("df")
+                        .arg("-k")
+                        .arg(cache_path.parent().unwrap_or(root))
+                        .output()
+                    {
+                        if let Ok(df_output) = String::from_utf8(output.stdout) {
+                            // Parse df output to get available KB
+                            if let Some(line) = df_output.lines().nth(1) {
+                                let parts: Vec<&str> = line.split_whitespace().collect();
+                                if parts.len() >= 4 {
+                                    if let Ok(available_kb) = parts[3].parse::<u64>() {
+                                        let available_mb = available_kb / 1024;
+
+                                        // Warn if less than 100MB available
+                                        if available_mb < 100 {
+                                            log::warn!("Low disk space: only {}MB available. Indexing may fail.", available_mb);
+                                            eprintln!("Warning: Low disk space ({}MB available). Consider freeing up space.", available_mb);
+                                        } else {
+                                            log::debug!("Available disk space: {}MB", available_mb);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    anyhow::bail!(
+                        "Permission denied writing to cache directory: {}. Check file permissions.",
+                        cache_path.display()
+                    )
+                }
+                Err(e) => {
+                    // If we can't write, it might be a disk space issue
+                    log::warn!("Failed to write test file (possible disk space issue): {}", e);
+                    Err(e).context("Failed to verify disk space - indexing may fail due to insufficient space")
+                }
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            // On Windows, try to write a test file
+            let test_file = cache_path.join(".space_check");
+            match std::fs::write(&test_file, b"test") {
+                Ok(_) => {
+                    let _ = std::fs::remove_file(&test_file);
+                    Ok(())
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    anyhow::bail!(
+                        "Permission denied writing to cache directory: {}. Check file permissions.",
+                        cache_path.display()
+                    )
+                }
+                Err(e) => {
+                    log::warn!("Failed to write test file (possible disk space issue): {}", e);
+                    Err(e).context("Failed to verify disk space - indexing may fail due to insufficient space")
+                }
+            }
+        }
     }
 }
 

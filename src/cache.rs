@@ -248,6 +248,98 @@ compression_level = 3  # zstd level
             && self.cache_path.join(META_DB).exists()
     }
 
+    /// Validate cache integrity and detect corruption
+    ///
+    /// Performs basic integrity checks on the cache:
+    /// - Verifies all required files exist
+    /// - Checks SQLite database can be opened
+    /// - Validates binary file headers (trigrams.bin, content.bin)
+    ///
+    /// Returns Ok(()) if cache is valid, Err with details if corrupted.
+    pub fn validate(&self) -> Result<()> {
+        // Check if cache directory exists
+        if !self.cache_path.exists() {
+            anyhow::bail!("Cache directory does not exist: {}", self.cache_path.display());
+        }
+
+        // Check meta.db exists and can be opened
+        let db_path = self.cache_path.join(META_DB);
+        if !db_path.exists() {
+            anyhow::bail!("Database file missing: {}", db_path.display());
+        }
+
+        // Try to open database
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db - database may be corrupted")?;
+
+        // Verify schema exists
+        let tables: Result<Vec<String>, _> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| row.get(0))
+                    .map(|rows| rows.collect())
+            })
+            .and_then(|result| result);
+
+        match tables {
+            Ok(table_list) => {
+                // Check for required tables
+                let required_tables = vec!["files", "statistics", "config", "file_branches", "branches"];
+                for table in &required_tables {
+                    if !table_list.iter().any(|t| t == table) {
+                        anyhow::bail!("Required table '{}' missing from database schema", table);
+                    }
+                }
+            }
+            Err(e) => {
+                anyhow::bail!("Failed to read database schema: {}", e);
+            }
+        }
+
+        // Check trigrams.bin if it exists
+        let trigrams_path = self.cache_path.join("trigrams.bin");
+        if trigrams_path.exists() {
+            match std::fs::read(&trigrams_path) {
+                Ok(data) if data.len() >= 4 => {
+                    // Check magic bytes
+                    if &data[0..4] != b"RFTG" {
+                        log::warn!("trigrams.bin has invalid magic bytes - may be corrupted");
+                        anyhow::bail!("trigrams.bin appears to be corrupted (invalid magic bytes)");
+                    }
+                }
+                Ok(_) => {
+                    anyhow::bail!("trigrams.bin is too small - appears to be corrupted");
+                }
+                Err(e) => {
+                    anyhow::bail!("Failed to read trigrams.bin: {}", e);
+                }
+            }
+        }
+
+        // Check content.bin if it exists
+        let content_path = self.cache_path.join("content.bin");
+        if content_path.exists() {
+            match std::fs::read(&content_path) {
+                Ok(data) if data.len() >= 4 => {
+                    // Check magic bytes
+                    if &data[0..4] != b"RFCT" {
+                        log::warn!("content.bin has invalid magic bytes - may be corrupted");
+                        anyhow::bail!("content.bin appears to be corrupted (invalid magic bytes)");
+                    }
+                }
+                Ok(_) => {
+                    anyhow::bail!("content.bin is too small - appears to be corrupted");
+                }
+                Err(e) => {
+                    anyhow::bail!("Failed to read content.bin: {}", e);
+                }
+            }
+        }
+
+        log::debug!("Cache validation passed");
+        Ok(())
+    }
+
     /// Get the path to the cache directory
     pub fn path(&self) -> &Path {
         &self.cache_path

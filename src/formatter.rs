@@ -60,7 +60,7 @@ use std::sync::OnceLock;
 static SYNTAX_HIGHLIGHTER: OnceLock<SyntaxHighlighter> = OnceLock::new();
 
 fn get_syntax_highlighter() -> &'static SyntaxHighlighter {
-    SYNTAX_HIGHLIGHTER.get_or_init(|| SyntaxHighlighter::new())
+    SYNTAX_HIGHLIGHTER.get_or_init(SyntaxHighlighter::new)
 }
 
 /// Output formatter configuration
@@ -94,11 +94,7 @@ impl OutputFormatter {
     /// Format and print search results to stdout
     pub fn format_results(&self, results: &[SearchResult], pattern: &str) -> Result<()> {
         if results.is_empty() {
-            if self.use_colors {
-                println!("{}", "No results found.".to_string());
-            } else {
-                println!("No results found.");
-            }
+            println!("No results found.");
             return Ok(());
         }
 
@@ -120,7 +116,7 @@ impl OutputFormatter {
         for result in results {
             grouped
                 .entry(result.path.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(result);
         }
 

@@ -379,7 +379,26 @@ fn handle_query(
             "zig" => Some(Language::Zig),
             _ => {
                 anyhow::bail!(
-                    "Unknown language '{}'. Supported languages: rust (rs), python (py), javascript (js), typescript (ts), vue, svelte, go, java, php, c, c++ (cpp), c# (csharp/cs), ruby (rb), kotlin (kt), zig",
+                    "Unknown language: '{}'\n\
+                     \n\
+                     Supported languages:\n\
+                     • rust, rs\n\
+                     • python, py\n\
+                     • javascript, js\n\
+                     • typescript, ts\n\
+                     • vue\n\
+                     • svelte\n\
+                     • go\n\
+                     • java\n\
+                     • php\n\
+                     • c\n\
+                     • c++, cpp\n\
+                     • c#, csharp, cs\n\
+                     • ruby, rb\n\
+                     • kotlin, kt\n\
+                     • zig\n\
+                     \n\
+                     Example: rfx query \"pattern\" --lang rust",
                     lang_str
                 );
             }
@@ -413,7 +432,14 @@ fn handle_query(
 
     // Validate AST query requirements
     if ast_pattern.is_some() && language.is_none() {
-        anyhow::bail!("AST pattern matching requires --lang to be specified. Supported languages for AST queries: rust, typescript, javascript, php");
+        anyhow::bail!(
+            "AST pattern matching requires a language to be specified.\n\
+             \n\
+             Use --lang to specify the language for tree-sitter parsing.\n\
+             Supported languages for AST queries: rust, typescript, javascript, php\n\
+             \n\
+             Example: rfx query \"pattern\" --ast \"(function_item)\" --lang rust"
+        );
     }
 
     let filter = QueryFilter {
@@ -773,7 +799,16 @@ fn handle_stats(as_json: bool) -> Result<()> {
     let cache = CacheManager::new(".");
 
     if !cache.exists() {
-        anyhow::bail!("No index found. Run 'rfx index' first.");
+        anyhow::bail!(
+            "No index found in current directory.\n\
+             \n\
+             Run 'rfx index' to build the code search index first.\n\
+             This will scan all files in the current directory and create a .reflex/ cache.\n\
+             \n\
+             Example:\n\
+             $ rfx index          # Index current directory\n\
+             $ rfx stats          # Show index statistics"
+        );
     }
 
     let stats = cache.stats()?;
@@ -860,24 +895,31 @@ fn handle_list_files(as_json: bool) -> Result<()> {
     let cache = CacheManager::new(".");
 
     if !cache.exists() {
-        anyhow::bail!("No index found. Run 'rfx index' first.");
+        anyhow::bail!(
+            "No index found in current directory.\n\
+             \n\
+             Run 'rfx index' to build the code search index first.\n\
+             This will scan all files in the current directory and create a .reflex/ cache.\n\
+             \n\
+             Example:\n\
+             $ rfx index            # Index current directory\n\
+             $ rfx list-files       # List indexed files"
+        );
     }
 
     let files = cache.list_files()?;
 
     if as_json {
         println!("{}", serde_json::to_string_pretty(&files)?);
+    } else if files.is_empty() {
+        println!("No files indexed yet.");
     } else {
-        if files.is_empty() {
-            println!("No files indexed yet.");
-        } else {
-            println!("Indexed Files ({} total):", files.len());
-            println!();
-            for file in files {
-                println!("  {} ({})",
-                         file.path,
-                         file.language);
-            }
+        println!("Indexed Files ({} total):", files.len());
+        println!();
+        for file in files {
+            println!("  {} ({})",
+                     file.path,
+                     file.language);
         }
     }
 
@@ -889,7 +931,7 @@ fn handle_watch(path: PathBuf, debounce_ms: u64, quiet: bool) -> Result<()> {
     log::info!("Starting watch mode for {:?}", path);
 
     // Validate debounce range (5s - 30s)
-    if debounce_ms < 5000 || debounce_ms > 30000 {
+    if !(5000..=30000).contains(&debounce_ms) {
         anyhow::bail!(
             "Debounce must be between 5000ms (5s) and 30000ms (30s). Got: {}ms",
             debounce_ms
