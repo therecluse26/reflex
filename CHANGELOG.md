@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.3](https://github.com/therecluse26/reflex/compare/v0.2.2...v0.2.3) - 2025-11-04
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [0.1.3](https://github.com/therecluse26/reflex/compare/v0.1.2...v0.1.3) - 2025-11-03
 
 ### Other
