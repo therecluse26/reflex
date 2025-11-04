@@ -245,10 +245,9 @@ jobs:
       - id: host
         shell: bash
         run: |
-          # Skip upload/release - we'll handle that manually after extracting binaries
-          dist host ${{ needs.plan.outputs.tag-flag }} --steps=create --output-format=json > dist-manifest.json
-          echo "dist host create step completed (skipping upload/release)"
-          cat dist-manifest.json
+          # Generate release metadata without creating the actual release
+          # We'll create it manually after extracting binaries
+          echo '{"announcement_tag":"${{ needs.plan.outputs.tag }}","announcement_title":"reflex ${{ needs.plan.outputs.tag }}","announcement_is_prerelease":false,"announcement_github_body":"Release ${{ needs.plan.outputs.tag }}"}' > dist-manifest.json
           echo "manifest=$(jq -c "." dist-manifest.json)" >> "$GITHUB_OUTPUT"
       - name: "Upload dist-manifest.json"
         uses: actions/upload-artifact@v4
