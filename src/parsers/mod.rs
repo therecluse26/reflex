@@ -16,6 +16,11 @@ pub mod go;
 pub mod java;
 pub mod c;
 pub mod cpp;
+pub mod csharp;
+pub mod ruby;
+pub mod kotlin;
+// pub mod swift;  // Temporarily disabled - requires tree-sitter 0.23
+pub mod zig;
 
 use anyhow::Result;
 use crate::models::{Language, SearchResult};
@@ -42,6 +47,14 @@ impl ParserFactory {
             Language::PHP => php::parse(path, source),
             Language::C => c::parse(path, source),
             Language::Cpp => cpp::parse(path, source),
+            Language::CSharp => csharp::parse(path, source),
+            Language::Ruby => ruby::parse(path, source),
+            Language::Kotlin => kotlin::parse(path, source),
+            Language::Swift => {
+                log::warn!("Swift support temporarily disabled (requires tree-sitter 0.23): {}", path);
+                Ok(vec![])
+            }
+            Language::Zig => zig::parse(path, source),
             Language::Unknown => {
                 log::warn!("Unknown language for file: {}", path);
                 Ok(vec![])

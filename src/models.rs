@@ -70,6 +70,11 @@ pub enum Language {
     PHP,
     C,
     Cpp,
+    CSharp,
+    Ruby,
+    Kotlin,
+    Swift,
+    Zig,
     Unknown,
 }
 
@@ -87,6 +92,11 @@ impl Language {
             "php" => Language::PHP,
             "c" | "h" => Language::C,
             "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "C" | "H" => Language::Cpp,
+            "cs" => Language::CSharp,
+            "rb" | "rake" | "gemspec" => Language::Ruby,
+            "kt" | "kts" => Language::Kotlin,
+            "swift" => Language::Swift,
+            "zig" => Language::Zig,
             _ => Language::Unknown,
         }
     }
@@ -108,6 +118,11 @@ impl Language {
             Language::PHP => true,
             Language::C => true,
             Language::Cpp => true,
+            Language::CSharp => true,
+            Language::Ruby => true,
+            Language::Kotlin => true,
+            Language::Swift => false,  // Temporarily disabled - requires tree-sitter 0.23
+            Language::Zig => true,
             Language::Unknown => false,
         }
     }

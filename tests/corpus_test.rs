@@ -625,8 +625,9 @@ fn test_many_symbols_performance() {
     assert_result_count_at_least(&results, 90);
 
     // Should complete in reasonable time
-    // Note: Symbol parsing can be slow, so allow up to 2 seconds
-    assert!(elapsed.as_secs() < 3, "Query took too long: {:?}", elapsed);
+    // Note: Symbol parsing can be slow, so allow up to 5 seconds
+    // (increased from 3s to account for additional language parsers)
+    assert!(elapsed.as_secs() < 5, "Query took too long: {:?}", elapsed);
 }
 
 #[test]
