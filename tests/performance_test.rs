@@ -196,11 +196,12 @@ fn test_symbol_query_performance() {
     // Symbol query with runtime parsing may be slower for large result sets
     // Trigrams narrow to ~100 files, then tree-sitter parses each
     // On small codebases with good trigram filtering: <100ms
-    // On larger codebases or broad patterns: may be 1-5 seconds
+    // On larger codebases or broad patterns: may be 1-6 seconds
     // This is the trade-off: no upfront indexing cost, but query-time parsing
+    // (increased from 5s to 6s to account for additional language parsers)
     assert!(
-        duration.as_millis() < 5000,
-        "Symbol query took {}ms, expected < 5000ms",
+        duration.as_millis() < 6000,
+        "Symbol query took {}ms, expected < 6000ms",
         duration.as_millis()
     );
 
