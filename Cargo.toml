@@ -79,6 +79,13 @@ chrono = "0.4"
 # Progress bar
 indicatif = "0.17"
 
+# Terminal UI and formatting
+ratatui = "0.29"
+crossterm = "0.28"
+syntect = "5.2"
+unicode-width = "0.2"
+owo-colors = "4.1"
+
 [dev-dependencies]
 tempfile = "3.12"
 
