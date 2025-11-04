@@ -50,13 +50,12 @@ fn test_rust_struct_detection() {
         ..Default::default()
     };
 
-    // Use "struct" pattern instead of empty string (trigrams require 3+ chars)
-    let results = query_corpus("struct", filter);
+    // Search for pattern "oin" which appears in Point
+    let results = query_corpus("oin", filter);
 
-    // TODO: Parser bug - structs not detected yet (expected 8, got 0)
-    // This test documents the bug and will pass once parser is fixed
-    // Once fixed, should find: Point, Rectangle, Circle, Tuple, Unit, Generic, Container, NestedStruct
-    assert_result_count_at_least(&results, 0);
+    // Should find Point struct
+    assert_result_count_at_least(&results, 1);
+    assert_symbol_found(&results, "Point", SymbolKind::Struct);
 }
 
 #[test]
@@ -70,12 +69,12 @@ fn test_rust_enum_detection() {
         ..Default::default()
     };
 
-    // Use "enum" pattern instead of empty string
-    let results = query_corpus("enum", filter);
+    // Search for pattern "tat" which appears in Status
+    let results = query_corpus("tat", filter);
 
-    // TODO: Parser bug - enums not detected yet (expected 6, got 0)
-    // Once fixed, should find: Status, Color, Direction, Option, Message, Result
-    assert_result_count_at_least(&results, 0);
+    // Should find Status enum
+    assert_result_count_at_least(&results, 1);
+    assert_symbol_found(&results, "Status", SymbolKind::Enum);
 }
 
 #[test]
@@ -89,12 +88,14 @@ fn test_rust_trait_detection() {
         ..Default::default()
     };
 
-    // Use "trait" pattern instead of empty string
-    let results = query_corpus("trait", filter);
+    // Search for pattern "able" that appears in trait names
+    // (Drawable, Serializable contain "able")
+    let results = query_corpus("able", filter);
 
-    // TODO: Parser bug - traits not detected yet (expected 6, got 0)
-    // Once fixed, should find: Drawable, Clickable, Cloneable, Display2, Iterator2, Default2
-    assert_result_count_at_least(&results, 0);
+    // Should find traits containing "able"
+    assert_result_count_at_least(&results, 2);
+    assert_symbol_found(&results, "Drawable", SymbolKind::Trait);
+    assert_symbol_found(&results, "Serializable", SymbolKind::Trait);
 }
 
 #[test]
@@ -144,11 +145,11 @@ fn test_typescript_class_detection() {
         ..Default::default()
     };
 
-    // Use "class" pattern instead of empty string
-    let results = query_corpus("class", filter);
+    // Search for pattern "erson" which appears in Person class
+    let results = query_corpus("erson", filter);
 
-    // TODO: Parser bug - TypeScript classes not detected yet (expected 6, got 0)
-    assert_result_count_at_least(&results, 0);
+    // Should find Person class
+    assert_result_count_at_least(&results, 1);
 }
 
 #[test]
@@ -162,11 +163,11 @@ fn test_typescript_interface_detection() {
         ..Default::default()
     };
 
-    // Use "interface" pattern instead of empty string
-    let results = query_corpus("interface", filter);
+    // Search for pattern "ser" which appears in UserSettings, PersonData, etc.
+    let results = query_corpus("ser", filter);
 
-    // TODO: Parser bug - TypeScript interfaces not detected yet (expected 10, got 0)
-    assert_result_count_at_least(&results, 0);
+    // Should find interface with "ser" in the name
+    assert_result_count_at_least(&results, 1);
 }
 
 #[test]
@@ -180,11 +181,11 @@ fn test_typescript_type_detection() {
         ..Default::default()
     };
 
-    // Use "type" pattern instead of empty string
-    let results = query_corpus("type", filter);
+    // Search for pattern "oint" which appears in Point, Point3D
+    let results = query_corpus("oint", filter);
 
-    // TODO: Parser bug - TypeScript type aliases not detected yet (expected 12, got 0)
-    assert_result_count_at_least(&results, 0);
+    // Should find type aliases containing "oint"
+    assert_result_count_at_least(&results, 1);
 }
 
 #[test]
@@ -198,11 +199,11 @@ fn test_typescript_enum_detection() {
         ..Default::default()
     };
 
-    // Use "enum" pattern instead of empty string
-    let results = query_corpus("enum", filter);
+    // Search for pattern "olor" which appears in Color enum
+    let results = query_corpus("olor", filter);
 
-    // TODO: Parser bug - TypeScript enums not detected yet (expected 6, got 0)
-    assert_result_count_at_least(&results, 0);
+    // Should find Color enum
+    assert_result_count_at_least(&results, 1);
 }
 
 #[test]
@@ -234,11 +235,11 @@ fn test_javascript_class_detection() {
         ..Default::default()
     };
 
-    // Use "class" pattern instead of empty string
-    let results = query_corpus("class", filter);
+    // Search for pattern "erson" which appears in Person class
+    let results = query_corpus("erson", filter);
 
-    // TODO: Parser bug - JavaScript classes not detected yet (expected 6, got 0)
-    assert_result_count_at_least(&results, 0);
+    // Should find Person class
+    assert_result_count_at_least(&results, 1);
 }
 
 #[test]
@@ -253,11 +254,11 @@ fn test_php_class_detection() {
         ..Default::default()
     };
 
-    // Use "class" pattern instead of empty string
-    let results = query_corpus("class", filter);
+    // Search for pattern "erson" which appears in Person class
+    let results = query_corpus("erson", filter);
 
-    // TODO: Parser bug - PHP classes not detected yet (expected 6, got 0)
-    assert_result_count_at_least(&results, 0);
+    // Should find Person class
+    assert_result_count_at_least(&results, 1);
 }
 
 #[test]
@@ -271,10 +272,11 @@ fn test_php_function_detection() {
         ..Default::default()
     };
 
-    let results = query_corpus("function", filter);
+    // Search for pattern "Function" which appears in simpleFunction, variadicFunction
+    let results = query_corpus("Function", filter);
 
-    // TODO: Parser bug - PHP functions not detected yet (expected 8, got 0)
-    assert_result_count_at_least(&results, 0);
+    // Should find functions with "Function" in their names
+    assert_result_count_at_least(&results, 1);
 }
 
 // ==================== Full-Text Search Tests ====================
@@ -447,15 +449,12 @@ fn test_filter_language_kind_and_file() {
         ..Default::default()
     };
 
-    // Use "class" pattern instead of empty string
-    let results = query_corpus("class", filter);
+    // Search for pattern "erson" which appears in Person class
+    let results = query_corpus("erson", filter);
 
-    // TODO: Parser bug - TypeScript classes not detected yet (expected 5, got 0)
-    assert_result_count_at_least(&results, 0);
-    // Can only check language if we have results
-    if !results.is_empty() {
-        assert_all_language(&results, Language::TypeScript);
-    }
+    // Should find Person class
+    assert_result_count_at_least(&results, 1);
+    assert_all_language(&results, Language::TypeScript);
 }
 
 #[test]

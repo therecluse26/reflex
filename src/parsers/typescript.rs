@@ -752,15 +752,15 @@ export class CentralUsersModule extends HttpFactory<WatchHookMap, WatchEvents> {
         }
 
         // Verify getAllUsers is a Method, not a Variable
-        let getAllUsers_symbols: Vec<_> = symbols.iter()
+        let get_all_users_symbols: Vec<_> = symbols.iter()
             .filter(|s| s.symbol.as_deref() == Some("getAllUsers"))
             .collect();
 
-        assert_eq!(getAllUsers_symbols.len(), 1, "Should find exactly one getAllUsers");
+        assert_eq!(get_all_users_symbols.len(), 1, "Should find exactly one getAllUsers");
         assert!(
-            matches!(getAllUsers_symbols[0].kind, SymbolKind::Method),
+            matches!(get_all_users_symbols[0].kind, SymbolKind::Method),
             "getAllUsers should be a Method, not {:?}",
-            getAllUsers_symbols[0].kind
+            get_all_users_symbols[0].kind
         );
     }
 }
