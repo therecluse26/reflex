@@ -245,8 +245,9 @@ jobs:
       - id: host
         shell: bash
         run: |
-          dist host ${{ needs.plan.outputs.tag-flag }} --steps=upload --steps=release --output-format=json > dist-manifest.json
-          echo "artifacts uploaded and released successfully"
+          # Skip upload/release - we'll handle that manually after extracting binaries
+          dist host ${{ needs.plan.outputs.tag-flag }} --steps=create --output-format=json > dist-manifest.json
+          echo "dist host create step completed (skipping upload/release)"
           cat dist-manifest.json
           echo "manifest=$(jq -c "." dist-manifest.json)" >> "$GITHUB_OUTPUT"
       - name: "Upload dist-manifest.json"
