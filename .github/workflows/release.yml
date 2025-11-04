@@ -287,12 +287,31 @@ jobs:
               # Find the binary (rfx) - recursively search
               binary=$(find "$temp_dir" -type f -name "rfx" | head -1)
               if [ -n "$binary" ]; then
-                # Extract platform from archive filename
+                # Extract platform from archive filename and transform to friendly name
                 platform=$(echo "$archive" | sed 's/^reflex-//' | sed 's/\.tar\.xz$//')
-                output_name="rfx-${platform}"
-                echo "Found binary: $binary -> $output_name"
-                cp "$binary" "$output_name"
-                chmod +x "$output_name"
+
+                # Transform to friendly names
+                case "$platform" in
+                  x86_64-unknown-linux-gnu)
+                    friendly_name="rfx-linux-x64"
+                    ;;
+                  aarch64-unknown-linux-gnu)
+                    friendly_name="rfx-linux-arm64"
+                    ;;
+                  x86_64-apple-darwin)
+                    friendly_name="rfx-macos-x64"
+                    ;;
+                  aarch64-apple-darwin)
+                    friendly_name="rfx-macos-arm64"
+                    ;;
+                  *)
+                    friendly_name="rfx-${platform}"
+                    ;;
+                esac
+
+                echo "Found binary: $binary -> $friendly_name"
+                cp "$binary" "$friendly_name"
+                chmod +x "$friendly_name"
               else
                 echo "WARNING: No rfx binary found in $archive"
               fi
@@ -315,11 +334,21 @@ jobs:
               # Find the binary (rfx.exe) - recursively search
               binary=$(find "$temp_dir" -type f -name "rfx.exe" | head -1)
               if [ -n "$binary" ]; then
-                # Extract platform from archive filename
+                # Extract platform from archive filename and transform to friendly name
                 platform=$(echo "$archive" | sed 's/^reflex-//' | sed 's/\.zip$//')
-                output_name="rfx-${platform}.exe"
-                echo "Found binary: $binary -> $output_name"
-                cp "$binary" "$output_name"
+
+                # Transform to friendly name
+                case "$platform" in
+                  x86_64-pc-windows-msvc)
+                    friendly_name="rfx-windows-x64.exe"
+                    ;;
+                  *)
+                    friendly_name="rfx-${platform}.exe"
+                    ;;
+                esac
+
+                echo "Found binary: $binary -> $friendly_name"
+                cp "$binary" "$friendly_name"
               else
                 echo "WARNING: No rfx.exe binary found in $archive"
               fi
@@ -350,7 +379,15 @@ jobs:
           # Write and read notes from a file to avoid quoting breaking things
           echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
 
-          gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+          # Explicitly upload only binaries and installers (not archives)
+          cd artifacts
+          gh release create "${{ needs.plan.outputs.tag }}" \
+            --target "$RELEASE_COMMIT" \
+            $PRERELEASE_FLAG \
+            --title "$ANNOUNCEMENT_TITLE" \
+            --notes-file "$RUNNER_TEMP/notes.txt" \
+            rfx-* \
+            *installer*
 
   announce:
     needs:
