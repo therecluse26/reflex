@@ -13,3 +13,5 @@ installers = ["shell", "powershell"]
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "x86_64-pc-windows-msvc"]
 # Don't auto-include README, LICENSE, CHANGELOG in archives
 auto-includes = false
+# Allow custom modifications to the release workflow
+allow-dirty = ["ci"]
