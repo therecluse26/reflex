@@ -248,11 +248,11 @@ Result: **Simpler, faster, smaller cache, more flexible symbol filtering**
 ## Future Work
 - ✅ **File watcher** (`rfx watch`): Auto-reindex on file changes with configurable debouncing
 - ✅ **MCP server** (`rfx mcp`): Model Context Protocol server for AI agents like Claude Code
-- `reflexd`: tiny background helper for continuous indexing (opt-in).
-- LSP adapter for direct IDE integration.
-- Graph queries (imports/exports, limited call graph).
-- Branch-aware context diffing and filters (e.g., `--since`, `--branch`).
-- Binary protocol for ultra-low-latency local queries.
+- Interactive mode for exploratory workflows
+- Semantic query building (natural language → Reflex commands via tiny local LLMs)
+- Graph queries (imports/exports, limited call graph)
+- Branch-aware context diffing and filters (e.g., `--since`, `--branch`)
+- Binary protocol for ultra-low-latency local queries
 
 ---
 

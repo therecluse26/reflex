@@ -612,8 +612,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for implementation details.
 - [x] MCP (Model Context Protocol) server for AI agents
 
 ### Next Phase: Advanced Features
-- [ ] LSP (Language Server Protocol) adapter
-- [ ] Background indexing daemon (`reflexd`)
+- [ ] Interactive mode (`rfx interactive`)
+- [ ] Semantic query building (natural language to Reflex query translation)
 - [ ] Graph queries (imports/exports, call graph)
 
 ## 📄 License
