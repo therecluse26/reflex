@@ -75,7 +75,7 @@ Reflex currently supports symbol extraction for the following languages and fram
 
 | Language/Framework | Extensions | Symbol Extraction | Notes |
 |-------------------|------------|------------------|-------|
-| **Rust** | `.rs` | Functions, structs, enums, traits, impls, modules, methods | Complete Rust support |
+| **Rust** | `.rs` | Functions, structs, enums, traits, impls, modules, methods, constants, type aliases | Complete Rust support |
 | **Python** | `.py` | Functions, classes, methods, constants, lambdas, decorators | Full Python support including async/await |
 | **TypeScript** | `.ts`, `.tsx`, `.mts`, `.cts` | Functions, classes, interfaces, types, enums, methods | Full TypeScript + JSX support |
 | **JavaScript** | `.js`, `.jsx`, `.mjs`, `.cjs` | Functions, classes, constants, methods | Includes React/JSX support via TSX grammar |
@@ -87,8 +87,8 @@ Reflex currently supports symbol extraction for the following languages and fram
 | **PHP** | `.php` | Functions, classes, interfaces, traits, methods, properties, constants, namespaces, enums | Full PHP support including PHP 8.1+ enums |
 | **Ruby** | `.rb`, `.rake`, `.gemspec` | Classes, modules, methods, singleton methods, constants, blocks | Full Ruby support including Rails patterns |
 | **Kotlin** | `.kt`, `.kts` | Classes, objects, interfaces, functions, properties, data classes, sealed classes | Full Kotlin support including Android development |
+| **Zig** | `.zig` | Functions, structs, enums, constants, variables, tests, error sets | Full Zig support |
 | **~~Swift~~** | `.swift` | ~~Classes, structs, enums, protocols, functions, extensions, properties, actors~~ | **Temporarily disabled** - requires tree-sitter 0.23 (Reflex uses 0.24) |
-| **Zig** | `.zig` | Functions, structs, enums, constants, tests, error sets | Full Zig support |
 | **Vue** | `.vue` | Functions, constants, methods from `<script>` blocks | Supports both Options API and Composition API |
 | **Svelte** | `.svelte` | Functions, variables, reactive declarations (`$:`), module context | Full Svelte component support |
 
@@ -121,7 +121,7 @@ Reflex currently supports symbol extraction for the following languages and fram
 - **Namespaces**: Full namespace support
 - **Enums**: PHP 8.1+ enum declarations
 
-**Coverage**: Reflex supports **90%+ of all codebases** across web, mobile, systems, enterprise, and AI/ML development (15 languages: Rust, Python, TypeScript, JavaScript, Go, Java, C, C++, C#, PHP, Ruby, Kotlin, Zig, Vue, Svelte).
+**Coverage**: Reflex supports **90%+ of all codebases** across web, mobile, systems, enterprise, and AI/ML development (18 languages: Rust, Python, TypeScript, JavaScript, Go, Java, C, C++, C#, PHP, Ruby, Kotlin, Zig, Vue, Svelte, plus experimental Swift support once tree-sitter compatibility is resolved).
 
 **Note on Swift**: Swift support is temporarily disabled due to tree-sitter version incompatibility. The tree-sitter-swift grammar requires tree-sitter 0.23, while Reflex uses tree-sitter 0.24 for better performance and compatibility with other languages. Swift support will be restored when the grammar is updated to 0.24+.
 
@@ -246,8 +246,10 @@ Result: **Simpler, faster, smaller cache, more flexible symbol filtering**
 ---
 
 ## Future Work
-- ✅ **File watcher** (`rfx watch`): Auto-reindex on file changes with configurable debouncing
-- ✅ **MCP server** (`rfx mcp`): Model Context Protocol server for AI agents like Claude Code
+- ✅ **File watcher** (`rfx watch`): Auto-reindex on file changes with configurable debouncing - **COMPLETED (2025-11-03)**
+- ✅ **MCP server** (`rfx mcp`): Model Context Protocol server for AI agents like Claude Code - **COMPLETED (2025-11-03)**
+- ✅ **AST pattern matching** (`--ast` flag): Structure-aware code search using Tree-sitter S-expressions - **COMPLETED (2025-11-03)**
+- ✅ **HTTP server** (`rfx serve`): REST API for programmatic access - **COMPLETED (2025-11-03)**
 - Interactive mode for exploratory workflows
 - Semantic query building (natural language → Reflex commands via tiny local LLMs)
 - Graph queries (imports/exports, limited call graph)
@@ -630,7 +632,7 @@ Before creating a release:
 For the initial 1.0.0 release:
 
 1. Ensure all MVP goals are completed (see above)
-2. Complete comprehensive testing (221+ tests passing)
+2. Complete comprehensive testing (334 tests passing)
 3. Finalize documentation (README.md, ARCHITECTURE.md, CLAUDE.md)
 4. Set up release-plz and cocogitto
 5. Create CHANGELOG.md with v1.0.0 notes

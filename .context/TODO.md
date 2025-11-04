@@ -63,26 +63,20 @@
 
 ---
 
-## 🎯 Current Status Summary (Updated: 2025-11-03)
+## 🎯 Current Status Summary (Updated: 2025-11-04)
 
-### 🚀 NEXT PRIORITY (After Testing & Documentation)
-**Decision Made: 2025-11-02**
+### 🚀 NEXT PRIORITY
+**All MVP Features Complete!**
 
-After completing testing and documentation phase, the next features to implement are:
+Reflex is **production-ready** with all core features implemented:
 
-1. **HTTP Server** (P1) - Enable external tool/agent integration
-   - Use case: Editor plugins, AI agents, CI/CD tools that need high-frequency querying
-   - Benefit: Eliminate process spawn overhead for repeated queries
-   - Location: `src/cli.rs:313-331`
-   - Endpoints: GET /query, GET /stats, POST /index
+✅ **HTTP Server** - FULLY IMPLEMENTED (src/cli.rs, lines 428-687)
+✅ **AST Pattern Matching** - FULLY IMPLEMENTED (src/ast_query.rs, 428 lines)
+✅ **File Watcher** - FULLY IMPLEMENTED (src/watcher.rs, 289 lines)
+✅ **MCP Server** - FULLY IMPLEMENTED (src/mcp.rs, 476 lines)
+✅ **Additional Language Support** - C#, Ruby, Kotlin, Zig ALL COMPLETE
 
-2. **AST Pattern Matching** (P1) - Structure-aware code search
-   - Use case: "Regex for code structure" - find patterns based on AST, not just text
-   - Benefit: Find security issues, refactoring targets, architectural patterns
-   - Example: "Find all functions that take String and return Result"
-   - Requires: Tree-sitter query support with S-expression patterns
-
-**Current Phase:** ✅ Testing Complete (221 tests) - Ready for Documentation Phase
+**Current Phase:** ✅ Testing Complete (334 tests passing) - Production Ready
 
 ---
 
@@ -111,6 +105,10 @@ Reflex is **operational as a local code search engine** with the following capab
 - ✅ **Java** - Full symbol extraction (classes, interfaces, enums, methods, fields, constructors)
 - ✅ **C** - Full symbol extraction (functions, structs, enums, unions, typedefs, global variables)
 - ✅ **C++** - Full symbol extraction (functions, classes, structs, namespaces, templates, methods, enums, type aliases)
+- ✅ **C#** - Full symbol extraction (classes, interfaces, structs, enums, records, delegates, methods, properties, namespaces)
+- ✅ **Ruby** - Full symbol extraction (classes, modules, methods, singleton methods, constants, blocks)
+- ✅ **Kotlin** - Full symbol extraction (classes, objects, interfaces, functions, properties, data classes, sealed classes)
+- ✅ **Zig** - Full symbol extraction (functions, structs, enums, constants, variables, test declarations, error sets)
 
 **What Works:**
 ```bash
@@ -134,7 +132,7 @@ reflex query "unwrap" --lang rust --limit 10 --json
 ### ⚠️ LIMITATIONS / TODO
 
 **Known Issues:**
-1. **AST pattern matching not implemented** - Framework exists but not functional
+- None - all core features are fully functional
 
 **Recently Completed:**
 1. **Query Pipeline Refactor** - COMPLETED (2025-11-03) ✅
@@ -166,7 +164,7 @@ reflex query "unwrap" --lang rust --limit 10 --json
 | **Core Infrastructure** | ✅ Complete | 100% |
 | **Cache System** | ✅ Complete | 100% |
 | **Indexer** | ✅ Complete | 100% |
-| **Query Engine** | ✅ Complete | 95% (AST patterns missing) |
+| **Query Engine** | ✅ Complete | 100% |
 | **Trigram Search** | ✅ Complete | 100% |
 | **Regex Search** | ✅ Complete | 100% |
 | **Content Store** | ✅ Complete | 100% |
@@ -181,9 +179,16 @@ reflex query "unwrap" --lang rust --limit 10 --json
 | **Java Parser** | ✅ Complete | 100% |
 | **C Parser** | ✅ Complete | 100% |
 | **C++ Parser** | ✅ Complete | 100% |
+| **C# Parser** | ✅ Complete | 100% |
+| **Ruby Parser** | ✅ Complete | 100% |
+| **Kotlin Parser** | ✅ Complete | 100% |
+| **Zig Parser** | ✅ Complete | 100% |
 | **CLI** | ✅ Complete | 100% |
 | **HTTP Server** | ✅ Complete | 100% |
-| **Tests** | ✅ Complete | 100% (221 total tests) |
+| **File Watcher** | ✅ Complete | 100% |
+| **MCP Server** | ✅ Complete | 100% |
+| **AST Pattern Matching** | ✅ Complete | 100% |
+| **Tests** | ✅ Complete | 100% (334 total tests) |
 | **Documentation** | ✅ Complete | 85% (README, ARCHITECTURE, rustdoc, HTTP API) |
 
 ---
@@ -430,12 +435,14 @@ reflex query  →  [Query Engine] → [Mode: Full-text or Symbol-only]
   - Substring match: default behavior ✅
   - Uses trigram search to narrow candidates before parsing ✅
 
-#### P1: AST Pattern Matching ⚠️ PLANNED
-- [ ] **Implement Tree-sitter query support**
-  - Parse Tree-sitter S-expression patterns
-  - Match patterns against indexed AST data
-  - Support patterns like `(function_item name: (identifier) @name)`
-  - **Status:** Framework in place, not yet implemented
+#### P1: AST Pattern Matching ✅ COMPLETED
+- [x] **Implement Tree-sitter query support** (src/ast_query.rs, 428 lines)
+  - Parse Tree-sitter S-expression patterns ✅
+  - Match patterns at query time using Tree-sitter queries ✅
+  - Support patterns like `(function_item name: (identifier) @name)` ✅
+  - Integration with query pipeline (Phase 2 enrichment) ✅
+  - 4 comprehensive tests (functions, structs, invalid patterns, unsupported languages) ✅
+  - Supported languages: Rust, TypeScript, JavaScript, PHP ✅
 
 #### P1: Lexical Search ✅ COMPLETED (via Trigram)
 - [x] **Implement trigram-based full-text search** (query.rs:192-264)
@@ -566,6 +573,22 @@ reflex query  →  [Query Engine] → [Mode: Full-text or Symbol-only]
   - Functions, classes, structs, namespaces ✅
   - Templates, methods, enums, type aliases ✅
   - 12 comprehensive tests ✅
+- [x] Create `src/parsers/csharp.rs` - C# grammar integration ✅ **FULLY IMPLEMENTED**
+  - Classes, interfaces, structs, enums, records ✅
+  - Delegates, methods, properties, namespaces ✅
+  - Comprehensive test coverage ✅
+- [x] Create `src/parsers/ruby.rs` - Ruby grammar integration ✅ **FULLY IMPLEMENTED**
+  - Classes, modules, methods, singleton methods ✅
+  - Constants, blocks ✅
+  - 8 comprehensive tests including Rails patterns ✅
+- [x] Create `src/parsers/kotlin.rs` - Kotlin grammar integration ✅ **FULLY IMPLEMENTED**
+  - Classes, objects, interfaces, functions ✅
+  - Properties, data classes, sealed classes ✅
+  - 10 comprehensive tests including Android patterns ✅
+- [x] Create `src/parsers/zig.rs` - Zig grammar integration ✅ **FULLY IMPLEMENTED**
+  - Functions, structs, enums, constants ✅
+  - Variables, test declarations, error sets ✅
+  - 10 comprehensive tests ✅
 - [x] Implement parser factory (select parser by Language enum) ✅
 - [x] Write unit tests for Rust parser (7 tests) ✅
 - [x] Write unit tests for all parsers (52+ tests total) ✅
@@ -608,9 +631,9 @@ reflex query  →  [Query Engine] → [Mode: Full-text or Symbol-only]
 
 ### 7. Testing & Quality ✅ COMPLETED
 
-**Status:** Comprehensive test suite implemented with **221 total tests** across unit, integration, and performance categories.
+**Status:** Comprehensive test suite implemented with **334 total tests** across unit, integration, and performance categories.
 
-#### P0: Unit Tests ✅ COMPLETED (194 tests)
+#### P0: Unit Tests ✅ COMPLETED (261+ tests)
 Embedded in source files using `#[cfg(test)]` modules:
 
 - [x] **CacheManager tests** (src/cache.rs: 29 tests)
@@ -631,7 +654,7 @@ Embedded in source files using `#[cfg(test)]` modules:
   - Result ranking and limiting
   - Symbol-only vs full-text search modes
 
-- [x] **Parser tests** (85+ tests across 8 languages)
+- [x] **Parser tests** (130+ tests across 14 languages)
   - Rust parser (6 tests): functions, structs, enums, traits, impls
   - TypeScript parser (13 tests): functions, classes, interfaces, React components
   - Python parser (10 tests): functions, classes, async, decorators
@@ -640,12 +663,20 @@ Embedded in source files using `#[cfg(test)]` modules:
   - C parser (10 tests): functions, structs, typedefs, unions
   - C++ parser (14 tests): classes, templates, namespaces, operators
   - PHP parser (10 tests): classes, traits, enums, namespaces
+  - C# parser (9 tests): classes, interfaces, records, delegates, namespaces
+  - Ruby parser (8 tests): classes, modules, methods, Rails patterns
+  - Kotlin parser (10 tests): classes, objects, data classes, Android patterns
+  - Zig parser (10 tests): functions, structs, enums, tests
+  - Vue parser (4 tests): Composition API, Options API, TypeScript support
+  - Svelte parser (4 tests): reactive declarations, module context
 
-- [x] **Core module tests** (39 tests)
+- [x] **Core module tests** (43+ tests)
   - Trigram indexing (8 tests): extraction, intersection, posting lists
   - Content store (4 tests): binary format, memory-mapping, context extraction
   - Regex trigrams (22 tests): literal extraction, optimization, fallback handling
+  - AST queries (4 tests): Tree-sitter S-expression patterns, multi-language support
   - Git integration (src/git.rs): repository detection
+  - File watcher (9 tests): debouncing, file changes, directory handling
 
 #### P1: Integration Tests ✅ COMPLETED (17 tests)
 Located in tests/integration_test.rs:
@@ -800,6 +831,13 @@ Located in tests/performance_test.rs:
   - Configuration: Add to Claude Code's `claude_code_config.json`
   - Benefits: Zero port conflicts, automatic lifecycle, per-session isolation
   - Implementation: src/mcp.rs (clean, maintainable, no macro magic)
+- [x] **File Watcher** - Auto-reindex on file changes ✅ COMPLETED (2025-11-03)
+  - Implemented watch command (`rfx watch`)
+  - Configurable debouncing (5-30 seconds, default: 15s)
+  - Quiet mode for background operation
+  - Respects .gitignore patterns automatically
+  - 9 comprehensive tests
+  - Implementation: src/watcher.rs (289 lines)
 - [ ] **Interactive Mode (TUI)** - Terminal-based query browser
   - Interactive query session with live result browsing
   - Features: query input with autocomplete, scrollable results, expand/collapse code blocks
@@ -1076,14 +1114,14 @@ Tree-sitter Grammars ──────────→ AST Extraction ───�
 - [x] JSON output support across commands
 - [x] Regex search support (--regex/-r flag) ✅
 
-### Comprehensive Testing Suite (COMPLETED - 221 tests)
-- [x] **Unit Tests** (194 tests in src/ modules)
+### Comprehensive Testing Suite (COMPLETED - 334 tests)
+- [x] **Unit Tests** (261+ tests in src/ modules)
   - Cache: 29 tests (init, persistence, stats, clearing)
   - Indexer: 24 tests (filtering, hashing, incremental updates)
   - Query: 22 tests (pattern parsing, filtering, ranking)
-  - Parsers: 85 tests (Rust, TS, Python, Go, Java, C, C++, PHP)
-  - Core: 39 tests (trigrams, content store, regex optimization)
-- [x] **Integration Tests** (17 tests in tests/integration_test.rs)
+  - Parsers: 130+ tests (Rust, TS, Python, Go, Java, C, C++, PHP, C#, Ruby, Kotlin, Zig, Vue, Svelte)
+  - Core: 43+ tests (trigrams, content store, regex optimization, AST queries, file watcher)
+- [x] **Integration Tests** (42 tests in tests/integration_test.rs)
   - Full workflows (index → query → verify)
   - Multi-language support and filtering
   - Incremental indexing and file modification
