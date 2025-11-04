@@ -341,9 +341,16 @@ mod tests {
 
     #[test]
     fn test_formatter_creation() {
+        // Set NO_COLOR to ensure deterministic test behavior regardless of TTY
+        unsafe {
+            std::env::set_var("NO_COLOR", "1");
+        }
         let formatter = OutputFormatter::new(false);
-        // In tests, stdout is not a TTY, so colors should be disabled
+        // With NO_COLOR set, colors should always be disabled
         assert!(!formatter.use_colors);
+        unsafe {
+            std::env::remove_var("NO_COLOR");
+        }
     }
 
     #[test]

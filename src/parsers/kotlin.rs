@@ -492,8 +492,8 @@ fun String.isEmail(): Boolean {
 
         let symbols = parse("test.kt", source).unwrap();
 
-        // Extension functions should be captured
-        assert!(symbols.len() >= 0);
+        // Extension functions should be captured (test verifies parsing succeeds without panic)
+        let _ = symbols; // Suppress unused variable warning
     }
 
     #[test]
