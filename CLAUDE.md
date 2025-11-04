@@ -401,160 +401,79 @@ Reflex favors local autonomy, speed, and clarity.
 
 ## Release Management
 
-Reflex follows **semantic versioning** (SemVer) and uses automated release tooling for changelog generation and version bumping.
+Reflex follows **semantic versioning** (SemVer) with a simple manual release workflow powered by cargo-dist.
 
 ### Semantic Versioning
 
-Version format: `MAJOR.MINOR.PATCH` (e.g., `1.2.3`)
+Version format: `MAJOR.MINOR.PATCH` (e.g., `0.2.7`)
 
 - **MAJOR**: Breaking changes (incompatible API changes)
 - **MINOR**: New features (backward-compatible functionality)
 - **PATCH**: Bug fixes (backward-compatible bug fixes)
 
 **Examples:**
-- `1.0.0 → 1.0.1`: Bug fix (PATCH bump)
-- `1.0.1 → 1.1.0`: New feature like `--timeout` flag (MINOR bump)
-- `1.1.0 → 2.0.0`: Breaking change like removing HTTP API (MAJOR bump)
+- `0.2.6 → 0.2.7`: Bug fix (PATCH bump)
+- `0.2.7 → 0.3.0`: New feature like `--timeout` flag (MINOR bump)
+- `0.3.0 → 1.0.0`: Breaking change or stable release (MAJOR bump)
 
-### Conventional Commits
+### Creating a Release
 
-Reflex uses **Conventional Commits** for automatic changelog generation and version bumping:
-
-```
-<type>(<scope>): <description>
-
-[optional body]
-
-[optional footer(s)]
-```
-
-**Types:**
-- `feat:` - New feature (triggers MINOR version bump)
-- `fix:` - Bug fix (triggers PATCH version bump)
-- `docs:` - Documentation changes only
-- `refactor:` - Code refactoring (no functional changes)
-- `perf:` - Performance improvements
-- `test:` - Adding or updating tests
-- `chore:` - Maintenance tasks (dependencies, build, etc.)
-- `BREAKING CHANGE:` - Breaking change (triggers MAJOR version bump)
-
-**Examples:**
-```bash
-# Feature: Adds timeout support (1.0.0 → 1.1.0)
-feat(query): add --timeout flag for query timeout control
-
-Adds configurable query timeout with default of 30 seconds.
-Users can override with --timeout flag or set to 0 for no limit.
-
-# Bug fix: Fixes crash (1.1.0 → 1.1.1)
-fix(indexer): handle empty files without panic
-
-# Breaking change: Removes deprecated API (1.1.1 → 2.0.0)
-feat(api): remove deprecated /search endpoint
-
-BREAKING CHANGE: The /search endpoint has been removed.
-Use /query instead.
-```
-
-### Release Automation with release-plz
-
-Reflex uses **[release-plz](https://release-plz.ieni.dev/)** for automated releases:
-
-1. **On every commit to `main`:**
-   - Analyzes commits since last release
-   - Determines next version based on conventional commits
-   - Updates `Cargo.toml` version
-   - Generates/updates `CHANGELOG.md`
-   - Opens a PR with these changes (title: "chore: release")
-
-2. **When the release PR is merged:**
-   - Creates a git tag (e.g., `v1.1.0`)
-   - Publishes a GitHub Release with changelog notes
-   - Optionally publishes to crates.io (if configured)
-
-**Workflow:**
-```bash
-# 1. Make changes and commit with conventional commit message
-git add .
-git commit -m "feat(query): add regex support for pattern matching"
-git push origin main
-
-# 2. release-plz GitHub Action runs automatically
-# - Opens PR: "chore: release v1.1.0"
-# - Contains: Cargo.toml version bump + CHANGELOG.md update
-
-# 3. Review and merge the release PR
-# 4. GitHub Action creates tag and GitHub Release automatically
-```
-
-### Commit Linting with cocogitto
-
-**[Cocogitto](https://github.com/cocogitto/cocogitto)** validates conventional commit messages:
-
-```bash
-# Install cocogitto (optional, for local validation)
-cargo install cocogitto
-
-# Validate commits locally
-cog check
-
-# Generate changelog preview
-cog changelog
-
-# Create a conventional commit interactively
-cog commit
-```
-
-**Pre-commit hook (optional):**
-```bash
-# .git/hooks/commit-msg
-#!/bin/sh
-cog verify --file $1
-```
-
-### GitHub Actions Workflow
-
-**`.github/workflows/release-plz.yml`** - Automated release management
-
-Triggers:
-- On push to `main` branch
-- On demand via workflow_dispatch
-
-Actions:
-1. Checkout code
-2. Run release-plz to analyze commits
-3. Create release PR if changes detected
-4. On PR merge: create tag and GitHub Release
-
-**Configuration:** `.github/release-plz.toml`
-
-### Manual Release Process (Fallback)
-
-If automated releases are not available:
+**Simple 3-step process:**
 
 ```bash
 # 1. Update version in Cargo.toml
-vim Cargo.toml  # Change version = "1.0.0" to "1.1.0"
+vim Cargo.toml  # Change version = "0.2.6" to "0.2.7"
 
-# 2. Update CHANGELOG.md manually
-vim CHANGELOG.md  # Add new section for v1.1.0
-
-# 3. Commit the version bump
-git add Cargo.toml CHANGELOG.md
-git commit -m "chore: release v1.1.0"
-
-# 4. Create git tag
-git tag -a v1.1.0 -m "Release v1.1.0"
-
-# 5. Push changes and tag
+# 2. Commit and push
+git add Cargo.toml
+git commit -m "chore: bump version to 0.2.7"
 git push origin main
-git push origin v1.1.0
 
-# 6. Create GitHub Release manually
-# - Go to https://github.com/therecluse26/reflex/releases/new
-# - Select tag: v1.1.0
-# - Copy changelog content into release notes
-# - Publish release
+# 3. Create and push tag
+git tag v0.2.7
+git push origin v0.2.7
+```
+
+**That's it!** When you push the tag, GitHub Actions automatically:
+- Builds binaries for all platforms (Linux, macOS, Windows, ARM, x86_64)
+- Extracts raw executables from cargo-dist archives
+- Creates a GitHub Release with:
+  - Raw binaries (e.g., `rfx-x86_64-unknown-linux-gnu`, `rfx-x86_64-pc-windows-msvc.exe`)
+  - Shell and PowerShell installer scripts
+  - Auto-generated release notes
+
+### What Gets Released
+
+The GitHub Release will contain:
+
+**Binaries (raw executables, no archives):**
+- `rfx-aarch64-apple-darwin` - macOS ARM (Apple Silicon)
+- `rfx-aarch64-unknown-linux-gnu` - Linux ARM64
+- `rfx-x86_64-apple-darwin` - macOS Intel
+- `rfx-x86_64-unknown-linux-gnu` - Linux x64 (glibc)
+- `rfx-x86_64-unknown-linux-musl` - Linux x64 (static, no libc)
+- `rfx-x86_64-pc-windows-msvc.exe` - Windows x64
+
+**Installers:**
+- `reflex-installer.sh` - Shell install script (`curl | sh`)
+- `reflex-installer.ps1` - PowerShell install script
+
+### Workflow Configuration
+
+Releases are configured in:
+- **`dist-workspace.toml`** - cargo-dist configuration (platforms, installers)
+- **`.github/workflows/release.yml`** - GitHub Actions workflow (builds binaries, extracts archives)
+
+**Key settings:**
+```toml
+# dist-workspace.toml
+[dist]
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu",
+           "x86_64-apple-darwin", "x86_64-unknown-linux-gnu",
+           "x86_64-unknown-linux-musl", "x86_64-pc-windows-msvc"]
+installers = ["shell", "powershell"]
+auto-includes = false  # Don't bundle README/CHANGELOG in archives
+allow-dirty = ["ci"]   # Allow custom workflow modifications
 ```
 
 ### CHANGELOG.md Format
@@ -587,54 +506,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Multi-language support
 ```
 
-### Binary Distribution (Future)
-
-**cargo-dist** for cross-platform binary releases:
-
-```bash
-# Install cargo-dist
-cargo install cargo-dist
-
-# Generate release workflow
-cargo dist init
-
-# Build binaries for all targets
-cargo dist build
-```
-
-**Targets:**
-- `x86_64-unknown-linux-gnu` (Linux x64)
-- `x86_64-unknown-linux-musl` (Linux x64 static)
-- `x86_64-apple-darwin` (macOS Intel)
-- `aarch64-apple-darwin` (macOS ARM)
-- `x86_64-pc-windows-msvc` (Windows x64)
-
-**Install script:**
-```bash
-curl -fsSL https://raw.githubusercontent.com/therecluse26/reflex/main/install.sh | sh
-```
-
-### Release Checklist
-
-Before creating a release:
-
-- [ ] All tests pass (`cargo test`)
-- [ ] Documentation is up to date (README.md, ARCHITECTURE.md, CLAUDE.md)
-- [ ] CHANGELOG.md includes all changes
-- [ ] Version in Cargo.toml is correct
-- [ ] Git tag matches Cargo.toml version
-- [ ] GitHub Release notes are complete
-- [ ] (Optional) Binaries are built for all targets
-- [ ] (Optional) crates.io publication successful
-
-### First Release (v1.0.0)
-
-For the initial 1.0.0 release:
-
-1. Ensure all MVP goals are completed (see above)
-2. Complete comprehensive testing (334 tests passing)
-3. Finalize documentation (README.md, ARCHITECTURE.md, CLAUDE.md)
-4. Set up release-plz and cocogitto
-5. Create CHANGELOG.md with v1.0.0 notes
-6. Tag v1.0.0 and create GitHub Release
-7. Announce on relevant channels (Reddit, HN, Discord, etc.)
+---
