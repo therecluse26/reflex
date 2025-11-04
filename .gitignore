@@ -23,3 +23,6 @@ Thumbs.db
 *.log
 
 reflex
+
+# cargo-dist artifacts
+/target/distrib/
