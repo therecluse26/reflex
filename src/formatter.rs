@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use crossterm::tty::IsTty;
+use crossterm::terminal;
 use std::collections::HashMap;
 use std::io;
 use syntect::easy::HighlightLines;
@@ -68,6 +69,8 @@ pub struct OutputFormatter {
     pub use_colors: bool,
     /// Whether to use syntax highlighting
     pub use_syntax_highlighting: bool,
+    /// Terminal width for full-width separators
+    terminal_width: u16,
 }
 
 impl OutputFormatter {
@@ -78,9 +81,13 @@ impl OutputFormatter {
 
         let use_colors = !plain && !no_color && is_tty;
 
+        // Get terminal width, default to 80 if detection fails
+        let terminal_width = terminal::size().map(|(w, _)| w).unwrap_or(80);
+
         Self {
             use_colors,
             use_syntax_highlighting: use_colors, // Enable syntax highlighting if colors enabled
+            terminal_width,
         }
     }
 
@@ -130,20 +137,16 @@ impl OutputFormatter {
         file_path: &str,
         results: &[&SearchResult],
         pattern: &str,
-        is_last: bool,
+        is_last_file: bool,
     ) -> Result<()> {
         // Print file header
         self.print_file_header(file_path, results.len())?;
 
         // Print each result
         for (idx, result) in results.iter().enumerate() {
-            let is_last_result = idx == results.len() - 1;
-            self.print_result(result, pattern, is_last_result)?;
-        }
-
-        // Add spacing between files (unless it's the last file)
-        if !is_last {
-            println!();
+            let is_last_in_file = idx == results.len() - 1;
+            let is_last_overall = is_last_file && is_last_in_file;
+            self.print_result(result, pattern, is_last_overall)?;
         }
 
         Ok(())
@@ -208,9 +211,10 @@ impl OutputFormatter {
                 );
             }
 
-            // Add blank line between results for better readability (except for last result)
+            // Add full-width separator line between ALL results (except for the very last one)
             if !is_last {
-                println!("  {}", continuation.dimmed());
+                let separator_width = self.terminal_width.saturating_sub(0) as usize;
+                println!("{}", "─".repeat(separator_width).truecolor(60, 60, 60));
             }
         } else{
             // Plain text output
@@ -221,9 +225,10 @@ impl OutputFormatter {
                 println!("  {}   └─ in {}", continuation, scope);
             }
 
-            // Add blank line between results for better readability (except for last result)
+            // Add full-width separator line between ALL results (except for the very last one)
             if !is_last {
-                println!("  {}", continuation);
+                let separator_width = self.terminal_width.saturating_sub(0) as usize;
+                println!("{}", "─".repeat(separator_width));
             }
         }
 
