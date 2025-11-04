@@ -266,6 +266,50 @@ jobs:
         run: |
           # Remove the granular manifests
           rm -f artifacts/*-dist-manifest.json
+      - name: Extract raw binaries from archives
+        run: |
+          set -e
+          cd artifacts
+
+          # Create directory for extracted binaries
+          mkdir -p binaries
+
+          # Extract binaries from tar.xz archives (Unix/Linux/macOS)
+          for archive in *.tar.xz; do
+            if [ -f "$archive" ]; then
+              echo "Extracting $archive..."
+              tar -xf "$archive" -C binaries
+              # Find and move the binary to top level with platform suffix
+              platform=$(echo "$archive" | sed 's/reflex-//' | sed 's/.tar.xz//')
+              find binaries -type f -name "rfx" -exec mv {} "binaries/rfx-${platform}" \;
+              # Clean up extracted directories
+              find binaries -mindepth 1 -type d -exec rm -rf {} + 2>/dev/null || true
+            fi
+          done
+
+          # Extract binaries from zip archives (Windows)
+          for archive in *.zip; do
+            if [ -f "$archive" ]; then
+              echo "Extracting $archive..."
+              unzip -q "$archive" -d binaries
+              # Find and move the binary to top level with platform suffix
+              platform=$(echo "$archive" | sed 's/reflex-//' | sed 's/.zip//')
+              find binaries -type f -name "rfx.exe" -exec mv {} "binaries/rfx-${platform}.exe" \;
+              # Clean up extracted directories
+              find binaries -mindepth 1 -type d -exec rm -rf {} + 2>/dev/null || true
+            fi
+          done
+
+          # Move extracted binaries to artifacts root
+          mv binaries/* .
+          rmdir binaries
+
+          # Remove archive files (we only want raw binaries + installers in the release)
+          rm -f *.tar.xz *.tar.gz *.zip
+
+          # List what we're uploading
+          echo "Files to be uploaded to release:"
+          ls -lh rfx* *installer* || true
       - name: Create GitHub Release
         env:
           PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"
