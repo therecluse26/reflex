@@ -149,6 +149,11 @@ impl OutputFormatter {
             self.print_result(result, pattern, is_last_overall)?;
         }
 
+        // Add spacing between file groups (but not after the last file)
+        if !is_last_file {
+            println!();
+        }
+
         Ok(())
     }
 
@@ -157,7 +162,7 @@ impl OutputFormatter {
         if self.use_colors {
             // Colorized header with file icon
             println!(
-                "{} {} {}",
+                "  {} {} {}",
                 "📁".bright_blue(),
                 file_path.bright_cyan().bold(),
                 format!("({} {})", count, if count == 1 { "match" } else { "matches" })
@@ -166,7 +171,7 @@ impl OutputFormatter {
         } else {
             // Plain text header
             println!(
-                "{} ({} {})",
+                "  {} ({} {})",
                 file_path,
                 count,
                 if count == 1 { "match" } else { "matches" }
@@ -178,9 +183,6 @@ impl OutputFormatter {
 
     /// Print a single search result
     fn print_result(&self, result: &SearchResult, pattern: &str, is_last: bool) -> Result<()> {
-        let connector = if is_last { "└─" } else { "├─" };
-        let continuation = if is_last { "  " } else { "│ " };
-
         // Format line number (right-aligned to 4 digits)
         let line_no = format!("{:>4}", result.span.start_line);
 
@@ -189,46 +191,43 @@ impl OutputFormatter {
 
         // Print the line with result
         if self.use_colors {
+            // Line number and symbol badge
             println!(
-                "  {} {} {} {}",
-                connector.dimmed(),
+                "    {} {}",
                 line_no.yellow(),
-                "│".dimmed(),
                 symbol_badge
             );
 
-            // Print code preview with syntax highlighting
+            // Print code preview with syntax highlighting (indented)
             let highlighted = self.highlight_code(&result.preview, &result.lang, pattern);
-            println!("  {}   {} {}", continuation.dimmed(), "│".dimmed(), highlighted);
+            println!("        {}", highlighted);
 
-            // Print scope if available
+            // Print scope if available (indented)
             if let Some(scope) = &result.scope {
                 println!(
-                    "  {}   {} {}",
-                    continuation.dimmed(),
-                    "└─".dimmed(),
+                    "        {}",
                     format!("in {}", scope).dimmed().italic()
                 );
             }
 
-            // Add full-width separator line between ALL results (except for the very last one)
+            // Add separator line between results (except for the very last one)
             if !is_last {
-                let separator_width = self.terminal_width.saturating_sub(0) as usize;
-                println!("{}", "─".repeat(separator_width).truecolor(60, 60, 60));
+                let separator_width = self.terminal_width.saturating_sub(2) as usize;
+                println!("  {}", "─".repeat(separator_width).truecolor(60, 60, 60));
             }
-        } else{
+        } else {
             // Plain text output
-            println!("  {} {} | {}", connector, line_no, symbol_badge);
-            println!("  {}   | {}", continuation, result.preview);
+            println!("    {} {}", line_no, symbol_badge);
+            println!("        {}", result.preview);
 
             if let Some(scope) = &result.scope {
-                println!("  {}   └─ in {}", continuation, scope);
+                println!("        in {}", scope);
             }
 
-            // Add full-width separator line between ALL results (except for the very last one)
+            // Add separator line between results (except for the very last one)
             if !is_last {
-                let separator_width = self.terminal_width.saturating_sub(0) as usize;
-                println!("{}", "─".repeat(separator_width));
+                let separator_width = self.terminal_width.saturating_sub(2) as usize;
+                println!("  {}", "─".repeat(separator_width));
             }
         }
 
@@ -341,9 +340,16 @@ mod tests {
 
     #[test]
     fn test_formatter_creation() {
+        // Set NO_COLOR to ensure deterministic test behavior regardless of TTY
+        unsafe {
+            std::env::set_var("NO_COLOR", "1");
+        }
         let formatter = OutputFormatter::new(false);
-        // In tests, stdout is not a TTY, so colors should be disabled
+        // With NO_COLOR set, colors should always be disabled
         assert!(!formatter.use_colors);
+        unsafe {
+            std::env::remove_var("NO_COLOR");
+        }
     }
 
     #[test]
