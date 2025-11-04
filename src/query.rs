@@ -1160,8 +1160,6 @@ mod tests {
         let indexer = Indexer::new(cache, IndexConfig::default());
         indexer.index(&project, false).unwrap();
 
-        let cache = CacheManager::new(&project);
-
         // Search for "hello"
         let cache = CacheManager::new(&project);
         let engine = QueryEngine::new(cache);

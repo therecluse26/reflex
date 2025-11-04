@@ -302,7 +302,8 @@ test "basic addition" {
             .filter(|s| s.symbol.as_deref().unwrap_or("").contains("basic addition"))
             .collect();
 
-        assert!(test_symbols.len() >= 0);
+        // Test verifies parsing succeeds without panic
+        let _ = test_symbols; // Suppress unused variable warning
     }
 
     #[test]

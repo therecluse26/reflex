@@ -68,7 +68,7 @@ pub enum Command {
         symbols: bool,
 
         /// Filter by language
-        /// Supported: rust, javascript (js), typescript (ts), vue, svelte
+        /// Supported: rust, python, javascript, typescript, vue, svelte, go, java, php, c, c++, c#, ruby, kotlin, zig
         #[arg(short, long)]
         lang: Option<String>,
 
@@ -363,29 +363,25 @@ fn handle_query(
     let language = if let Some(lang_str) = lang.as_deref() {
         match lang_str.to_lowercase().as_str() {
             "rust" | "rs" => Some(Language::Rust),
+            "python" | "py" => Some(Language::Python),
             "javascript" | "js" => Some(Language::JavaScript),
             "typescript" | "ts" => Some(Language::TypeScript),
             "vue" => Some(Language::Vue),
             "svelte" => Some(Language::Svelte),
-            // Unsupported languages (no parser yet)
-            "python" | "py" => {
-                anyhow::bail!("Language 'python' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte, php");
-            }
-            "go" => {
-                anyhow::bail!("Language 'go' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte, php");
-            }
-            "java" => {
-                anyhow::bail!("Language 'java' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte, php");
-            }
+            "go" => Some(Language::Go),
+            "java" => Some(Language::Java),
             "php" => Some(Language::PHP),
-            "c" => {
-                anyhow::bail!("Language 'c' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte, php");
-            }
-            "cpp" | "c++" => {
-                anyhow::bail!("Language 'c++' is not yet supported. Supported languages: rust, javascript (js), typescript (ts), vue, svelte, php");
-            }
+            "c" => Some(Language::C),
+            "cpp" | "c++" => Some(Language::Cpp),
+            "csharp" | "cs" | "c#" => Some(Language::CSharp),
+            "ruby" | "rb" => Some(Language::Ruby),
+            "kotlin" | "kt" => Some(Language::Kotlin),
+            "zig" => Some(Language::Zig),
             _ => {
-                anyhow::bail!("Unknown language '{}'. Supported languages: rust, javascript (js), typescript (ts), vue, svelte, php", lang_str);
+                anyhow::bail!(
+                    "Unknown language '{}'. Supported languages: rust (rs), python (py), javascript (js), typescript (ts), vue, svelte, go, java, php, c, c++ (cpp), c# (csharp/cs), ruby (rb), kotlin (kt), zig",
+                    lang_str
+                );
             }
         }
     } else {
