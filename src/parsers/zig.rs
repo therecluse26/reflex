@@ -5,8 +5,8 @@
 //! - Structs
 //! - Enums
 //! - Unions
-//! - Constants
-//! - Variables
+//! - Constants (const - immutable, global and local)
+//! - Variables (var - mutable, global and local)
 //! - Test declarations
 //! - Error sets
 
@@ -37,6 +37,7 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_structs(source, &root_node, &language.into())?);
     symbols.extend(extract_enums(source, &root_node, &language.into())?);
     symbols.extend(extract_constants(source, &root_node, &language.into())?);
+    symbols.extend(extract_variables(source, &root_node, &language.into())?);
     symbols.extend(extract_tests(source, &root_node, &language.into())?);
 
     // Add file path to all symbols
@@ -101,7 +102,7 @@ fn extract_enums(
     extract_symbols(source, root, &query, SymbolKind::Enum, None)
 }
 
-/// Extract constant declarations
+/// Extract constant declarations (const - immutable bindings)
 fn extract_constants(
     source: &str,
     root: &tree_sitter::Node,
@@ -117,6 +118,24 @@ fn extract_constants(
         .context("Failed to create constant query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Constant, None)
+}
+
+/// Extract variable declarations (var - mutable bindings)
+fn extract_variables(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let query_str = r#"
+        (variable_declaration
+            "var"
+            (identifier) @name) @var
+    "#;
+
+    let query = Query::new(language, query_str)
+        .context("Failed to create variable query")?;
+
+    extract_symbols(source, root, &query, SymbolKind::Variable, None)
 }
 
 /// Extract test declarations
@@ -407,5 +426,58 @@ test "point creation" {
         assert!(kinds.contains(&&SymbolKind::Constant));
         assert!(kinds.contains(&&SymbolKind::Struct));
         assert!(kinds.contains(&&SymbolKind::Function));
+    }
+
+    #[test]
+    fn test_local_variables_included() {
+        let source = r#"
+const GLOBAL_CONST = 100;
+var globalVar: i32 = 50;
+
+pub fn calculate(input: i32) i32 {
+    const localConst = 10;
+    var localVar: i32 = input * 2;
+    localVar += localConst;
+    return localVar;
+}
+
+test "variable types" {
+    const testConst = 5;
+    var testVar: i32 = 0;
+    testVar = testConst * 2;
+    try std.testing.expect(testVar == 10);
+}
+        "#;
+
+        let symbols = parse("test.zig", source).unwrap();
+
+        // Filter to constants and variables
+        let constants: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Constant))
+            .collect();
+
+        let variables: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Variable))
+            .collect();
+
+        // Check that const declarations are captured (global and local)
+        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("GLOBAL_CONST")));
+        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("localConst")));
+        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("testConst")));
+
+        // Check that var declarations are captured (global and local)
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("globalVar")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("localVar")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("testVar")));
+
+        // Verify that both global and local variables have no scope
+        // (Zig doesn't have class-based scoping, all variables are treated equally)
+        for constant in &constants {
+            assert_eq!(constant.scope, None);
+        }
+
+        for variable in &variables {
+            assert_eq!(variable.scope, None);
+        }
     }
 }

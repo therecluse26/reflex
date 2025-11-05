@@ -10,6 +10,7 @@
 //! - Constructors/Destructors
 //! - Operators
 //! - Enums (enum and enum class)
+//! - Local variables (inside functions and methods)
 //! - Using declarations
 //! - Type aliases
 
@@ -42,6 +43,7 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_namespaces(source, &root_node, &language.into())?);
     symbols.extend(extract_enums(source, &root_node, &language.into())?);
     symbols.extend(extract_methods(source, &root_node, &language.into())?);
+    symbols.extend(extract_local_variables(source, &root_node, &language.into())?);
     symbols.extend(extract_type_aliases(source, &root_node, &language.into())?);
 
     // Add file path to all symbols
@@ -235,6 +237,76 @@ fn extract_methods(
                 Some(scope),
                 preview,
             ));
+        }
+    }
+
+    Ok(symbols)
+}
+
+/// Extract local variable declarations inside functions and methods
+fn extract_local_variables(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let query_str = r#"
+        (declaration
+            declarator: (init_declarator
+                declarator: (identifier) @name)) @var
+    "#;
+
+    let query = Query::new(language, query_str)
+        .context("Failed to create local variable query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut symbols = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut name = None;
+        let mut var_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "name" => {
+                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                }
+                "var" => {
+                    var_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        // Only extract variables that are inside function definitions (local variables)
+        if let (Some(name), Some(node)) = (name, var_node) {
+            let mut is_local_var = false;
+            let mut current = node;
+
+            while let Some(parent) = current.parent() {
+                if parent.kind() == "function_definition" {
+                    is_local_var = true;
+                    break;
+                }
+                current = parent;
+            }
+
+            if is_local_var {
+                let span = node_to_span(&node);
+                let preview = extract_preview(source, &span);
+
+                symbols.push(SearchResult::new(
+                    String::new(),
+                    Language::Cpp,
+                    SymbolKind::Variable,
+                    Some(name),
+                    span,
+                    None,  // No scope for local variables
+                    preview,
+                ));
+            }
         }
     }
 
@@ -670,5 +742,43 @@ public:
 
         assert_eq!(class_symbols.len(), 1);
         assert_eq!(class_symbols[0].symbol.as_deref(), Some("Complex"));
+    }
+
+    #[test]
+    fn test_local_variables_included() {
+        let source = r#"
+int calculate(int input) {
+    int localVar = input * 2;
+    auto result = localVar + 10;
+    return result;
+}
+
+class Calculator {
+public:
+    int compute(int value) {
+        int temp = value * 3;
+        auto final = temp + 5;
+        return final;
+    }
+};
+        "#;
+
+        let symbols = parse("test.cpp", source).unwrap();
+
+        // Filter to just variables
+        let variables: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Variable))
+            .collect();
+
+        // Check that local variables are captured
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("localVar")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("result")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("temp")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("final")));
+
+        // Verify that local variables have no scope
+        for var in variables {
+            assert_eq!(var.scope, None);
+        }
     }
 }

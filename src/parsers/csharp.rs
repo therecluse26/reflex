@@ -8,7 +8,8 @@
 //! - Delegates
 //! - Records (C# 9+)
 //! - Methods (with class scope, visibility)
-//! - Properties
+//! - Properties (class/struct/record members)
+//! - Local variables (inside methods)
 //! - Events
 //! - Namespaces
 //! - Constructors
@@ -45,6 +46,7 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_delegates(source, &root_node, &language.into())?);
     symbols.extend(extract_methods(source, &root_node, &language.into())?);
     symbols.extend(extract_properties(source, &root_node, &language.into())?);
+    symbols.extend(extract_local_variables(source, &root_node, &language.into())?);
 
     // Add file path to all symbols
     for symbol in &mut symbols {
@@ -381,6 +383,25 @@ fn extract_properties(
     Ok(symbols)
 }
 
+/// Extract local variable declarations inside methods
+fn extract_local_variables(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let query_str = r#"
+        (local_declaration_statement
+            (variable_declaration
+                (variable_declarator
+                    (identifier) @name))) @var
+    "#;
+
+    let query = Query::new(language, query_str)
+        .context("Failed to create local variable query")?;
+
+    extract_symbols(source, root, &query, SymbolKind::Variable, None)
+}
+
 /// Generic symbol extraction helper
 fn extract_symbols(
     source: &str,
@@ -696,5 +717,66 @@ namespace MyApp
         assert!(kinds.contains(&&SymbolKind::Class));
         assert!(kinds.contains(&&SymbolKind::Enum));
         assert!(kinds.contains(&&SymbolKind::Method));
+    }
+
+    #[test]
+    fn test_local_variables_included() {
+        let source = r#"
+public class Calculator
+{
+    public int Multiplier { get; set; } = 2;
+
+    public int Compute(int input)
+    {
+        int localVar = input * Multiplier;
+        var result = localVar + 10;
+        return result;
+    }
+}
+
+public class Helper
+{
+    public static string Format()
+    {
+        string message = "Hello";
+        var count = 5;
+        return message;
+    }
+}
+        "#;
+
+        let symbols = parse("test.cs", source).unwrap();
+
+        // Filter to just variables
+        let variables: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Variable))
+            .collect();
+
+        // Check that local variables are captured
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("localVar")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("result")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("message")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("count")));
+
+        // Check that class property is also captured
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("Multiplier")));
+
+        // Verify that local variables have no scope
+        let local_vars: Vec<_> = variables.iter()
+            .filter(|v| v.symbol.as_deref() == Some("localVar")
+                     || v.symbol.as_deref() == Some("result")
+                     || v.symbol.as_deref() == Some("message")
+                     || v.symbol.as_deref() == Some("count"))
+            .collect();
+
+        for var in local_vars {
+            assert_eq!(var.scope, None);
+        }
+
+        // Verify that class property has scope
+        let property = variables.iter()
+            .find(|v| v.symbol.as_deref() == Some("Multiplier"))
+            .unwrap();
+        assert_eq!(property.scope.as_ref().unwrap(), "class Calculator");
     }
 }

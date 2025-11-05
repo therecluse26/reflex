@@ -5,7 +5,8 @@
 //! - Objects (singleton)
 //! - Interfaces
 //! - Functions
-//! - Properties
+//! - Properties (class/object members)
+//! - Local variables (val/var inside functions)
 //! - Companion objects
 //! - Extensions
 
@@ -37,6 +38,7 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_interfaces(source, &root_node, &language.into())?);
     symbols.extend(extract_functions(source, &root_node, &language.into())?);
     symbols.extend(extract_properties(source, &root_node, &language.into())?);
+    symbols.extend(extract_local_variables(source, &root_node, &language.into())?);
 
     // Add file path to all symbols
     for symbol in &mut symbols {
@@ -259,6 +261,93 @@ fn extract_properties(
                 Some(scope),
                 preview,
             ));
+        }
+    }
+
+    Ok(symbols)
+}
+
+/// Extract local variable declarations (val/var) inside functions
+fn extract_local_variables(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let query_str = r#"
+        (property_declaration
+            (variable_declaration
+                (identifier) @name)) @var
+    "#;
+
+    let query = Query::new(language, query_str)
+        .context("Failed to create local variable query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut symbols = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut name = None;
+        let mut var_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "name" => {
+                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                }
+                "var" => {
+                    var_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        // Check if this variable declaration is inside a function_declaration
+        // (not inside a class_body or object_body, which would be properties)
+        if let (Some(name), Some(node)) = (name, var_node) {
+            let mut is_local_var = false;
+            let mut is_class_property = false;
+            let mut current = node;
+
+            while let Some(parent) = current.parent() {
+                // If we find a function_declaration, it's a local variable
+                if parent.kind() == "function_declaration" {
+                    is_local_var = true;
+                    break;
+                }
+                // If we find a class_body or object body before a function, it's a property
+                if parent.kind() == "class_body" {
+                    is_class_property = true;
+                    break;
+                }
+                current = parent;
+            }
+
+            // Only add if it's a local variable (inside function, not a class property)
+            if is_local_var && !is_class_property {
+                let span = node_to_span(&node);
+                let preview = extract_preview(source, &span);
+
+                // Determine if it's val (constant) or var (variable)
+                let decl_text = node.utf8_text(source.as_bytes()).unwrap_or("");
+                let kind = if decl_text.trim_start().starts_with("val") {
+                    SymbolKind::Constant
+                } else {
+                    SymbolKind::Variable
+                };
+
+                symbols.push(SearchResult::new(
+                    String::new(),
+                    Language::Kotlin,
+                    kind,
+                    Some(name),
+                    span,
+                    None,  // No scope for local variables
+                    preview,
+                ));
+            }
         }
     }
 
@@ -553,5 +642,70 @@ data class User(val id: Int, val name: String) {
         let kinds: Vec<&SymbolKind> = symbols.iter().map(|s| &s.kind).collect();
         assert!(kinds.contains(&&SymbolKind::Class));
         assert!(kinds.contains(&&SymbolKind::Method));
+    }
+
+    #[test]
+    fn test_local_variables_included() {
+        let source = r#"
+class Calculator {
+    val multiplier: Int = 2
+
+    fun compute(input: Int): Int {
+        val localConst = 10
+        var localVar = input * multiplier
+        localVar += localConst
+        return localVar
+    }
+}
+
+fun topLevel(): String {
+    val result = "test"
+    var counter = 0
+    return result
+}
+        "#;
+
+        let symbols = parse("test.kt", source).unwrap();
+
+        // Filter to constants and variables
+        let constants: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Constant))
+            .collect();
+
+        let variables: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Variable))
+            .collect();
+
+        // Check that val local variables are captured as constants
+        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("localConst")));
+        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("result")));
+
+        // Check that var local variables are captured as variables
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("localVar")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("counter")));
+
+        // Check that class property is still captured
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("multiplier")));
+
+        // Verify that local variables have no scope
+        for constant in &constants {
+            if constant.symbol.as_deref() == Some("localConst")
+                || constant.symbol.as_deref() == Some("result") {
+                assert_eq!(constant.scope, None);
+            }
+        }
+
+        for variable in &variables {
+            if variable.symbol.as_deref() == Some("localVar")
+                || variable.symbol.as_deref() == Some("counter") {
+                assert_eq!(variable.scope, None);
+            }
+        }
+
+        // Verify that class property has scope
+        let multiplier = variables.iter()
+            .find(|v| v.symbol.as_deref() == Some("multiplier"))
+            .unwrap();
+        assert_eq!(multiplier.scope.as_ref().unwrap(), "class Calculator");
     }
 }

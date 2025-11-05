@@ -48,8 +48,14 @@ Reflex uses **trigram-based indexing** to enable sub-100ms full-text search acro
     → Finds function definition + all call sites (11 total)
 
     # Filter to symbol definitions only (uses runtime tree-sitter parsing)
+    # --symbols finds DEFINITIONS (where symbols are declared), not usages
+    # Includes all scopes: global, local, function parameters, etc.
     rfx query "extract_symbols" --symbols
     → Finds only the function definition (1 result)
+
+    rfx query "counter" --symbols
+    → Finds variable declarations (global `var counter` and local `int counter = 0`)
+    → Does NOT find usage sites like `counter++` or `return counter`
 
     # Full-text search with language filter
     rfx query "unwrap" --lang rust
@@ -91,22 +97,22 @@ Reflex currently supports symbol extraction for the following languages and fram
 
 | Language/Framework | Extensions | Symbol Extraction | Notes |
 |-------------------|------------|------------------|-------|
-| **Rust** | `.rs` | Functions, structs, enums, traits, impls, modules, methods, constants, type aliases | Complete Rust support |
-| **Python** | `.py` | Functions, classes, methods, constants, lambdas, decorators | Full Python support including async/await |
-| **TypeScript** | `.ts`, `.tsx`, `.mts`, `.cts` | Functions, classes, interfaces, types, enums, methods | Full TypeScript + JSX support |
-| **JavaScript** | `.js`, `.jsx`, `.mjs`, `.cjs` | Functions, classes, constants, methods | Includes React/JSX support via TSX grammar |
-| **Go** | `.go` | Functions, structs, interfaces, methods, constants, variables, packages | Full Go support |
-| **Java** | `.java` | Classes, interfaces, enums, methods, fields, constructors, annotations | Full Java support including generics |
-| **C** | `.c`, `.h` | Functions, structs, enums, unions, typedefs, global variables, macros | Complete C support |
-| **C++** | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.C`, `.H` | Functions, classes, structs, namespaces, templates, methods, type aliases | Full C++ support including templates |
-| **C#** | `.cs` | Classes, interfaces, structs, enums, records, delegates, methods, properties, namespaces | Full C# support (C# 1-13) |
-| **PHP** | `.php` | Functions, classes, interfaces, traits, methods, properties, constants, namespaces, enums | Full PHP support including PHP 8.1+ enums |
-| **Ruby** | `.rb`, `.rake`, `.gemspec` | Classes, modules, methods, singleton methods, constants, blocks | Full Ruby support including Rails patterns |
-| **Kotlin** | `.kt`, `.kts` | Classes, objects, interfaces, functions, properties, data classes, sealed classes | Full Kotlin support including Android development |
-| **Zig** | `.zig` | Functions, structs, enums, constants, variables, tests, error sets | Full Zig support |
+| **Rust** | `.rs` | Functions, structs, enums, traits, impls, modules, methods, constants, local variables (let bindings), type aliases | Complete Rust support |
+| **Python** | `.py` | Functions, classes, methods, constants, local variables, lambdas, decorators | Full Python support including async/await |
+| **TypeScript** | `.ts`, `.tsx`, `.mts`, `.cts` | Functions, classes, interfaces, types, enums, methods, local variables (const, let, var) | Full TypeScript + JSX support |
+| **JavaScript** | `.js`, `.jsx`, `.mjs`, `.cjs` | Functions, classes, constants, methods, local variables (const, let, var) | Includes React/JSX support via TSX grammar |
+| **Go** | `.go` | Functions, structs, interfaces, methods, constants, variables (global + local var/`:=`), packages | Full Go support |
+| **Java** | `.java` | Classes, interfaces, enums, methods, fields, local variables, constructors, annotations | Full Java support including generics |
+| **C** | `.c`, `.h` | Functions, structs, enums, unions, typedefs, variables (global + local), macros | Complete C support |
+| **C++** | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.C`, `.H` | Functions, classes, structs, namespaces, templates, methods, local variables, type aliases | Full C++ support including templates |
+| **C#** | `.cs` | Classes, interfaces, structs, enums, records, delegates, methods, properties, local variables, namespaces | Full C# support (C# 1-13) |
+| **PHP** | `.php` | Functions, classes, interfaces, traits, methods, properties, constants, local variables, namespaces, enums | Full PHP support including PHP 8.1+ enums |
+| **Ruby** | `.rb`, `.rake`, `.gemspec` | Classes, modules, methods, singleton methods, constants, local variables, blocks | Full Ruby support including Rails patterns |
+| **Kotlin** | `.kt`, `.kts` | Classes, objects, interfaces, functions, properties, local variables (val/var), data classes, sealed classes | Full Kotlin support including Android development |
+| **Zig** | `.zig` | Functions, structs, enums, constants, variables (global + local var/const), tests, error sets | Full Zig support |
 | **~~Swift~~** | `.swift` | ~~Classes, structs, enums, protocols, functions, extensions, properties, actors~~ | **Temporarily disabled** - requires tree-sitter 0.23 (Reflex uses 0.24) |
-| **Vue** | `.vue` | Functions, constants, methods from `<script>` blocks | Supports both Options API and Composition API |
-| **Svelte** | `.svelte` | Functions, variables, reactive declarations (`$:`), module context | Full Svelte component support |
+| **Vue** | `.vue` | Functions, constants, local variables (const, let, var), methods from `<script>` blocks | Supports both Options API and Composition API |
+| **Svelte** | `.svelte` | Functions, constants, local variables (const, let, var), reactive declarations (`$:`), module context | Full Svelte component support |
 
 ### React/JSX Support Details
 - **React Components**: Function and class components automatically detected

@@ -6,6 +6,7 @@
 //! - Methods (regular, async, static, class methods, properties)
 //! - Decorators (tracked in scope)
 //! - Lambda expressions assigned to variables
+//! - Local variables (inside functions)
 //! - Constants (module-level uppercase variables)
 //! - Imports/Exports
 
@@ -36,6 +37,7 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_classes(source, &root_node, &language.into())?);
     symbols.extend(extract_methods(source, &root_node, &language.into())?);
     symbols.extend(extract_constants(source, &root_node, &language.into())?);
+    symbols.extend(extract_local_variables(source, &root_node, &language.into())?);
     symbols.extend(extract_lambdas(source, &root_node, &language.into())?);
 
     // Add file path to all symbols
@@ -215,6 +217,83 @@ fn extract_constants(
                 None,
                 preview,
             ));
+        }
+    }
+
+    Ok(symbols)
+}
+
+/// Extract local variable assignments inside functions
+fn extract_local_variables(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let query_str = r#"
+        (assignment
+            left: (identifier) @name) @assignment
+    "#;
+
+    let query = Query::new(language, query_str)
+        .context("Failed to create local variable query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut symbols = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut name = None;
+        let mut assignment_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "name" => {
+                    let name_text = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
+                    // Skip uppercase constants (handled by extract_constants)
+                    if !name_text.chars().all(|c| c.is_uppercase() || c == '_' || c.is_numeric()) {
+                        name = Some(name_text.to_string());
+                    }
+                }
+                "assignment" => {
+                    assignment_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        // Check if this assignment is inside a function definition
+        if let (Some(name), Some(node)) = (name, assignment_node) {
+            let mut is_in_function = false;
+            let mut current = node;
+
+            while let Some(parent) = current.parent() {
+                if parent.kind() == "function_definition" {
+                    is_in_function = true;
+                    break;
+                }
+                // Stop if we hit module level
+                if parent.kind() == "module" {
+                    break;
+                }
+                current = parent;
+            }
+
+            if is_in_function {
+                let span = node_to_span(&node);
+                let preview = extract_preview(source, &span);
+
+                symbols.push(SearchResult::new(
+                    String::new(),
+                    Language::Python,
+                    SymbolKind::Variable,
+                    Some(name),
+                    span,
+                    None,  // No scope for local variables
+                    preview,
+                ));
+            }
         }
     }
 
@@ -540,5 +619,39 @@ class Outer:
         assert_eq!(class_symbols.len(), 2);
         assert!(class_symbols.iter().any(|s| s.symbol.as_deref() == Some("Outer")));
         assert!(class_symbols.iter().any(|s| s.symbol.as_deref() == Some("Inner")));
+    }
+
+    #[test]
+    fn test_local_variables_included() {
+        let source = r#"
+def calculate(input):
+    local_var = input * 2
+    result = local_var + 10
+    return result
+
+class Calculator:
+    def compute(self, value):
+        temp = value * 3
+        final = temp + 5
+        return final
+        "#;
+
+        let symbols = parse("test.py", source).unwrap();
+
+        // Filter to just variables
+        let variables: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Variable))
+            .collect();
+
+        // Check that local variables are captured
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("local_var")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("result")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("temp")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("final")));
+
+        // Verify that local variables have no scope
+        for var in variables {
+            assert_eq!(var.scope, None);
+        }
     }
 }

@@ -8,6 +8,7 @@
 //! - Impl blocks
 //! - Constants
 //! - Static variables
+//! - Local variables (let bindings)
 //! - Modules
 //! - Type aliases
 //! - Macros
@@ -41,6 +42,7 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_traits(source, &root_node)?);
     symbols.extend(extract_impls(source, &root_node)?);
     symbols.extend(extract_constants(source, &root_node)?);
+    symbols.extend(extract_local_variables(source, &root_node)?);
     symbols.extend(extract_modules(source, &root_node)?);
     symbols.extend(extract_type_aliases(source, &root_node)?);
 
@@ -189,6 +191,20 @@ fn extract_constants(source: &str, root: &tree_sitter::Node) -> Result<Vec<Searc
         .context("Failed to create const query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Constant, None)
+}
+
+/// Extract local variable bindings (let statements)
+fn extract_local_variables(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchResult>> {
+    let language = tree_sitter_rust::LANGUAGE;
+    let query_str = r#"
+        (let_declaration
+            pattern: (identifier) @name) @let
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create let declaration query")?;
+
+    extract_symbols(source, root, &query, SymbolKind::Variable, None)
 }
 
 /// Extract module declarations
@@ -413,5 +429,45 @@ mod tests {
         assert!(kinds.contains(&&SymbolKind::Constant));
         assert!(kinds.contains(&&SymbolKind::Struct));
         assert!(kinds.contains(&&SymbolKind::Function));
+    }
+
+    #[test]
+    fn test_local_variables_included() {
+        let source = r#"
+            fn calculate(input: i32) -> i32 {
+                let local_var = input * 2;
+                let result = local_var + 10;
+                result
+            }
+
+            struct Calculator;
+
+            impl Calculator {
+                fn compute(&self, value: i32) -> i32 {
+                    let temp = value * 3;
+                    let mut final_value = temp + 5;
+                    final_value += 1;
+                    final_value
+                }
+            }
+        "#;
+
+        let symbols = parse("test.rs", source).unwrap();
+
+        // Filter to just variables
+        let variables: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Variable))
+            .collect();
+
+        // Check that local variables are captured
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("local_var")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("result")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("temp")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("final_value")));
+
+        // Verify that local variables have no scope
+        for var in variables {
+            assert_eq!(var.scope, None);
+        }
     }
 }

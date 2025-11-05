@@ -6,6 +6,7 @@
 //! - Methods (instance and class methods)
 //! - Singleton methods
 //! - Constants
+//! - Local variables (inside methods)
 //! - Attr readers/writers/accessors
 //! - Blocks (lambda, proc)
 
@@ -37,6 +38,7 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_methods(source, &root_node, &language.into())?);
     symbols.extend(extract_singleton_methods(source, &root_node, &language.into())?);
     symbols.extend(extract_constants(source, &root_node, &language.into())?);
+    symbols.extend(extract_local_variables(source, &root_node, &language.into())?);
 
     // Add file path to all symbols
     for symbol in &mut symbols {
@@ -240,6 +242,79 @@ fn extract_constants(
         .context("Failed to create constant query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Constant, None)
+}
+
+/// Extract local variables (inside methods)
+fn extract_local_variables(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let query_str = r#"
+        (assignment
+            left: (identifier) @name) @assignment
+    "#;
+
+    let query = Query::new(language, query_str)
+        .context("Failed to create local variable query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut symbols = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut name = None;
+        let mut assignment_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "name" => {
+                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                }
+                "assignment" => {
+                    assignment_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(name), Some(node)) = (name, assignment_node) {
+            // Check if this assignment is inside a method
+            let mut is_in_method = false;
+            let mut current = node;
+
+            while let Some(parent) = current.parent() {
+                if parent.kind() == "method" || parent.kind() == "singleton_method" {
+                    is_in_method = true;
+                    break;
+                }
+                // Stop at program/module/class level
+                if parent.kind() == "program" || parent.kind() == "module" || parent.kind() == "class" {
+                    break;
+                }
+                current = parent;
+            }
+
+            if is_in_method {
+                let span = node_to_span(&node);
+                let preview = extract_preview(source, &span);
+
+                symbols.push(SearchResult::new(
+                    String::new(),
+                    Language::Ruby,
+                    SymbolKind::Variable,
+                    Some(name),
+                    span,
+                    None,
+                    preview,
+                ));
+            }
+        }
+    }
+
+    Ok(symbols)
 }
 
 /// Generic symbol extraction helper
@@ -519,5 +594,53 @@ end
         assert!(kinds.contains(&&SymbolKind::Module));
         assert!(kinds.contains(&&SymbolKind::Class));
         assert!(kinds.contains(&&SymbolKind::Method));
+    }
+
+    #[test]
+    fn test_local_variables_included() {
+        let source = r#"
+GLOBAL_CONSTANT = 100
+
+class Calculator
+  def calculate(input)
+    local_var = input * 2
+    result = local_var + 10
+    temp = result / 2
+    temp
+  end
+
+  def self.process(value)
+    squared = value * value
+    doubled = squared * 2
+    doubled
+  end
+end
+        "#;
+
+        let symbols = parse("test.rb", source).unwrap();
+
+        // Filter to just variables
+        let variables: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Variable))
+            .collect();
+
+        // Check that local variables are captured
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("local_var")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("result")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("temp")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("squared")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("doubled")));
+
+        // Verify that local variables have no scope
+        for var in variables {
+            assert_eq!(var.scope, None);
+        }
+
+        // Verify that GLOBAL_CONSTANT is not included as a variable
+        let var_names: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Variable))
+            .filter_map(|s| s.symbol.as_deref())
+            .collect();
+        assert!(!var_names.contains(&"GLOBAL_CONSTANT"));
     }
 }

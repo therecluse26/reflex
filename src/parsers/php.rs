@@ -7,6 +7,7 @@
 //! - Traits
 //! - Methods (with class/trait scope)
 //! - Properties (public, protected, private)
+//! - Local variables ($var inside functions)
 //! - Constants (class and global)
 //! - Namespaces
 //! - Enums (PHP 8.1+)
@@ -40,6 +41,7 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_traits(source, &root_node, &language.into())?);
     symbols.extend(extract_methods(source, &root_node, &language.into())?);
     symbols.extend(extract_properties(source, &root_node, &language.into())?);
+    symbols.extend(extract_local_variables(source, &root_node, &language.into())?);
     symbols.extend(extract_constants(source, &root_node, &language.into())?);
     symbols.extend(extract_namespaces(source, &root_node, &language.into())?);
     symbols.extend(extract_enums(source, &root_node, &language.into())?);
@@ -291,6 +293,65 @@ fn extract_properties(
                 Some(prop_name),
                 span,
                 Some(scope),
+                preview,
+            ));
+        }
+    }
+
+    Ok(symbols)
+}
+
+/// Extract local variable assignments inside functions
+fn extract_local_variables(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let query_str = r#"
+        (assignment_expression
+            left: (variable_name
+                (name) @name)) @assignment
+    "#;
+
+    let query = Query::new(language, query_str)
+        .context("Failed to create local variable query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut symbols = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut name = None;
+        let mut assignment_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "name" => {
+                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                }
+                "assignment" => {
+                    assignment_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        // Accept all variable assignments (global, local in functions, local in methods)
+        // Note: Property declarations are handled separately by extract_properties()
+        // and use different syntax (property_declaration), so they won't match this query
+        if let (Some(name), Some(node)) = (name, assignment_node) {
+            let span = node_to_span(&node);
+            let preview = extract_preview(source, &span);
+
+            symbols.push(SearchResult::new(
+                String::new(),
+                Language::PHP,
+                SymbolKind::Variable,
+                Some(name),
+                span,
+                None,  // No scope for local variables or global variables
                 preview,
             ));
         }
@@ -679,5 +740,66 @@ mod tests {
         assert!(kinds.contains(&&SymbolKind::Variable));
         assert!(kinds.contains(&&SymbolKind::Constant));
         assert!(kinds.contains(&&SymbolKind::Function));
+    }
+
+    #[test]
+    fn test_local_variables_included() {
+        let source = r#"
+            <?php
+            $global_count = 100;
+
+            function calculate() {
+                $local_count = 50;
+                $result = $local_count + 10;
+                return $result;
+            }
+
+            class Math {
+                private $value = 5;
+
+                public function compute() {
+                    $temp = $this->value * 2;
+                    return $temp;
+                }
+            }
+        "#;
+
+        let symbols = parse("test.php", source).unwrap();
+
+        // Filter to just variables (both global assignment, local vars, and class properties)
+        let variables: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Variable))
+            .collect();
+
+        // Should find: global_count (global), value (property), local_count, result, temp
+        assert_eq!(variables.len(), 5);
+
+        // Check that local variables inside functions are captured
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("local_count")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("result")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("temp")));
+
+        // Check that global assignment is captured
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("global_count")));
+
+        // Check that class property is captured
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("value")));
+
+        // Verify that local variables have no scope
+        let local_vars: Vec<_> = variables.iter()
+            .filter(|v| v.symbol.as_deref() == Some("local_count")
+                     || v.symbol.as_deref() == Some("result")
+                     || v.symbol.as_deref() == Some("temp"))
+            .collect();
+
+        for var in local_vars {
+            assert_eq!(var.scope, None);
+        }
+
+        // Verify that class property has scope
+        let property = variables.iter()
+            .find(|v| v.symbol.as_deref() == Some("value"))
+            .unwrap();
+        assert_eq!(property.scope.as_ref().unwrap(), "class Math");
     }
 }

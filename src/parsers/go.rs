@@ -5,7 +5,7 @@
 //! - Types (struct, interface)
 //! - Methods (with receiver type)
 //! - Constants (const declarations and blocks)
-//! - Variables (package-level var)
+//! - Variables (var declarations and short declarations with :=)
 //! - Packages/Imports
 
 use anyhow::{Context, Result};
@@ -185,16 +185,19 @@ fn extract_constants(
     extract_symbols(source, root, &query, SymbolKind::Constant, None)
 }
 
-/// Extract package-level variable declarations
+/// Extract variable declarations (var and := short declarations)
 fn extract_variables(
     source: &str,
     root: &tree_sitter::Node,
     language: &tree_sitter::Language,
 ) -> Result<Vec<SearchResult>> {
-    // Match var_spec directly to capture all variables in both single and block declarations
+    // Match both var_spec and short_var_declaration to capture all variable declarations
     let query_str = r#"
         (var_spec
-            name: (identifier) @name)
+            name: (identifier) @name) @var
+
+        (short_var_declaration
+            left: (expression_list (identifier) @name)) @short_var
     "#;
 
     let query = Query::new(language, query_str)
@@ -204,44 +207,37 @@ fn extract_variables(
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
 
     let mut symbols = Vec::new();
-    let mut seen_vars = std::collections::HashSet::new();
 
     while let Some(match_) = matches.next() {
+        let mut name = None;
+        let mut decl_node = None;
+
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
-            if capture_name == "name" {
-                let name = capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-                // Only add unique variable names (var blocks can have duplicates)
-                if !seen_vars.contains(&name) {
-                    seen_vars.insert(name.clone());
-
-                    // Find the var_declaration node (walk up from var_spec)
-                    let mut current = capture.node;
-                    let mut var_node = None;
-                    while let Some(parent) = current.parent() {
-                        if parent.kind() == "var_declaration" {
-                            var_node = Some(parent);
-                            break;
-                        }
-                        current = parent;
-                    }
-
-                    if let Some(node) = var_node {
-                        let span = node_to_span(&node);
-                        let preview = extract_preview(source, &span);
-
-                        symbols.push(SearchResult::new(
-                            String::new(),
-                            Language::Go,
-                            SymbolKind::Variable,
-                            Some(name),
-                            span,
-                            None,
-                            preview,
-                        ));
-                    }
+            match capture_name {
+                "name" => {
+                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
                 }
+                "var" | "short_var" => {
+                    decl_node = Some(capture.node);
+                }
+                _ => {}
             }
+        }
+
+        if let (Some(name), Some(node)) = (name, decl_node) {
+            let span = node_to_span(&node);
+            let preview = extract_preview(source, &span);
+
+            symbols.push(SearchResult::new(
+                String::new(),
+                Language::Go,
+                SymbolKind::Variable,
+                Some(name),
+                span,
+                None,
+                preview,
+            ));
         }
     }
 
@@ -583,5 +579,32 @@ type ReadWriter interface {
         assert!(interface_symbols.iter().any(|s| s.symbol.as_deref() == Some("Reader")));
         assert!(interface_symbols.iter().any(|s| s.symbol.as_deref() == Some("Writer")));
         assert!(interface_symbols.iter().any(|s| s.symbol.as_deref() == Some("ReadWriter")));
+    }
+
+    #[test]
+    fn test_local_variables_included() {
+        let source = r#"
+package main
+
+var globalCount int = 10
+
+func calculate(x int) int {
+    localVar := x * 2
+    var anotherLocal int = 5
+    return localVar + anotherLocal
+}
+        "#;
+
+        let symbols = parse("test.go", source).unwrap();
+
+        let var_symbols: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Variable))
+            .collect();
+
+        // Should find globalCount, localVar (short declaration), and anotherLocal (var declaration)
+        assert_eq!(var_symbols.len(), 3);
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("globalCount")));
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("localVar")));
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("anotherLocal")));
     }
 }
