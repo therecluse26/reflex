@@ -120,6 +120,21 @@ pub enum Command {
         /// Use plain text output (disable colors and syntax highlighting)
         #[arg(long)]
         plain: bool,
+
+        /// Include files matching glob pattern (can be repeated)
+        /// Example: --glob "src/**/*.rs" --glob "tests/**/*.rs"
+        #[arg(short = 'g', long)]
+        glob: Vec<String>,
+
+        /// Exclude files matching glob pattern (can be repeated)
+        /// Example: --exclude "target/**" --exclude "*.gen.rs"
+        #[arg(short = 'x', long)]
+        exclude: Vec<String>,
+
+        /// Return only unique file paths (no line numbers or content)
+        /// Compatible with --json to output ["path1", "path2", ...]
+        #[arg(short = 'p', long)]
+        paths: bool,
     },
 
     /// Start a local HTTP API server
@@ -215,8 +230,8 @@ impl Cli {
             Command::Index { path, force, languages, quiet } => {
                 handle_index(path, force, languages, quiet)
             }
-            Command::Query { pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, count, timeout, plain } => {
-                handle_query(pattern, symbols, lang, kind, ast.as_deref(), regex, json, limit, expand, file, exact, count, timeout, plain)
+            Command::Query { pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, count, timeout, plain, glob, exclude, paths } => {
+                handle_query(pattern, symbols, lang, kind, ast.as_deref(), regex, json, limit, expand, file, exact, count, timeout, plain, glob, exclude, paths)
             }
             Command::Serve { port, host } => {
                 handle_serve(port, host)
@@ -353,6 +368,9 @@ fn handle_query(
     count_only: bool,
     timeout_secs: u64,
     plain: bool,
+    glob_patterns: Vec<String>,
+    exclude_patterns: Vec<String>,
+    paths_only: bool,
 ) -> Result<()> {
     log::info!("Starting query command");
 
@@ -453,6 +471,9 @@ fn handle_query(
         file_pattern,
         exact,
         timeout_secs,
+        glob_patterns,
+        exclude_patterns,
+        paths_only,
     };
 
     // Measure query time
@@ -482,25 +503,34 @@ fn handle_query(
     };
 
     if as_json {
-        // Reconstruct QueryResponse for JSON output
-        let (status, can_trust_results, warning) = if ast_pattern.is_some() {
-            // For AST queries, skip metadata checks for now
-            (crate::models::IndexStatus::Fresh, true, None)
+        if paths_only {
+            // Paths-only JSON mode: output array of unique file paths
+            let paths: Vec<String> = results.iter()
+                .map(|r| r.path.clone())
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&paths)?);
+            eprintln!("Found {} unique files in {}", paths.len(), timing_str);
         } else {
-            // Use cached status from search_with_metadata call above
-            let response = engine.search_with_metadata(&pattern, filter)?;
-            (response.status, response.can_trust_results, response.warning)
-        };
+            // Reconstruct QueryResponse for JSON output
+            let (status, can_trust_results, warning) = if ast_pattern.is_some() {
+                // For AST queries, skip metadata checks for now
+                (crate::models::IndexStatus::Fresh, true, None)
+            } else {
+                // Use cached status from search_with_metadata call above
+                let response = engine.search_with_metadata(&pattern, filter)?;
+                (response.status, response.can_trust_results, response.warning)
+            };
 
-        let response = crate::models::QueryResponse {
-            status,
-            can_trust_results,
-            warning,
-            results,
-        };
+            let response = crate::models::QueryResponse {
+                status,
+                can_trust_results,
+                warning,
+                results,
+            };
 
-        println!("{}", serde_json::to_string_pretty(&response)?);
-        eprintln!("Found {} results in {}", response.results.len(), timing_str);
+            println!("{}", serde_json::to_string_pretty(&response)?);
+            eprintln!("Found {} results in {}", response.results.len(), timing_str);
+        }
     } else {
         // Standard output with formatting
         if count_only {
@@ -508,16 +538,28 @@ fn handle_query(
             return Ok(());
         }
 
-        // Print summary line
-        if results.is_empty() {
-            println!("No results found (searched in {}).", timing_str);
+        if paths_only {
+            // Paths-only plain text mode: output one path per line
+            if results.is_empty() {
+                eprintln!("No results found (searched in {}).", timing_str);
+            } else {
+                for result in &results {
+                    println!("{}", result.path);
+                }
+                eprintln!("Found {} unique files in {}", results.len(), timing_str);
+            }
         } else {
-            println!("Found {} results in {}:\n", results.len(), timing_str);
-        }
+            // Print summary line
+            if results.is_empty() {
+                println!("No results found (searched in {}).", timing_str);
+            } else {
+                println!("Found {} results in {}:\n", results.len(), timing_str);
+            }
 
-        // Use formatter for pretty output
-        let formatter = crate::formatter::OutputFormatter::new(plain);
-        formatter.format_results(&results, &pattern)?;
+            // Use formatter for pretty output
+            let formatter = crate::formatter::OutputFormatter::new(plain);
+            formatter.format_results(&results, &pattern)?;
+        }
     }
 
     Ok(())
@@ -530,7 +572,7 @@ fn handle_serve(port: u16, host: String) -> Result<()> {
     println!("Starting Reflex HTTP server...");
     println!("  Address: http://{}:{}", host, port);
     println!("\nEndpoints:");
-    println!("  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&expand=true&file=<pattern>&timeout=<secs>");
+    println!("  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&expand=true&file=<pattern>&timeout=<secs>&glob=<pattern>&exclude=<pattern>&paths=true");
     println!("  GET  /stats");
     println!("  POST /index");
     println!("\nPress Ctrl+C to stop.");
@@ -582,6 +624,12 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         file: Option<String>,
         #[serde(default = "default_timeout")]
         timeout: u64,
+        #[serde(default)]
+        glob: Vec<String>,
+        #[serde(default)]
+        exclude: Vec<String>,
+        #[serde(default)]
+        paths: bool,
     }
 
     // Default timeout for HTTP queries (30 seconds)
@@ -665,6 +713,9 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             file_pattern: params.file,
             exact: params.exact,
             timeout_secs: params.timeout,
+            glob_patterns: params.glob,
+            exclude_patterns: params.exclude,
+            paths_only: params.paths,
         };
 
         match engine.search_with_metadata(&params.q, filter) {

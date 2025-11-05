@@ -138,6 +138,20 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         "expand": {
                             "type": "boolean",
                             "description": "Show full symbol body (not just signature)"
+                        },
+                        "glob": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Include files matching glob patterns (e.g., 'src/**/*.rs')"
+                        },
+                        "exclude": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Exclude files matching glob patterns (e.g., 'target/**')"
+                        },
+                        "paths": {
+                            "type": "boolean",
+                            "description": "Return only unique file paths (not full results)"
                         }
                     },
                     "required": ["pattern"]
@@ -164,6 +178,20 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         "limit": {
                             "type": "integer",
                             "description": "Maximum number of results"
+                        },
+                        "glob": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Include files matching glob patterns"
+                        },
+                        "exclude": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Exclude files matching glob patterns"
+                        },
+                        "paths": {
+                            "type": "boolean",
+                            "description": "Return only unique file paths"
                         }
                     },
                     "required": ["pattern"]
@@ -194,6 +222,20 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         "limit": {
                             "type": "integer",
                             "description": "Maximum number of results"
+                        },
+                        "glob": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Include files matching glob patterns"
+                        },
+                        "exclude": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Exclude files matching glob patterns"
+                        },
+                        "paths": {
+                            "type": "boolean",
+                            "description": "Return only unique file paths"
                         }
                     },
                     "required": ["pattern", "ast_pattern", "lang"]
@@ -245,6 +287,15 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let file = arguments["file"].as_str().map(|s| s.to_string());
             let limit = arguments["limit"].as_u64().map(|n| n as usize);
             let expand = arguments["expand"].as_bool();
+            let glob_patterns = arguments["glob"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            let exclude_patterns = arguments["exclude"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            let paths_only = arguments["paths"].as_bool().unwrap_or(false);
 
             let language = parse_language(lang);
             let parsed_kind = parse_symbol_kind(kind);
@@ -261,6 +312,9 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 file_pattern: file,
                 exact: exact.unwrap_or(false),
                 timeout_secs: 30, // Default 30 second timeout for MCP queries
+                glob_patterns,
+                exclude_patterns,
+                paths_only,
             };
 
             let cache = CacheManager::new(".");
@@ -283,6 +337,15 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let lang = arguments["lang"].as_str().map(|s| s.to_string());
             let file = arguments["file"].as_str().map(|s| s.to_string());
             let limit = arguments["limit"].as_u64().map(|n| n as usize);
+            let glob_patterns = arguments["glob"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            let exclude_patterns = arguments["exclude"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            let paths_only = arguments["paths"].as_bool().unwrap_or(false);
 
             let language = parse_language(lang);
 
@@ -297,6 +360,9 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 file_pattern: file,
                 exact: false,
                 timeout_secs: 30, // Default 30 second timeout for MCP queries
+                glob_patterns,
+                exclude_patterns,
+                paths_only,
             };
 
             let cache = CacheManager::new(".");
@@ -328,6 +394,15 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 
             let file = arguments["file"].as_str().map(|s| s.to_string());
             let limit = arguments["limit"].as_u64().map(|n| n as usize);
+            let glob_patterns = arguments["glob"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            let exclude_patterns = arguments["exclude"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            let paths_only = arguments["paths"].as_bool().unwrap_or(false);
 
             let language = parse_language(Some(lang_str))
                 .ok_or_else(|| anyhow::anyhow!("Invalid or unsupported language"))?;
@@ -343,6 +418,9 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 file_pattern: file,
                 exact: false,
                 timeout_secs: 30, // Default 30 second timeout for MCP queries
+                glob_patterns,
+                exclude_patterns,
+                paths_only,
             };
 
             let cache = CacheManager::new(".");

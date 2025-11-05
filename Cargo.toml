@@ -1,6 +1,6 @@
 [package]
 name = "reflex-search"
-version = "0.2.11"
+version = "0.2.12"
 edition = "2024"
 authors = ["Reflex Contributors"]
 description = "A local-first, structure-aware code search engine for AI agents"
@@ -73,6 +73,9 @@ notify = "6.1"
 # Ignore patterns
 ignore = "0.4"
 
+# Glob pattern matching
+globset = "0.4"
+
 # Date/time utilities
 chrono = "0.4"
 
@@ -96,6 +99,13 @@ path = "src/main.rs"
 [lib]
 name = "reflex"
 path = "src/lib.rs"
+
+# Optimized release profile for cargo install users
+[profile.release]
+lto = "thin"           # Enable link-time optimization for cross-file inlining
+opt-level = 3          # Maximum optimization level
+codegen-units = 1      # Single codegen unit for maximum optimization
+strip = true           # Remove debug symbols for smaller binary
 
 # The profile that 'dist' will build with
 [profile.dist]

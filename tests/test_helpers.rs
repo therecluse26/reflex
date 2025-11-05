@@ -167,3 +167,127 @@ pub fn assert_no_duplicates(results: &[SearchResult]) {
         );
     }
 }
+
+// ==================== Glob/Exclude/Paths Helper Functions ====================
+
+/// Assert all results match at least one of the glob patterns
+pub fn assert_all_match_glob(results: &[SearchResult], patterns: &[String]) {
+    use globset::{Glob, GlobSetBuilder};
+
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        builder.add(Glob::new(pattern).unwrap());
+    }
+    let matcher = builder.build().unwrap();
+
+    for result in results {
+        assert!(
+            matcher.is_match(&result.path),
+            "Result path '{}' does not match any glob pattern: {:?}",
+            result.path,
+            patterns
+        );
+    }
+}
+
+/// Assert no results match any of the exclude patterns
+pub fn assert_none_match_exclude(results: &[SearchResult], patterns: &[String]) {
+    use globset::{Glob, GlobSetBuilder};
+
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        builder.add(Glob::new(pattern).unwrap());
+    }
+    let matcher = builder.build().unwrap();
+
+    for result in results {
+        assert!(
+            !matcher.is_match(&result.path),
+            "Result path '{}' matches excluded pattern: {:?}",
+            result.path,
+            patterns
+        );
+    }
+}
+
+/// Assert all results are from paths containing the given substring
+pub fn assert_all_paths_contain(results: &[SearchResult], substring: &str) {
+    for result in results {
+        assert!(
+            result.path.contains(substring),
+            "Expected path to contain '{}', but got '{}'",
+            substring,
+            result.path
+        );
+    }
+}
+
+/// Assert no results are from paths containing the given substring
+pub fn assert_no_paths_contain(results: &[SearchResult], substring: &str) {
+    for result in results {
+        assert!(
+            !result.path.contains(substring),
+            "Expected path to not contain '{}', but got '{}'",
+            substring,
+            result.path
+        );
+    }
+}
+
+/// Assert all paths are unique (for paths-only mode)
+pub fn assert_all_paths_unique(results: &[SearchResult]) {
+    let files = unique_files(results);
+    assert_eq!(
+        results.len(),
+        files.len(),
+        "Expected all paths to be unique, but found {} results with only {} unique paths",
+        results.len(),
+        files.len()
+    );
+}
+
+/// Assert results contain paths from a specific directory
+pub fn assert_has_paths_from_dir(results: &[SearchResult], dir: &str) {
+    assert!(
+        results.iter().any(|r| r.path.contains(dir)),
+        "Expected at least one result from directory '{}', but found none",
+        dir
+    );
+}
+
+/// Assert results do not contain paths from a specific directory
+pub fn assert_no_paths_from_dir(results: &[SearchResult], dir: &str) {
+    assert!(
+        results.iter().all(|r| !r.path.contains(dir)),
+        "Expected no results from directory '{}', but found some",
+        dir
+    );
+}
+
+/// Assert all paths match a specific file extension
+pub fn assert_all_paths_extension(results: &[SearchResult], extension: &str) {
+    let ext = if extension.starts_with('.') {
+        extension.to_string()
+    } else {
+        format!(".{}", extension)
+    };
+
+    for result in results {
+        assert!(
+            result.path.ends_with(&ext),
+            "Expected path to end with '{}', but got '{}'",
+            ext,
+            result.path
+        );
+    }
+}
+
+/// Count results from a specific directory
+pub fn count_from_dir(results: &[SearchResult], dir: &str) -> usize {
+    results.iter().filter(|r| r.path.contains(dir)).count()
+}
+
+/// Count unique paths in results
+pub fn count_unique_paths(results: &[SearchResult]) -> usize {
+    unique_files(results).len()
+}
