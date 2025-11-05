@@ -57,7 +57,23 @@ Reflex uses **trigram-based indexing** to enable sub-100ms full-text search acro
     # Export results as JSON (for AI agents)
     rfx query "format!" --json
 
-    # Watch for file changes and auto-reindex (new!)
+    # Glob pattern filtering (include specific files/directories)
+    rfx query "TODO" --glob "src/**/*.rs"        # Search only Rust files in src/
+    rfx query "extract" --glob "**/*_test.rs"    # Search only test files
+
+    # Exclude pattern filtering (exclude files/directories)
+    rfx query "config" --exclude "target/**"     # Exclude build artifacts
+    rfx query "impl" --exclude "*.gen.rs"        # Exclude generated code
+
+    # Combine glob and exclude patterns
+    rfx query "fn main" --glob "src/**/*.rs" --exclude "src/generated/**"
+
+    # Paths-only mode (return unique file paths, not content)
+    rfx query "TODO" --paths                     # One path per line (plain text)
+    rfx query "extract" --paths --json           # JSON array of paths: ["file1.rs", "file2.rs"]
+    vim $(rfx query "TODO" --paths)              # Open all files with TODOs in vim
+
+    # Watch for file changes and auto-reindex
     rfx watch                    # 15s debounce (default)
     rfx watch --debounce 20000   # 20s debounce
     rfx watch --quiet            # Suppress output

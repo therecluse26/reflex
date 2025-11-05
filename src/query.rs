@@ -39,6 +39,12 @@ pub struct QueryFilter {
     pub exact: bool,
     /// Query timeout in seconds (0 = no timeout)
     pub timeout_secs: u64,
+    /// Glob patterns to include (empty = all files)
+    pub glob_patterns: Vec<String>,
+    /// Glob patterns to exclude (applied after includes)
+    pub exclude_patterns: Vec<String>,
+    /// Return only unique file paths (deduplicated)
+    pub paths_only: bool,
 }
 
 impl Default for QueryFilter {
@@ -54,6 +60,9 @@ impl Default for QueryFilter {
             file_pattern: None,
             exact: false,
             timeout_secs: 30, // 30 seconds default timeout
+            glob_patterns: Vec::new(),
+            exclude_patterns: Vec::new(),
+            paths_only: false,
         }
     }
 }
@@ -206,6 +215,78 @@ impl QueryEngine {
             results.retain(|r| r.path.contains(file_pattern));
         }
 
+        // Apply glob pattern filters
+        if !filter.glob_patterns.is_empty() || !filter.exclude_patterns.is_empty() {
+            use globset::{Glob, GlobSetBuilder};
+
+            // Build include matcher (if patterns specified)
+            let include_matcher = if !filter.glob_patterns.is_empty() {
+                let mut builder = GlobSetBuilder::new();
+                for pattern in &filter.glob_patterns {
+                    match Glob::new(pattern) {
+                        Ok(glob) => {
+                            builder.add(glob);
+                        }
+                        Err(e) => {
+                            log::warn!("Invalid glob pattern '{}': {}", pattern, e);
+                        }
+                    }
+                }
+                match builder.build() {
+                    Ok(matcher) => Some(matcher),
+                    Err(e) => {
+                        log::warn!("Failed to build glob matcher: {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            // Build exclude matcher (if patterns specified)
+            let exclude_matcher = if !filter.exclude_patterns.is_empty() {
+                let mut builder = GlobSetBuilder::new();
+                for pattern in &filter.exclude_patterns {
+                    match Glob::new(pattern) {
+                        Ok(glob) => {
+                            builder.add(glob);
+                        }
+                        Err(e) => {
+                            log::warn!("Invalid exclude pattern '{}': {}", pattern, e);
+                        }
+                    }
+                }
+                match builder.build() {
+                    Ok(matcher) => Some(matcher),
+                    Err(e) => {
+                        log::warn!("Failed to build exclude matcher: {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            // Apply filters
+            results.retain(|r| {
+                // If include patterns specified, path must match at least one
+                let included = if let Some(ref matcher) = include_matcher {
+                    matcher.is_match(&r.path)
+                } else {
+                    true // No include patterns = include all
+                };
+
+                // If exclude patterns specified, path must NOT match any
+                let excluded = if let Some(ref matcher) = exclude_matcher {
+                    matcher.is_match(&r.path)
+                } else {
+                    false // No exclude patterns = exclude none
+                };
+
+                included && !excluded
+            });
+        }
+
         // Apply exact name filter (only for symbol searches)
         if filter.exact && filter.symbols_mode {
             results.retain(|r| r.symbol.as_deref() == Some(pattern));
@@ -239,13 +320,20 @@ impl QueryEngine {
             }
         }
 
-        // Step 4: Sort results deterministically (by path, then line number)
+        // Step 4: Deduplicate by path if paths-only mode
+        if filter.paths_only {
+            use std::collections::HashSet;
+            let mut seen_paths = HashSet::new();
+            results.retain(|r| seen_paths.insert(r.path.clone()));
+        }
+
+        // Step 5: Sort results deterministically (by path, then line number)
         results.sort_by(|a, b| {
             a.path.cmp(&b.path)
                 .then_with(|| a.span.start_line.cmp(&b.span.start_line))
         });
 
-        // Step 5: Apply limit
+        // Step 6: Apply limit
         if let Some(limit) = filter.limit {
             results.truncate(limit);
         }
@@ -345,6 +433,41 @@ impl QueryEngine {
 
         if let Some(ref file_pattern) = filter.file_pattern {
             results.retain(|r| r.path.contains(file_pattern));
+        }
+
+        // Apply glob pattern filters (same logic as in search_internal)
+        if !filter.glob_patterns.is_empty() || !filter.exclude_patterns.is_empty() {
+            use globset::{Glob, GlobSetBuilder};
+
+            let include_matcher = if !filter.glob_patterns.is_empty() {
+                let mut builder = GlobSetBuilder::new();
+                for pattern in &filter.glob_patterns {
+                    if let Ok(glob) = Glob::new(pattern) {
+                        builder.add(glob);
+                    }
+                }
+                builder.build().ok()
+            } else {
+                None
+            };
+
+            let exclude_matcher = if !filter.exclude_patterns.is_empty() {
+                let mut builder = GlobSetBuilder::new();
+                for pattern in &filter.exclude_patterns {
+                    if let Ok(glob) = Glob::new(pattern) {
+                        builder.add(glob);
+                    }
+                }
+                builder.build().ok()
+            } else {
+                None
+            };
+
+            results.retain(|r| {
+                let included = include_matcher.as_ref().map_or(true, |m| m.is_match(&r.path));
+                let excluded = exclude_matcher.as_ref().map_or(false, |m| m.is_match(&r.path));
+                included && !excluded
+            });
         }
 
         if filter.exact && filter.symbols_mode {

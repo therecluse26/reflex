@@ -454,3 +454,593 @@ fn test_clear_and_rebuild_workflow() {
     let results = engine.search("test", filter).unwrap();
     assert!(results.len() >= 1);
 }
+
+// ==================== Glob Pattern Tests ====================
+
+#[test]
+fn test_glob_single_pattern() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create files in different directories
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("tests")).unwrap();
+
+    fs::write(project.join("src/main.rs"), "fn extract_pattern() {}").unwrap();
+    fs::write(project.join("tests/test.rs"), "fn extract_pattern() {}").unwrap();
+    fs::write(project.join("other.rs"), "fn extract_pattern() {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search with glob pattern matching only src/
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        glob_patterns: vec!["**/src/**/*.rs".to_string()],
+        ..Default::default()
+    };
+    let results = engine.search("extract_pattern", filter).unwrap();
+
+    // Should only find results in src/
+    assert!(results.len() >= 1);
+    assert!(results.iter().all(|r| r.path.contains("src/")));
+    assert!(results.iter().any(|r| r.path.contains("main.rs")));
+    assert!(!results.iter().any(|r| r.path.contains("tests/")));
+    assert!(!results.iter().any(|r| r.path.contains("other.rs")));
+}
+
+#[test]
+fn test_glob_multiple_patterns() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("examples")).unwrap();
+    fs::create_dir_all(project.join("build")).unwrap();
+
+    fs::write(project.join("src/lib.rs"), "TODO: implement").unwrap();
+    fs::write(project.join("examples/demo.rs"), "TODO: add example").unwrap();
+    fs::write(project.join("build/gen.rs"), "TODO: generated").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search with multiple glob patterns
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        glob_patterns: vec!["**/src/**".to_string(), "**/examples/**".to_string()],
+        ..Default::default()
+    };
+    let results = engine.search("TODO", filter).unwrap();
+
+    // Should find results in src/ and examples/ but not build/
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().any(|r| r.path.contains("src/lib.rs")));
+    assert!(results.iter().any(|r| r.path.contains("examples/demo.rs")));
+    assert!(!results.iter().any(|r| r.path.contains("build/")));
+}
+
+#[test]
+fn test_glob_wildcard_patterns() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::write(project.join("test_one.rs"), "fn test() {}").unwrap();
+    fs::write(project.join("test_two.rs"), "fn test() {}").unwrap();
+    fs::write(project.join("other.rs"), "fn test() {}").unwrap();
+    fs::write(project.join("main.py"), "def test(): pass").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search with wildcard pattern
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        glob_patterns: vec!["**/test_*.rs".to_string()],
+        ..Default::default()
+    };
+    let results = engine.search("test", filter).unwrap();
+
+    // Should only match test_*.rs files
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.path.contains("test_") && r.path.ends_with(".rs")));
+    assert!(!results.iter().any(|r| r.path.contains("other.rs")));
+    assert!(!results.iter().any(|r| r.path.contains("main.py")));
+}
+
+#[test]
+fn test_glob_specific_extension() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::write(project.join("main.rs"), "fn pattern() {}").unwrap();
+    fs::write(project.join("app.ts"), "function pattern() {}").unwrap();
+    fs::write(project.join("script.py"), "def pattern(): pass").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search for only .rs files
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        glob_patterns: vec!["**/*.rs".to_string()],
+        ..Default::default()
+    };
+    let results = engine.search("pattern", filter).unwrap();
+
+    // Should only find Rust files
+    assert_eq!(results.len(), 1);
+    assert!(results[0].path.ends_with(".rs"));
+}
+
+#[test]
+fn test_glob_specific_directory() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::create_dir_all(project.join("src/parsers")).unwrap();
+    fs::create_dir_all(project.join("src/utils")).unwrap();
+
+    fs::write(project.join("src/parsers/rust.rs"), "TODO: parse").unwrap();
+    fs::write(project.join("src/utils/helpers.rs"), "TODO: help").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search only in parsers directory
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        glob_patterns: vec!["**/src/parsers/**".to_string()],
+        ..Default::default()
+    };
+    let results = engine.search("TODO", filter).unwrap();
+
+    // Should only find results in parsers/
+    assert_eq!(results.len(), 1);
+    assert!(results[0].path.contains("parsers/rust.rs"));
+    assert!(!results.iter().any(|r| r.path.contains("utils/")));
+}
+
+// ==================== Exclude Pattern Tests ====================
+
+#[test]
+fn test_exclude_single_pattern() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("build")).unwrap();
+
+    fs::write(project.join("src/main.rs"), "fn extract_pattern() {}").unwrap();
+    fs::write(project.join("build/generated.rs"), "fn extract_pattern() {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search with exclude pattern
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        exclude_patterns: vec!["**/build/**".to_string()],
+        ..Default::default()
+    };
+    let results = engine.search("extract_pattern", filter).unwrap();
+
+    // Should find results in src/ but not build/
+    assert_eq!(results.len(), 1);
+    assert!(results[0].path.contains("src/main.rs"));
+    assert!(!results.iter().any(|r| r.path.contains("build/")));
+}
+
+#[test]
+fn test_exclude_multiple_patterns() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("build")).unwrap();
+    fs::create_dir_all(project.join("target")).unwrap();
+
+    fs::write(project.join("src/main.rs"), "TODO: implement").unwrap();
+    fs::write(project.join("build/gen.rs"), "TODO: generated").unwrap();
+    fs::write(project.join("target/debug.rs"), "TODO: debug").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search with multiple exclude patterns
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        exclude_patterns: vec!["**/build/**".to_string(), "**/target/**".to_string()],
+        ..Default::default()
+    };
+    let results = engine.search("TODO", filter).unwrap();
+
+    // Should only find results in src/
+    assert_eq!(results.len(), 1);
+    assert!(results[0].path.contains("src/main.rs"));
+}
+
+#[test]
+fn test_exclude_generated_files() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::write(project.join("main.rs"), "fn pattern() {}").unwrap();
+    fs::write(project.join("generated.rs"), "fn pattern() {}").unwrap();
+    fs::write(project.join("codegen.rs"), "fn pattern() {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Exclude generated files
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        exclude_patterns: vec!["**/generated.rs".to_string(), "**/codegen.rs".to_string()],
+        ..Default::default()
+    };
+    let results = engine.search("pattern", filter).unwrap();
+
+    // Should only find main.rs
+    assert_eq!(results.len(), 1);
+    assert!(results[0].path.contains("main.rs"));
+}
+
+#[test]
+fn test_exclude_specific_directories() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("tests")).unwrap();
+    fs::create_dir_all(project.join("examples")).unwrap();
+
+    fs::write(project.join("src/lib.rs"), "TODO").unwrap();
+    fs::write(project.join("tests/test.rs"), "TODO").unwrap();
+    fs::write(project.join("examples/demo.rs"), "TODO").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Exclude tests and examples
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        exclude_patterns: vec!["**/tests/**".to_string(), "**/examples/**".to_string()],
+        ..Default::default()
+    };
+    let results = engine.search("TODO", filter).unwrap();
+
+    // Should only find src/
+    assert_eq!(results.len(), 1);
+    assert!(results[0].path.contains("src/lib.rs"));
+}
+
+// ==================== Paths-Only Mode Tests ====================
+
+#[test]
+fn test_paths_only_deduplication() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create a file with multiple occurrences of the pattern
+    let content = r#"
+fn extract_pattern() {}
+fn test_extract() {}
+struct Pattern {}
+fn another_extract_pattern() {}
+"#;
+    fs::write(project.join("main.rs"), content).unwrap();
+    fs::write(project.join("other.rs"), "fn extract_pattern() {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search with paths_only
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        paths_only: true,
+        ..Default::default()
+    };
+    let results = engine.search("extract", filter).unwrap();
+
+    // Should return only 2 unique paths (main.rs and other.rs)
+    assert_eq!(results.len(), 2);
+
+    // Verify paths are unique
+    let mut paths: Vec<_> = results.iter().map(|r| &r.path).collect();
+    paths.sort();
+    paths.dedup();
+    assert_eq!(paths.len(), 2);
+}
+
+#[test]
+fn test_paths_only_with_language_filter() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::write(project.join("main.rs"), "fn pattern() {}").unwrap();
+    fs::write(project.join("app.ts"), "function pattern() {}").unwrap();
+    fs::write(project.join("lib.rs"), "fn pattern() {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search with paths_only + language filter
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        paths_only: true,
+        language: Some(reflex::Language::Rust),
+        ..Default::default()
+    };
+    let results = engine.search("pattern", filter).unwrap();
+
+    // Should only return Rust file paths
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.path.ends_with(".rs")));
+}
+
+#[test]
+fn test_paths_only_single_match_per_file() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // File with many matches
+    let content = (0..50).map(|i| format!("fn test{}() {{}}", i)).collect::<Vec<_>>().join("\n");
+    fs::write(project.join("many.rs"), content).unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search with paths_only
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        paths_only: true,
+        ..Default::default()
+    };
+    let results = engine.search("test", filter).unwrap();
+
+    // Should return only 1 path despite 50 matches
+    assert_eq!(results.len(), 1);
+    assert!(results[0].path.contains("many.rs"));
+}
+
+#[test]
+fn test_paths_only_across_multiple_files() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/a.rs"), "TODO TODO TODO").unwrap();
+    fs::write(project.join("src/b.rs"), "TODO").unwrap();
+    fs::write(project.join("src/c.rs"), "TODO TODO").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search with paths_only
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        paths_only: true,
+        ..Default::default()
+    };
+    let results = engine.search("TODO", filter).unwrap();
+
+    // Should return 3 unique file paths
+    assert_eq!(results.len(), 3);
+}
+
+// ==================== Combined Filter Tests ====================
+
+#[test]
+fn test_glob_and_exclude_together() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::create_dir_all(project.join("src/parsers")).unwrap();
+    fs::create_dir_all(project.join("src/utils")).unwrap();
+
+    fs::write(project.join("src/parsers/rust.rs"), "TODO: parse").unwrap();
+    fs::write(project.join("src/parsers/generated.rs"), "TODO: generated").unwrap();
+    fs::write(project.join("src/utils/helpers.rs"), "TODO: help").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search with glob (include src/) and exclude (exclude generated files)
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        glob_patterns: vec!["**/src/**".to_string()],
+        exclude_patterns: vec!["**/generated.rs".to_string()],
+        ..Default::default()
+    };
+    let results = engine.search("TODO", filter).unwrap();
+
+    // Should find rust.rs and helpers.rs but not generated.rs
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().any(|r| r.path.contains("rust.rs")));
+    assert!(results.iter().any(|r| r.path.contains("helpers.rs")));
+    assert!(!results.iter().any(|r| r.path.contains("generated.rs")));
+}
+
+#[test]
+fn test_glob_exclude_and_language() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("build")).unwrap();
+
+    fs::write(project.join("src/main.rs"), "fn pattern() {}").unwrap();
+    fs::write(project.join("src/app.ts"), "function pattern() {}").unwrap();
+    fs::write(project.join("build/gen.rs"), "fn pattern() {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search with glob + exclude + language
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        glob_patterns: vec!["**/src/**".to_string()],
+        exclude_patterns: vec!["**/*.ts".to_string()],
+        language: Some(reflex::Language::Rust),
+        ..Default::default()
+    };
+    let results = engine.search("pattern", filter).unwrap();
+
+    // Should only find src/main.rs
+    assert_eq!(results.len(), 1);
+    assert!(results[0].path.contains("src/main.rs"));
+}
+
+#[test]
+fn test_glob_exclude_and_symbols() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("tests")).unwrap();
+
+    let src_content = r#"
+fn extract_pattern() {}
+fn test() {
+    extract_pattern();
+}
+"#;
+    fs::write(project.join("src/lib.rs"), src_content).unwrap();
+    fs::write(project.join("tests/test.rs"), "fn extract_pattern() {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search with glob + exclude + symbols
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        glob_patterns: vec!["**/src/**".to_string()],
+        exclude_patterns: vec!["**/tests/**".to_string()],
+        symbols_mode: true,
+        ..Default::default()
+    };
+    let results = engine.search("extract", filter).unwrap();
+
+    // Should find only the function definition in src/, not the call site
+    assert!(results.len() >= 1);
+    assert!(results.iter().all(|r| r.path.contains("src/")));
+    assert!(results.iter().all(|r| r.kind == SymbolKind::Function));
+}
+
+#[test]
+fn test_all_filters_together() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("tests")).unwrap();
+    fs::create_dir_all(project.join("build")).unwrap();
+
+    // Multiple occurrences in src/main.rs
+    fs::write(project.join("src/main.rs"), "fn extract_pattern() {}\nfn other_extract() {}").unwrap();
+    fs::write(project.join("tests/test.rs"), "fn extract_pattern() {}").unwrap();
+    fs::write(project.join("build/gen.rs"), "fn extract_pattern() {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search with ALL filters: glob + exclude + language + symbols + paths_only
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        glob_patterns: vec!["**/src/**".to_string()],
+        exclude_patterns: vec!["**/tests/**".to_string(), "**/build/**".to_string()],
+        language: Some(reflex::Language::Rust),
+        symbols_mode: true,
+        paths_only: true,
+        ..Default::default()
+    };
+    let results = engine.search("extract", filter).unwrap();
+
+    // Should return only 1 unique path (src/main.rs) despite multiple matches
+    assert_eq!(results.len(), 1);
+    assert!(results[0].path.contains("src/main.rs"));
+}
+
+#[test]
+fn test_glob_exclude_paths_with_limit() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    // Create multiple files
+    for i in 0..10 {
+        fs::write(project.join(format!("src/file{}.rs", i)), "TODO: implement").unwrap();
+    }
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search with glob + paths_only + limit
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        glob_patterns: vec!["**/src/**".to_string()],
+        paths_only: true,
+        limit: Some(5),
+        ..Default::default()
+    };
+    let results = engine.search("TODO", filter).unwrap();
+
+    // Should limit to 5 unique paths
+    assert_eq!(results.len(), 5);
+    assert!(results.iter().all(|r| r.path.contains("src/")));
+}

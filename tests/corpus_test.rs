@@ -724,3 +724,329 @@ fn test_cross_language_search() {
     assert!(files.iter().any(|f| f.contains("typescript")));
     assert!(files.iter().any(|f| f.contains("javascript")));
 }
+
+// ==================== Glob Pattern Tests (Corpus-Based) ====================
+
+#[test]
+fn test_glob_filter_source_files_only() {
+    setup_corpus();
+
+    let filter = QueryFilter {
+        glob_patterns: vec!["**/filtered/src/**".to_string()],
+        ..Default::default()
+    };
+
+    let results = query_corpus("extract_pattern", filter);
+
+    // Should only find results in filtered/src/
+    assert_result_count_at_least(&results, 3);
+    assert!(results.iter().all(|r| r.path.contains("filtered/src/")));
+    assert!(!results.iter().any(|r| r.path.contains("filtered/tests/")));
+    assert!(!results.iter().any(|r| r.path.contains("filtered/examples/")));
+    assert!(!results.iter().any(|r| r.path.contains("filtered/build/")));
+}
+
+#[test]
+fn test_glob_filter_multiple_directories() {
+    setup_corpus();
+
+    let filter = QueryFilter {
+        glob_patterns: vec![
+            "**/filtered/src/**".to_string(),
+            "**/filtered/examples/**".to_string(),
+        ],
+        ..Default::default()
+    };
+
+    let results = query_corpus("extract_pattern", filter);
+
+    // Should find results in src/ and examples/ but not tests/ or build/
+    assert_result_count_at_least(&results, 4);
+    assert!(results.iter().any(|r| r.path.contains("filtered/src/")));
+    assert!(results.iter().any(|r| r.path.contains("filtered/examples/")));
+    assert!(!results.iter().any(|r| r.path.contains("filtered/tests/")));
+    assert!(!results.iter().any(|r| r.path.contains("filtered/build/")));
+}
+
+#[test]
+fn test_glob_filter_specific_extension() {
+    setup_corpus();
+
+    let filter = QueryFilter {
+        glob_patterns: vec!["**/filtered/**/*.rs".to_string()],
+        ..Default::default()
+    };
+
+    let results = query_corpus("extract", filter);
+
+    // Should only find Rust files in filtered directory
+    assert_result_count_at_least(&results, 5);
+    assert!(results.iter().all(|r| r.path.ends_with(".rs")));
+    assert!(!results.iter().any(|r| r.path.ends_with(".sh")));
+}
+
+#[test]
+fn test_glob_with_todo_comments() {
+    setup_corpus();
+
+    let filter = QueryFilter {
+        glob_patterns: vec!["**/filtered/src/**".to_string()],
+        ..Default::default()
+    };
+
+    let results = query_corpus("TODO", filter);
+
+    // Should find TODO comments only in filtered/src/
+    assert_result_count_at_least(&results, 3);
+    assert!(results.iter().all(|r| r.path.contains("filtered/src/")));
+}
+
+// ==================== Exclude Pattern Tests (Corpus-Based) ====================
+
+#[test]
+fn test_exclude_generated_files() {
+    setup_corpus();
+
+    let filter = QueryFilter {
+        exclude_patterns: vec!["**/filtered/build/**".to_string()],
+        ..Default::default()
+    };
+
+    let results = query_corpus("extract_pattern", filter);
+
+    // Should not find any results in filtered/build/
+    assert!(!results.iter().any(|r| r.path.contains("filtered/build/")));
+
+    // But should find results in other directories
+    assert!(results.iter().any(|r| r.path.contains("filtered/src/")));
+}
+
+#[test]
+fn test_exclude_test_files() {
+    setup_corpus();
+
+    let filter = QueryFilter {
+        exclude_patterns: vec!["**/filtered/tests/**".to_string()],
+        ..Default::default()
+    };
+
+    let results = query_corpus("test_extract", filter);
+
+    // Should not find results in filtered/tests/
+    assert!(!results.iter().any(|r| r.path.contains("filtered/tests/")));
+}
+
+#[test]
+fn test_exclude_multiple_directories() {
+    setup_corpus();
+
+    let filter = QueryFilter {
+        exclude_patterns: vec![
+            "**/filtered/build/**".to_string(),
+            "**/filtered/tests/**".to_string(),
+        ],
+        ..Default::default()
+    };
+
+    let results = query_corpus("extract", filter);
+
+    // Should not find results in build/ or tests/
+    assert!(!results.iter().any(|r| r.path.contains("filtered/build/")));
+    assert!(!results.iter().any(|r| r.path.contains("filtered/tests/")));
+
+    // But should find results in src/ and examples/
+    assert!(results.iter().any(|r| r.path.contains("filtered/src/")));
+}
+
+#[test]
+fn test_exclude_scripts() {
+    setup_corpus();
+
+    let filter = QueryFilter {
+        exclude_patterns: vec!["**/filtered/scripts/**".to_string()],
+        ..Default::default()
+    };
+
+    let results = query_corpus("extract_pattern", filter);
+
+    // Should not find results in scripts/
+    assert!(!results.iter().any(|r| r.path.contains("filtered/scripts/")));
+}
+
+// ==================== Paths-Only Mode Tests (Corpus-Based) ====================
+
+#[test]
+fn test_paths_only_deduplication_corpus() {
+    setup_corpus();
+
+    let filter = QueryFilter {
+        paths_only: true,
+        ..Default::default()
+    };
+
+    let results = query_corpus("TODO", filter);
+
+    // Should deduplicate paths (multiple TODOs per file)
+    let files = unique_files(&results);
+    assert_eq!(results.len(), files.len(), "All paths should be unique");
+
+    // Verify we find TODOs in multiple files
+    assert!(results.len() >= 5);
+}
+
+#[test]
+fn test_paths_only_with_glob() {
+    setup_corpus();
+
+    let filter = QueryFilter {
+        paths_only: true,
+        glob_patterns: vec!["**/filtered/src/**".to_string()],
+        ..Default::default()
+    };
+
+    let results = query_corpus("extract", filter);
+
+    // Should return unique paths only from filtered/src/
+    let files = unique_files(&results);
+    assert_eq!(results.len(), files.len());
+    assert!(results.iter().all(|r| r.path.contains("filtered/src/")));
+}
+
+#[test]
+fn test_paths_only_with_exclude() {
+    setup_corpus();
+
+    let filter = QueryFilter {
+        paths_only: true,
+        exclude_patterns: vec!["**/filtered/build/**".to_string()],
+        ..Default::default()
+    };
+
+    let results = query_corpus("TODO", filter);
+
+    // Should return unique paths excluding build/
+    let files = unique_files(&results);
+    assert_eq!(results.len(), files.len());
+    assert!(!results.iter().any(|r| r.path.contains("filtered/build/")));
+}
+
+#[test]
+fn test_paths_only_listing_files_with_pattern() {
+    setup_corpus();
+
+    let filter = QueryFilter {
+        paths_only: true,
+        glob_patterns: vec!["**/filtered/**/*.rs".to_string()],
+        ..Default::default()
+    };
+
+    let results = query_corpus("TODO", filter);
+
+    // Should list unique Rust files containing TODO
+    let files = unique_files(&results);
+    assert_eq!(results.len(), files.len());
+    assert!(results.iter().all(|r| r.path.ends_with(".rs")));
+    assert_result_count_at_least(&results, 3);
+}
+
+// ==================== Combined Glob/Exclude/Paths Tests (Corpus-Based) ====================
+
+#[test]
+fn test_glob_and_exclude_together_corpus() {
+    setup_corpus();
+
+    let filter = QueryFilter {
+        glob_patterns: vec!["**/filtered/**/*.rs".to_string()],
+        exclude_patterns: vec!["**/filtered/build/**".to_string()],
+        ..Default::default()
+    };
+
+    let results = query_corpus("TODO", filter);
+
+    // Should find TODO in Rust files but not in build/
+    assert!(results.iter().all(|r| r.path.ends_with(".rs")));
+    assert!(!results.iter().any(|r| r.path.contains("filtered/build/")));
+    assert!(results.iter().any(|r| r.path.contains("filtered/src/")));
+}
+
+#[test]
+fn test_glob_exclude_and_paths_together() {
+    setup_corpus();
+
+    let filter = QueryFilter {
+        glob_patterns: vec!["**/filtered/src/**".to_string()],
+        exclude_patterns: vec!["**/generated.rs".to_string()],
+        paths_only: true,
+        ..Default::default()
+    };
+
+    let results = query_corpus("extract", filter);
+
+    // Should return unique paths from src/ excluding generated files
+    let files = unique_files(&results);
+    assert_eq!(results.len(), files.len());
+    assert!(results.iter().all(|r| r.path.contains("filtered/src/")));
+    assert!(!results.iter().any(|r| r.path.contains("generated")));
+}
+
+#[test]
+fn test_real_world_find_todos_in_source_only() {
+    setup_corpus();
+
+    // Real-world use case: Find all TODOs in source code, excluding tests, examples, and generated code
+    let filter = QueryFilter {
+        glob_patterns: vec!["**/filtered/src/**".to_string()],
+        exclude_patterns: vec![
+            "**/filtered/tests/**".to_string(),
+            "**/filtered/examples/**".to_string(),
+            "**/filtered/build/**".to_string(),
+        ],
+        paths_only: true,
+        ..Default::default()
+    };
+
+    let results = query_corpus("TODO", filter);
+
+    // Should return unique source files with TODOs
+    let files = unique_files(&results);
+    assert_eq!(results.len(), files.len());
+    assert!(results.iter().all(|r| r.path.contains("filtered/src/")));
+    assert_result_count_at_least(&results, 3);
+}
+
+#[test]
+fn test_real_world_exclude_generated_code() {
+    setup_corpus();
+
+    // Real-world use case: Search all code but exclude generated files
+    let filter = QueryFilter {
+        exclude_patterns: vec!["**/build/**".to_string(), "**/generated.rs".to_string()],
+        ..Default::default()
+    };
+
+    let results = query_corpus("extract_pattern", filter);
+
+    // Should not find any results in build/ or generated.rs
+    assert!(!results.iter().any(|r| r.path.contains("/build/")));
+    assert!(!results.iter().any(|r| r.path.contains("generated.rs")));
+}
+
+#[test]
+fn test_real_world_list_files_with_pattern() {
+    setup_corpus();
+
+    // Real-world use case: List all files containing "extract_pattern"
+    let filter = QueryFilter {
+        paths_only: true,
+        ..Default::default()
+    };
+
+    let results = query_corpus("extract_pattern", filter);
+
+    // Should return unique file paths
+    let files = unique_files(&results);
+    assert_eq!(results.len(), files.len());
+
+    // Should find files across multiple directories
+    assert_result_count_at_least(&results, 5);
+}
