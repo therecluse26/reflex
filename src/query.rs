@@ -593,13 +593,14 @@ impl QueryEngine {
         // Convert to vec for parallel processing
         let files_to_process: Vec<String> = files_by_path.keys().cloned().collect();
 
-        // Configure thread pool for parallel processing (use 80% of available cores)
+        // Configure thread pool for parallel processing (use 80% of available cores, capped at 8)
         let num_threads = {
             let available_cores = std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(4);
-            // Use 80% of available cores (minimum 1) to avoid locking the system
-            ((available_cores as f64 * 0.8).ceil() as usize).max(1)
+            // Use 80% of available cores (minimum 1, maximum 8) to avoid locking the system
+            // Cap at 8 to prevent diminishing returns from cache contention on high-core systems
+            ((available_cores as f64 * 0.8).ceil() as usize).max(1).min(8)
         };
 
         log::debug!("Using {} threads for parallel symbol extraction (out of {} available cores)",
