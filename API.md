@@ -817,4 +817,4 @@ The Reflex API currently has **no versioning**. The API is stable for the v1.x r
 
 ---
 
-**Questions or issues?** Open an issue at [github.com/therecluse26/reflex/issues](https://github.com/therecluse26/reflex/issues)
+**Questions or issues?** Open an issue at [github.com/reflex-search/reflex/issues](https://github.com/reflex-search/reflex/issues)

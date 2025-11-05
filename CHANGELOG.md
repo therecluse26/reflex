@@ -7,20 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.2.3](https://github.com/therecluse26/reflex/compare/v0.2.2...v0.2.3) - 2025-11-04
+## [0.2.3](https://github.com/reflex-search/reflex/compare/v0.2.2...v0.2.3) - 2025-11-04
 
 ### Other
 
 - update Cargo.toml dependencies
 
-## [0.1.3](https://github.com/therecluse26/reflex/compare/v0.1.2...v0.1.3) - 2025-11-03
+## [0.1.3](https://github.com/reflex-search/reflex/compare/v0.1.2...v0.1.3) - 2025-11-03
 
 ### Other
 
-- Merge pull request #2 from therecluse26/release-plz-2025-11-03T22-53-50Z
+- Merge pull request #2 from reflex-search/release-plz-2025-11-03T22-53-50Z
 - *(ci)* add release status logging to workflow
 
-## [0.1.2](https://github.com/therecluse26/reflex/compare/v0.1.1...v0.1.2) - 2025-11-03
+## [0.1.2](https://github.com/reflex-search/reflex/compare/v0.1.1...v0.1.2) - 2025-11-03
 
 ### Fixed
 
@@ -96,7 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Updated some todos
 - Initial commit
 
-## [0.1.1](https://github.com/therecluse26/reflex/compare/v0.1.0...v0.1.1) - 2025-11-03
+## [0.1.1](https://github.com/reflex-search/reflex/compare/v0.1.0...v0.1.1) - 2025-11-03
 
 ### Fixed
 
@@ -313,5 +313,5 @@ Initial release of Reflex - a local-first, structure-aware code search engine fo
 - **Async**: tokio runtime for HTTP server
 - **Parallelism**: rayon for multi-threaded indexing
 
-[Unreleased]: https://github.com/therecluse26/reflex/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/therecluse26/reflex/releases/tag/v1.0.0
+[Unreleased]: https://github.com/reflex-search/reflex/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/reflex-search/reflex/releases/tag/v1.0.0

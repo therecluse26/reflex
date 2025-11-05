@@ -28,7 +28,7 @@ Reflex is a blazingly fast, trigram-based code search engine designed for develo
 
 ```bash
 # Clone and build from source
-git clone https://github.com/therecluse26/reflex.git
+git clone https://github.com/reflex-search/reflex.git
 cd reflex
 cargo build --release
 

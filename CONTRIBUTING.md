@@ -25,7 +25,7 @@ When contributing, please keep these principles in mind.
 1. **Clone the repository:**
 
 ```bash
-git clone https://github.com/therecluse26/reflex.git
+git clone https://github.com/reflex-search/reflex.git
 cd reflex
 ```
 
@@ -599,8 +599,8 @@ Reflex uses **automated releases** via [release-plz](https://release-plz.ieni.de
 ## Getting Help
 
 - **Documentation**: Start with [README.md](README.md) and [ARCHITECTURE.md](ARCHITECTURE.md)
-- **Issues**: Check existing [GitHub Issues](https://github.com/therecluse26/reflex/issues)
-- **Discussions**: Open a [GitHub Discussion](https://github.com/therecluse26/reflex/discussions) for questions
+- **Issues**: Check existing [GitHub Issues](https://github.com/reflex-search/reflex/issues)
+- **Discussions**: Open a [GitHub Discussion](https://github.com/reflex-search/reflex/discussions) for questions
 - **Context**: Read [CLAUDE.md](CLAUDE.md) for project philosophy and workflow
 
 ---
