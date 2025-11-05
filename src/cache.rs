@@ -299,19 +299,26 @@ compression_level = 3  # zstd level
         // Check trigrams.bin if it exists
         let trigrams_path = self.cache_path.join("trigrams.bin");
         if trigrams_path.exists() {
-            match std::fs::read(&trigrams_path) {
-                Ok(data) if data.len() >= 4 => {
-                    // Check magic bytes
-                    if &data[0..4] != b"RFTG" {
-                        log::warn!("trigrams.bin has invalid magic bytes - may be corrupted");
-                        anyhow::bail!("trigrams.bin appears to be corrupted (invalid magic bytes)");
+            use std::io::Read;
+
+            match File::open(&trigrams_path) {
+                Ok(mut file) => {
+                    let mut header = [0u8; 4];
+                    match file.read_exact(&mut header) {
+                        Ok(_) => {
+                            // Check magic bytes
+                            if &header != b"RFTG" {
+                                log::warn!("trigrams.bin has invalid magic bytes - may be corrupted");
+                                anyhow::bail!("trigrams.bin appears to be corrupted (invalid magic bytes)");
+                            }
+                        }
+                        Err(_) => {
+                            anyhow::bail!("trigrams.bin is too small - appears to be corrupted");
+                        }
                     }
                 }
-                Ok(_) => {
-                    anyhow::bail!("trigrams.bin is too small - appears to be corrupted");
-                }
                 Err(e) => {
-                    anyhow::bail!("Failed to read trigrams.bin: {}", e);
+                    anyhow::bail!("Failed to open trigrams.bin: {}", e);
                 }
             }
         }
@@ -319,19 +326,26 @@ compression_level = 3  # zstd level
         // Check content.bin if it exists
         let content_path = self.cache_path.join("content.bin");
         if content_path.exists() {
-            match std::fs::read(&content_path) {
-                Ok(data) if data.len() >= 4 => {
-                    // Check magic bytes
-                    if &data[0..4] != b"RFCT" {
-                        log::warn!("content.bin has invalid magic bytes - may be corrupted");
-                        anyhow::bail!("content.bin appears to be corrupted (invalid magic bytes)");
+            use std::io::Read;
+
+            match File::open(&content_path) {
+                Ok(mut file) => {
+                    let mut header = [0u8; 4];
+                    match file.read_exact(&mut header) {
+                        Ok(_) => {
+                            // Check magic bytes
+                            if &header != b"RFCT" {
+                                log::warn!("content.bin has invalid magic bytes - may be corrupted");
+                                anyhow::bail!("content.bin appears to be corrupted (invalid magic bytes)");
+                            }
+                        }
+                        Err(_) => {
+                            anyhow::bail!("content.bin is too small - appears to be corrupted");
+                        }
                     }
                 }
-                Ok(_) => {
-                    anyhow::bail!("content.bin is too small - appears to be corrupted");
-                }
                 Err(e) => {
-                    anyhow::bail!("Failed to read content.bin: {}", e);
+                    anyhow::bail!("Failed to open content.bin: {}", e);
                 }
             }
         }
