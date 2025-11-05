@@ -53,12 +53,19 @@ pub enum Command {
     /// Query the code index
     ///
     /// Search modes:
-    ///   - Default: Full-text trigram search (finds all occurrences)
-    ///     Example: rfx query "extract_symbols"
+    ///   - Default: Word-boundary matching (precise, finds complete identifiers)
+    ///     Example: rfx query "Error" → finds "Error" but not "NetworkError"
+    ///     Example: rfx query "test" → finds "test" but not "test_helper"
     ///
-    ///   - Symbol search: Search symbol definitions only
-    ///     Example: rfx query "parse" --symbols
-    ///     Example: rfx query "parse" --kind function  (implies --symbols)
+    ///   - Symbol search: Word-boundary for text, exact match for symbols
+    ///     Example: rfx query "parse" --symbols → finds only "parse" function/class
+    ///     Example: rfx query "parse" --kind function → finds only "parse" functions
+    ///
+    ///   - Substring search: Expansive matching (opt-in with --contains)
+    ///     Example: rfx query "mb" --contains → finds "mb", "kmb_dai_ops", "symbol", etc.
+    ///
+    ///   - Regex search: Pattern-controlled matching (opt-in with --regex)
+    ///     Example: rfx query "^mb_.*" --regex → finds "mb_init", "mb_start", etc.
     Query {
         /// Search pattern
         pattern: String,
@@ -108,6 +115,11 @@ pub enum Command {
         /// Only applicable to symbol searches
         #[arg(long)]
         exact: bool,
+
+        /// Use substring matching for both text and symbols (expansive search)
+        /// Default behavior uses word-boundary and exact matching for precision
+        #[arg(long)]
+        contains: bool,
 
         /// Only show count and timing, not the actual results
         #[arg(short, long)]
@@ -230,8 +242,8 @@ impl Cli {
             Command::Index { path, force, languages, quiet } => {
                 handle_index(path, force, languages, quiet)
             }
-            Command::Query { pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, count, timeout, plain, glob, exclude, paths } => {
-                handle_query(pattern, symbols, lang, kind, ast.as_deref(), regex, json, limit, expand, file, exact, count, timeout, plain, glob, exclude, paths)
+            Command::Query { pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths } => {
+                handle_query(pattern, symbols, lang, kind, ast.as_deref(), regex, json, limit, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths)
             }
             Command::Serve { port, host } => {
                 handle_serve(port, host)
@@ -365,6 +377,7 @@ fn handle_query(
     expand: bool,
     file_pattern: Option<String>,
     exact: bool,
+    use_contains: bool,
     count_only: bool,
     timeout_secs: u64,
     plain: bool,
@@ -470,6 +483,7 @@ fn handle_query(
         expand,
         file_pattern,
         exact,
+        use_contains,
         timeout_secs,
         glob_patterns,
         exclude_patterns,
@@ -572,7 +586,7 @@ fn handle_serve(port: u16, host: String) -> Result<()> {
     println!("Starting Reflex HTTP server...");
     println!("  Address: http://{}:{}", host, port);
     println!("\nEndpoints:");
-    println!("  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&expand=true&file=<pattern>&timeout=<secs>&glob=<pattern>&exclude=<pattern>&paths=true");
+    println!("  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&contains=true&expand=true&file=<pattern>&timeout=<secs>&glob=<pattern>&exclude=<pattern>&paths=true");
     println!("  GET  /stats");
     println!("  POST /index");
     println!("\nPress Ctrl+C to stop.");
@@ -618,6 +632,8 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         regex: bool,
         #[serde(default)]
         exact: bool,
+        #[serde(default)]
+        contains: bool,
         #[serde(default)]
         expand: bool,
         #[serde(default)]
@@ -712,6 +728,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             expand: params.expand,
             file_pattern: params.file,
             exact: params.exact,
+            use_contains: params.contains,
             timeout_secs: params.timeout,
             glob_patterns: params.glob,
             exclude_patterns: params.exclude,

@@ -311,6 +311,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 expand: expand.unwrap_or(false),
                 file_pattern: file,
                 exact: exact.unwrap_or(false),
+                use_contains: false, // Default to word-boundary matching for MCP
                 timeout_secs: 30, // Default 30 second timeout for MCP queries
                 glob_patterns,
                 exclude_patterns,
@@ -359,6 +360,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 expand: false,
                 file_pattern: file,
                 exact: false,
+                use_contains: false, // Regex mode uses substring matching via use_regex flag
                 timeout_secs: 30, // Default 30 second timeout for MCP queries
                 glob_patterns,
                 exclude_patterns,
@@ -417,6 +419,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 expand: false,
                 file_pattern: file,
                 exact: false,
+                use_contains: false, // Default to word-boundary matching for MCP
                 timeout_secs: 30, // Default 30 second timeout for MCP queries
                 glob_patterns,
                 exclude_patterns,

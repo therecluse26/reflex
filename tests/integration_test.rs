@@ -177,7 +177,10 @@ fn test_incremental_indexing_workflow() {
     // Verify both files are searchable (search for "main" which appears in both)
     let cache = CacheManager::new(project);
     let engine = QueryEngine::new(cache);
-    let filter = QueryFilter::default();
+    let filter = QueryFilter {
+        use_contains: true,  // "mai" is substring of "main", not at word boundary
+        ..Default::default()
+    };
     let results = engine.search("mai", filter).unwrap(); // "mai" is a trigram in "main"
     assert!(results.len() >= 1, "Should find at least main.rs");
 }
@@ -200,6 +203,7 @@ fn test_modify_file_and_reindex_workflow() {
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         symbols_mode: true,
+        use_contains: true,  // "old" in "old_function" is not at word boundary
         ..Default::default()
     };
     let results = engine.search("old", filter.clone()).unwrap();
@@ -307,6 +311,7 @@ fn test_combined_filters_workflow() {
         kind: Some(SymbolKind::Function),
         file_pattern: Some("src/".to_string()),
         symbols_mode: true,
+        use_contains: true,  // "poi" in "point_new" is not at word boundary
         ..Default::default()
     };
     let results = engine.search("poi", filter).unwrap();
@@ -336,6 +341,7 @@ fn test_limit_and_sorting_workflow() {
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         limit: Some(5),
+        use_contains: true,  // "test" in "test0", "test1" is not at word boundary
         ..Default::default()
     };
     let results = engine.search("test", filter).unwrap();
@@ -768,6 +774,7 @@ fn another_extract_pattern() {}
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         paths_only: true,
+        use_contains: true,  // "extract" in "extract_pattern" is not at word boundary
         ..Default::default()
     };
     let results = engine.search("extract", filter).unwrap();
@@ -830,6 +837,7 @@ fn test_paths_only_single_match_per_file() {
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         paths_only: true,
+        use_contains: true,  // "test" in "test0", "test1" is not at word boundary (followed by digit)
         ..Default::default()
     };
     let results = engine.search("test", filter).unwrap();
@@ -965,6 +973,7 @@ fn test() {
         glob_patterns: vec!["**/src/**".to_string()],
         exclude_patterns: vec!["**/tests/**".to_string()],
         symbols_mode: true,
+        use_contains: true,  // "extract" in "extract_pattern" is not at word boundary
         ..Default::default()
     };
     let results = engine.search("extract", filter).unwrap();
@@ -1003,6 +1012,7 @@ fn test_all_filters_together() {
         language: Some(reflex::Language::Rust),
         symbols_mode: true,
         paths_only: true,
+        use_contains: true,  // "extract" in "extract_pattern" is not at word boundary
         ..Default::default()
     };
     let results = engine.search("extract", filter).unwrap();
