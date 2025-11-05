@@ -1,5 +1,5 @@
 [package]
-name = "reflex"
+name = "reflex-search"
 version = "0.2.10"
 edition = "2024"
 authors = ["Reflex Contributors"]
