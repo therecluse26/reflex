@@ -540,6 +540,10 @@ impl QueryEngine {
     /// # Performance
     /// Only parses files that have text matches, so typically 10-100 files
     /// instead of the entire codebase (62K+ files).
+    ///
+    /// # Optimizations
+    /// 1. Language filtering: Skips files with unsupported languages (no parsers)
+    /// 2. Parallel processing: Uses Rayon to parse files concurrently across CPU cores
     fn enrich_with_symbols(&self, candidates: Vec<SearchResult>, pattern: &str, use_regex: bool) -> Result<Vec<SearchResult>> {
         // Load content store for file reading
         let content_path = self.cache.path().join("content.bin");
@@ -554,54 +558,105 @@ impl QueryEngine {
             Self::rebuild_trigram_index(&content_reader)?
         };
 
-        // Collect unique file paths from candidates
-        use std::collections::HashSet;
-        let candidate_files: HashSet<String> = candidates
-            .iter()
-            .map(|r| r.path.clone())
-            .collect();
+        // Group candidates by file, filtering out unsupported languages
+        use std::collections::HashMap;
+        let mut files_by_path: HashMap<String, Vec<SearchResult>> = HashMap::new();
+        let mut skipped_unsupported = 0;
 
-        log::debug!("Enriching {} candidate files with symbol information", candidate_files.len());
-
-        // Parse each candidate file and extract symbols
-        let mut all_symbols = Vec::new();
-        for file_path in candidate_files {
-            // Find file_id for this path
-            let file_id = match Self::find_file_id_by_path(&content_reader, &trigram_index, &file_path) {
-                Some(id) => id,
-                None => {
-                    log::warn!("Could not find file_id for path: {}", file_path);
-                    continue;
-                }
-            };
-
-            let content = match content_reader.get_file_content(file_id) {
-                Ok(c) => c,
-                Err(e) => {
-                    log::warn!("Failed to read file {}: {}", file_path, e);
-                    continue;
-                }
-            };
-
-            // Detect language
-            let ext = std::path::Path::new(&file_path)
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
-            let lang = Language::from_extension(ext);
-
-            // Parse file to extract symbols
-            match ParserFactory::parse(&file_path, content, lang) {
-                Ok(symbols) => {
-                    log::debug!("Parsed {} symbols from {}", symbols.len(), file_path);
-                    all_symbols.extend(symbols);
-                }
-                Err(e) => {
-                    log::debug!("Failed to parse {}: {}", file_path, e);
-                    // Continue processing other files
-                }
+        for candidate in candidates {
+            // Skip files with unsupported languages (no parser available)
+            if !candidate.lang.is_supported() {
+                skipped_unsupported += 1;
+                continue;
             }
+
+            files_by_path
+                .entry(candidate.path.clone())
+                .or_insert_with(Vec::new)
+                .push(candidate);
         }
+
+        let total_files = files_by_path.len();
+        log::debug!("Processing {} candidate files for symbol enrichment (skipped {} unsupported language files)",
+                   total_files, skipped_unsupported);
+
+        // Warn if pattern is very broad (may take time to parse all files)
+        if total_files > 1000 {
+            log::warn!(
+                "Pattern '{}' matched {} files. This may take some time to parse.",
+                pattern,
+                total_files
+            );
+            log::warn!("Consider using a more specific pattern or adding --lang/--file filters to narrow the search.");
+        }
+
+        // Convert to vec for parallel processing
+        let files_to_process: Vec<String> = files_by_path.keys().cloned().collect();
+
+        // Configure thread pool for parallel processing (use 80% of available cores)
+        let num_threads = {
+            let available_cores = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4);
+            // Use 80% of available cores (minimum 1) to avoid locking the system
+            ((available_cores as f64 * 0.8).ceil() as usize).max(1)
+        };
+
+        log::debug!("Using {} threads for parallel symbol extraction (out of {} available cores)",
+                   num_threads,
+                   std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4));
+
+        // Build a custom thread pool with limited threads
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build()
+            .context("Failed to create thread pool for symbol extraction")?;
+
+        // Parse files in parallel using custom thread pool
+        use rayon::prelude::*;
+
+        let all_symbols: Vec<SearchResult> = pool.install(|| {
+            files_to_process
+                .par_iter()
+                .flat_map(|file_path| {
+                // Find file_id for this path
+                let file_id = match Self::find_file_id_by_path(&content_reader, &trigram_index, file_path) {
+                    Some(id) => id,
+                    None => {
+                        log::warn!("Could not find file_id for path: {}", file_path);
+                        return Vec::new();
+                    }
+                };
+
+                let content = match content_reader.get_file_content(file_id) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        log::warn!("Failed to read file {}: {}", file_path, e);
+                        return Vec::new();
+                    }
+                };
+
+                // Detect language
+                let ext = std::path::Path::new(file_path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                let lang = Language::from_extension(ext);
+
+                // Parse file to extract symbols
+                match ParserFactory::parse(file_path, content, lang) {
+                    Ok(symbols) => {
+                        log::debug!("Parsed {} symbols from {}", symbols.len(), file_path);
+                        symbols
+                    }
+                    Err(e) => {
+                        log::debug!("Failed to parse {}: {}", file_path, e);
+                        Vec::new()
+                    }
+                }
+            })
+            .collect()
+        });
 
         // Filter symbols by pattern
         let filtered: Vec<SearchResult> = if use_regex {
@@ -1130,7 +1185,7 @@ impl QueryEngine {
                         let mut changed = 0;
                         const SAMPLE_SIZE: usize = 10;
 
-                        for (path, indexed_hash) in branch_files.iter().take(SAMPLE_SIZE) {
+                        for (path, _indexed_hash) in branch_files.iter().take(SAMPLE_SIZE) {
                             checked += 1;
                             let file_path = std::path::Path::new(path);
 
@@ -1142,12 +1197,9 @@ impl QueryEngine {
                                         .as_secs() as i64;
 
                                     if file_time > indexed_time {
-                                        if let Ok(content) = std::fs::read(file_path) {
-                                            let current_hash = blake3::hash(&content).to_hex().to_string();
-                                            if &current_hash != indexed_hash {
-                                                changed += 1;
-                                            }
-                                        }
+                                        // File modified after indexing - likely stale
+                                        // Note: We skip hash verification for performance (mtime check is sufficient)
+                                        changed += 1;
                                     }
                                 }
                             }
@@ -1213,7 +1265,7 @@ impl QueryEngine {
                         let mut changed = 0;
                         const SAMPLE_SIZE: usize = 10;
 
-                        for (path, indexed_hash) in branch_files.iter().take(SAMPLE_SIZE) {
+                        for (path, _indexed_hash) in branch_files.iter().take(SAMPLE_SIZE) {
                             checked += 1;
                             let file_path = std::path::Path::new(path);
 
@@ -1227,13 +1279,11 @@ impl QueryEngine {
 
                                     // If file modified after indexing, it might be stale
                                     if file_time > indexed_time {
-                                        // Verify with hash to avoid false positives from touch/tools
-                                        if let Ok(content) = std::fs::read(file_path) {
-                                            let current_hash = blake3::hash(&content).to_hex().to_string();
-                                            if &current_hash != indexed_hash {
-                                                changed += 1;
-                                            }
-                                        }
+                                        // File modified after indexing - likely stale
+                                        // Note: We skip hash verification for performance (mtime check is sufficient)
+                                        // This may cause false positives if files were touched without changes,
+                                        // but the warning is non-blocking and vastly better than slow queries
+                                        changed += 1;
                                     }
                                 }
                             }
