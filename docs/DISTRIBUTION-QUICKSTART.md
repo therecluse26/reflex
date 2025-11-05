@@ -7,8 +7,6 @@
 - [ ] Add: `reflex-search/reflex` + `publish-packages.yml`
 
 ### 2. Create External Repos (10 min)
-- [ ] Create `reflex-search/scoop-reflex`
-  - Copy files from `distribution-templates/scoop-reflex/`
 - [ ] Create `reflex-search/homebrew-reflex`
   - Copy files from `distribution-templates/homebrew-reflex/`
 
