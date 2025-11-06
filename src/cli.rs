@@ -80,7 +80,7 @@ pub enum Command {
         lang: Option<String>,
 
         /// Filter by symbol kind (implies --symbols)
-        /// Supported: function, class, struct, enum, trait, etc.
+        /// Supported: function, class, struct, enum, interface, trait, constant, variable, method, module, namespace, type, macro, property, event, import, export, attribute
         #[arg(short, long)]
         kind: Option<String>,
 
