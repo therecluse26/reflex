@@ -103,7 +103,7 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
         "tools": [
             {
                 "name": "search_code",
-                "description": "Search code with full-text or symbol search. Returns results with file paths, line numbers, and context.",
+                "description": "Primary code search tool - fast full-text or symbol-only search with trigram optimization.\n\n**Search modes:**\n- Full-text (default): Finds ALL occurrences - definitions + usages\n- Symbol-only (symbols=true): Finds ONLY definitions where symbols are declared\n\n**Use this for:** General code exploration, finding function calls, locating symbol definitions. Handles 95% of search needs.\n\n**Note:** If results seem outdated or missing new files, run index_project first.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -159,7 +159,7 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
             },
             {
                 "name": "search_regex",
-                "description": "Search code using regex patterns with trigram optimization.",
+                "description": "Regex-based code search for complex pattern matching (e.g., 'fn (get|set)_\\w+').\n\n**Use for:** Complex patterns requiring regex, case-insensitive variants, word boundaries.\n\n**Don't use for:** Simple text searches or symbol definitions (use search_code instead).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -239,7 +239,7 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
             },
             {
                 "name": "index_project",
-                "description": "Trigger reindexing of the project. Supports incremental or full rebuild.",
+                "description": "Rebuild or update the code search index. Run this when:\n\n- After code changes (user edits, git operations, file creation/deletion)\n- Search results seem stale or missing new files\n- Empty/error results (may indicate missing/corrupt index)\n\n**Modes:**\n- Incremental (default): Only re-indexes changed files (fast)\n- Full rebuild (force=true): Re-indexes everything (use if index seems corrupted)",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
