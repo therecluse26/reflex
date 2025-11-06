@@ -84,12 +84,22 @@ pub enum Command {
         #[arg(short, long)]
         kind: Option<String>,
 
-        /// AST pattern for structure-aware search using Tree-sitter queries (requires --lang)
-        /// Works with all tree-sitter languages: rust, python, go, java, c, c++, c#, php, ruby, kotlin, zig, typescript, javascript
-        /// Example: "(function_item (async)) @fn" to find async functions in Rust
-        /// Example: "(function_definition) @fn" to find functions in Python
+        /// Use AST pattern matching (SLOW: 500ms-2s+, scans all files)
+        ///
+        /// WARNING: AST queries bypass trigram optimization and scan the entire codebase.
+        /// In 95% of cases, use --symbols instead which is 10-100x faster.
+        ///
+        /// When --ast is set, the pattern parameter is interpreted as a Tree-sitter
+        /// S-expression query instead of text search.
+        ///
+        /// RECOMMENDED: Always use --glob to limit scope for better performance.
+        ///
+        /// Examples:
+        ///   Fast (2-50ms):    rfx query "fetch" --symbols --kind function --lang python
+        ///   Slow (500ms-2s):  rfx query "(function_definition) @fn" --ast --lang python
+        ///   Faster with glob: rfx query "(class_declaration) @class" --ast --lang typescript --glob "src/**/*.ts"
         #[arg(long)]
-        ast: Option<String>,
+        ast: bool,
 
         /// Use regex pattern matching
         #[arg(short = 'r', long)]
@@ -245,7 +255,7 @@ impl Cli {
                 handle_index(path, force, languages, quiet)
             }
             Command::Query { pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths } => {
-                handle_query(pattern, symbols, lang, kind, ast.as_deref(), regex, json, limit, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths)
+                handle_query(pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths)
             }
             Command::Serve { port, host } => {
                 handle_serve(port, host)
@@ -372,7 +382,7 @@ fn handle_query(
     symbols_flag: bool,
     lang: Option<String>,
     kind_str: Option<String>,
-    ast_pattern: Option<&str>,
+    use_ast: bool,
     use_regex: bool,
     as_json: bool,
     limit: Option<usize>,
@@ -464,7 +474,7 @@ fn handle_query(
     let symbols_mode = symbols_flag || kind.is_some();
 
     // Validate AST query requirements
-    if ast_pattern.is_some() && language.is_none() {
+    if use_ast && language.is_none() {
         anyhow::bail!(
             "AST pattern matching requires a language to be specified.\n\
              \n\
@@ -475,17 +485,18 @@ fn handle_query(
              \n\
              Note: Vue and Svelte use line-based parsing and do not support AST queries.\n\
              \n\
+             WARNING: AST queries are SLOW (500ms-2s+). Use --symbols instead for 95% of cases.\n\
+             \n\
              Examples:\n\
-             • rfx query \"async\" --ast \"(function_item (async)) @fn\" --lang rust\n\
-             • rfx query \"def\" --ast \"(function_definition) @fn\" --lang python\n\
-             • rfx query \"class\" --ast \"(class_declaration) @class\" --lang typescript"
+             • rfx query \"(function_definition) @fn\" --ast --lang python\n\
+             • rfx query \"(class_declaration) @class\" --ast --lang typescript --glob \"src/**/*.ts\""
         );
     }
 
     let filter = QueryFilter {
         language,
         kind,
-        use_ast: ast_pattern.is_some(),
+        use_ast,
         use_regex,
         limit,
         symbols_mode,
@@ -502,12 +513,11 @@ fn handle_query(
     // Measure query time
     let start = Instant::now();
 
-    // For AST queries, we need to pass the AST pattern separately
-    // The text pattern is used for trigram filtering (Phase 1)
-    // The AST pattern is used for structure matching (Phase 2)
-    let results = if let Some(ast_pat) = ast_pattern {
-        // AST query: use custom search path
-        engine.search_ast_with_text_filter(&pattern, ast_pat, filter.clone())?
+    // When --ast is set, pattern is the AST query (not text)
+    // AST queries scan all files (no trigram pre-filtering)
+    let results = if use_ast {
+        // AST query: pattern is the S-expression, scan all files
+        engine.search_ast_all_files(&pattern, filter.clone())?
     } else if as_json {
         // Use metadata-aware search for JSON output
         engine.search_with_metadata(&pattern, filter.clone())?.results
@@ -535,7 +545,7 @@ fn handle_query(
             eprintln!("Found {} unique files in {}", paths.len(), timing_str);
         } else {
             // Reconstruct QueryResponse for JSON output
-            let (status, can_trust_results, warning) = if ast_pattern.is_some() {
+            let (status, can_trust_results, warning) = if use_ast {
                 // For AST queries, skip metadata checks for now
                 (crate::models::IndexStatus::Fresh, true, None)
             } else {

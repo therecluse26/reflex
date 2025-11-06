@@ -248,14 +248,22 @@ fn extract_symbol_info(node: &tree_sitter::Node, source: &str) -> (Option<String
             }
         }
 
-        // PHP-specific nodes
+        // Python-specific nodes
+        "class_definition" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = source[name_node.start_byte()..name_node.end_byte()].to_string();
+                return (Some(name), Some(SymbolKind::Class));
+            }
+        }
+
+        // PHP-specific nodes (function_definition shared with Python above)
         "function_definition" => {
             if let Some(name_node) = node.child_by_field_name("name") {
                 let name = source[name_node.start_byte()..name_node.end_byte()].to_string();
                 return (Some(name), Some(SymbolKind::Function));
             }
         }
-        // Note: class_declaration already handled above for TS/JS
+        // Note: class_declaration handled above for TS/JS, class_definition for Python
         // PHP trait_declaration uses same node type as Rust trait_item handled above
         "enum_declaration" => {
             if let Some(name_node) = node.child_by_field_name("name") {

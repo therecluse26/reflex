@@ -366,6 +366,194 @@ impl QueryEngine {
         self.search(pattern, filter)
     }
 
+    /// Execute AST query on all indexed files (no trigram filtering)
+    ///
+    /// WARNING: This method scans the entire codebase (500ms-2s+).
+    /// In 95% of cases, use --symbols instead which is 10-100x faster.
+    ///
+    /// # Algorithm
+    /// 1. Get all indexed files for the specified language
+    /// 2. Apply glob/exclude filters to reduce file set
+    /// 3. Load file contents for all matching files
+    /// 4. Execute AST query pattern using Tree-sitter
+    /// 5. Apply remaining filters and return results
+    ///
+    /// # Performance
+    /// - Parses entire codebase (not just trigram candidates)
+    /// - Expected: 500ms-2s for medium codebases, 2-10s for large codebases
+    /// - Use --glob to limit scope for better performance
+    ///
+    /// # Requirements
+    /// - Language must be specified (AST queries are language-specific)
+    /// - AST pattern must be valid S-expression syntax
+    pub fn search_ast_all_files(&self, ast_pattern: &str, filter: QueryFilter) -> Result<Vec<SearchResult>> {
+        log::info!("Executing AST query on all files: pattern='{}', filter={:?}", ast_pattern, filter);
+
+        // Require language for AST queries
+        let lang = filter.language.ok_or_else(|| anyhow::anyhow!(
+            "Language must be specified for AST pattern matching. Use --lang to specify the language.\n\
+             \n\
+             Example: rfx query \"(function_definition) @fn\" --ast --lang python"
+        ))?;
+
+        // Ensure cache exists
+        if !self.cache.exists() {
+            anyhow::bail!(
+                "Index not found. Run 'rfx index' to build the cache first."
+            );
+        }
+
+        // Show non-blocking warnings about branch state and staleness
+        self.check_index_freshness()?;
+
+        // Load content store
+        let content_path = self.cache.path().join("content.bin");
+        let content_reader = ContentReader::open(&content_path)
+            .context("Failed to open content store")?;
+
+        // Build glob matchers ONCE before file iteration (performance optimization)
+        use globset::{Glob, GlobSetBuilder};
+
+        let include_matcher = if !filter.glob_patterns.is_empty() {
+            let mut builder = GlobSetBuilder::new();
+            for pattern in &filter.glob_patterns {
+                if let Ok(glob) = Glob::new(pattern) {
+                    builder.add(glob);
+                }
+            }
+            builder.build().ok()
+        } else {
+            None
+        };
+
+        let exclude_matcher = if !filter.exclude_patterns.is_empty() {
+            let mut builder = GlobSetBuilder::new();
+            for pattern in &filter.exclude_patterns {
+                if let Ok(glob) = Glob::new(pattern) {
+                    builder.add(glob);
+                }
+            }
+            builder.build().ok()
+        } else {
+            None
+        };
+
+        // Get all files matching the language and glob filters
+        let mut candidates: Vec<SearchResult> = Vec::new();
+
+        for file_id in 0..content_reader.file_count() {
+            let file_path = match content_reader.get_file_path(file_id as u32) {
+                Some(p) => p,
+                None => continue,
+            };
+
+            // Detect language from file extension
+            let ext = file_path.extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            let detected_lang = Language::from_extension(ext);
+
+            // Filter by language
+            if detected_lang != lang {
+                continue;
+            }
+
+            let file_path_str = file_path.to_string_lossy().to_string();
+
+            // Apply glob/exclude filters BEFORE loading content (performance optimization)
+            let included = include_matcher.as_ref().map_or(true, |m| m.is_match(&file_path_str));
+            let excluded = exclude_matcher.as_ref().map_or(false, |m| m.is_match(&file_path_str));
+
+            if !included || excluded {
+                continue;
+            }
+
+            // Create a dummy candidate for this file (AST query will replace it)
+            candidates.push(SearchResult {
+                path: file_path_str,
+                lang: detected_lang,
+                span: Span { start_line: 1, start_col: 1, end_line: 1, end_col: 1 },
+                symbol: None,
+                kind: SymbolKind::Unknown("ast_query".to_string()),
+                scope: None,
+                preview: String::new(),
+            });
+        }
+
+        log::info!("AST query scanning {} files for language {:?}", candidates.len(), lang);
+
+        if candidates.is_empty() {
+            log::warn!("No files found for language {:?}. Check your language filter or glob patterns.", lang);
+            return Ok(Vec::new());
+        }
+
+        // Execute the AST query on all candidate files
+        // This will load file contents and parse them with tree-sitter
+        let mut results = self.enrich_with_ast(candidates, ast_pattern, filter.language)?;
+
+        log::debug!("AST query found {} matches before filtering", results.len());
+
+        // Apply remaining filters (same as search_internal Phase 3)
+
+        // Apply kind filter
+        if let Some(ref kind) = filter.kind {
+            results.retain(|r| {
+                if matches!(kind, SymbolKind::Function) {
+                    matches!(r.kind, SymbolKind::Function | SymbolKind::Method)
+                } else {
+                    r.kind == *kind
+                }
+            });
+        }
+
+        // Note: exact filter doesn't make sense for AST queries (pattern is S-expression, not symbol name)
+
+        // Expand symbol bodies if requested
+        if filter.expand {
+            let content_path = self.cache.path().join("content.bin");
+            if let Ok(content_reader) = ContentReader::open(&content_path) {
+                for result in &mut results {
+                    if result.span.start_line < result.span.end_line {
+                        if let Some(file_id) = Self::find_file_id(&content_reader, &result.path) {
+                            if let Ok(content) = content_reader.get_file_content(file_id) {
+                                let lines: Vec<&str> = content.lines().collect();
+                                let start_idx = (result.span.start_line as usize).saturating_sub(1);
+                                let end_idx = (result.span.end_line as usize).min(lines.len());
+
+                                if start_idx < end_idx {
+                                    let full_body = lines[start_idx..end_idx].join("\n");
+                                    result.preview = full_body;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Deduplicate by path if paths-only mode
+        if filter.paths_only {
+            use std::collections::HashSet;
+            let mut seen_paths = HashSet::new();
+            results.retain(|r| seen_paths.insert(r.path.clone()));
+        }
+
+        // Sort results deterministically
+        results.sort_by(|a, b| {
+            a.path.cmp(&b.path)
+                .then_with(|| a.span.start_line.cmp(&b.span.start_line))
+        });
+
+        // Apply limit
+        if let Some(limit) = filter.limit {
+            results.truncate(limit);
+        }
+
+        log::info!("AST query returned {} results", results.len());
+
+        Ok(results)
+    }
+
     /// Search using AST pattern with separate text pattern for trigram filtering
     ///
     /// This allows efficient AST queries by:

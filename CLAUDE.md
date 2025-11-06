@@ -88,32 +88,49 @@ Reflex uses **trigram-based indexing** to enable sub-100ms full-text search acro
     rfx serve --port 7878
 
     # AST pattern matching (structure-aware search)
-    # Find async functions in Rust
-    rfx query "async" --ast "(function_item (async)) @fn" --lang rust
+    # ⚠️ WARNING: AST queries are SLOW (500ms-10s+) - use --symbols instead in 95% of cases!
+    # ALWAYS use --glob to limit scope and improve performance
 
-    # Find all Python function definitions
-    rfx query "def" --ast "(function_definition) @fn" --lang python
+    # Find all Rust functions (scans all indexed .rs files)
+    rfx query "(function_item) @fn" --ast --lang rust --glob "src/**/*.rs"
 
-    # Find TypeScript class declarations
-    rfx query "class" --ast "(class_declaration) @class" --lang typescript
+    # Find Python async function definitions
+    rfx query "(function_definition) @fn" --ast --lang python --glob "**/*.py"
 
-    # Find Go struct definitions
-    rfx query "type" --ast "(type_declaration (type_spec (struct_type))) @struct" --lang go
+    # Find TypeScript class declarations in src/
+    rfx query "(class_declaration) @class" --ast --lang typescript --glob "src/**/*.ts"
+
+    # Find Go method declarations (limit to specific package)
+    rfx query "(method_declaration) @method" --ast --lang go --glob "internal/**/*.go"
 
 ---
 
 ## AST Pattern Matching
 
+⚠️ **PERFORMANCE WARNING**: AST queries are **SLOW** (500ms-10s+) and scan the **ENTIRE codebase**. **In 95% of cases, use `--symbols` instead** (10-100x faster).
+
 Reflex supports **structure-aware code search** using Tree-sitter S-expression queries via the `--ast` flag. This allows you to match specific code structures rather than just text patterns.
+
+### When to Use AST Queries (RARE)
+
+Use AST queries **ONLY when**:
+1. You need to match code structure, not just text (e.g., "all async functions with try/catch blocks")
+2. `--symbols` search is insufficient (e.g., need to match specific AST node types)
+3. You have a very specific structural pattern that cannot be expressed as text
+
+**DO NOT use AST queries** for simple symbol searches - use `--symbols` instead.
 
 ### How It Works
 
-AST queries combine trigram pre-filtering with Tree-sitter parsing:
+⚠️ **CRITICAL**: AST queries bypass trigram optimization and scan ALL files for the specified language:
 
-1. **Phase 1**: Trigram search narrows candidates (e.g., "async" → 100 files)
-2. **Phase 2**: Parse only candidate files with tree-sitter
-3. **Phase 3**: Execute S-expression pattern on AST nodes
-4. **Return**: Matched code structures with context
+1. **Get all files**: Scan entire codebase for matching language extension
+2. **Filter by glob** (REQUIRED for performance): Reduce file set using --glob patterns
+3. **Parse files**: Use tree-sitter to parse all matching files
+4. **Execute query**: Run S-expression pattern on AST nodes
+5. **Return**: Matched code structures with context
+
+**Performance impact**: 500ms-10s+ depending on codebase size. **ALWAYS use `--glob` to limit scope**.
 
 ### Supported Languages
 
@@ -146,29 +163,31 @@ impl ParserFactory {
 
 ### Examples
 
-**Rust: Find async functions**
+**IMPORTANT**: Always use `--glob` to limit scope for better performance.
+
+**Rust: Find all functions in src/**
 ```bash
-rfx query "async" --ast "(function_item (async)) @fn" --lang rust
+rfx query "(function_item) @fn" --ast --lang rust --glob "src/**/*.rs"
 ```
 
-**Python: Find all class definitions**
+**Python: Find all class definitions in specific directory**
 ```bash
-rfx query "class" --ast "(class_definition) @class" --lang python
+rfx query "(class_declaration) @class" --ast --lang python --glob "app/**/*.py"
 ```
 
-**Go: Find method declarations**
+**Go: Find method declarations in specific package**
 ```bash
-rfx query "func" --ast "(method_declaration) @method" --lang go
+rfx query "(method_declaration) @method" --ast --lang go --glob "internal/**/*.go"
 ```
 
-**TypeScript: Find interface declarations**
+**TypeScript: Find interface declarations in src/**
 ```bash
-rfx query "interface" --ast "(interface_declaration) @interface" --lang typescript
+rfx query "(interface_declaration) @interface" --ast --lang typescript --glob "src/**/*.ts"
 ```
 
-**C: Find struct definitions**
+**C: Find struct definitions in headers**
 ```bash
-rfx query "struct" --ast "(struct_specifier) @struct" --lang c
+rfx query "(struct_specifier) @struct" --ast --lang c --glob "include/**/*.h"
 ```
 
 ### S-Expression Syntax
@@ -189,17 +208,32 @@ Tree-sitter queries use S-expression patterns:
 
 ### Performance
 
-AST queries are **fast** because:
-- Trigrams filter 62K files → ~10-100 candidates
-- Parse only candidates (not entire codebase)
-- Expected query time: **50-200ms**
+⚠️ **AST queries are SLOW** (500ms-10s+) because they:
+- Bypass trigram optimization (no text pre-filtering)
+- Scan ALL files for the specified language
+- Parse every matching file with tree-sitter
 
-### Use Cases
+**Performance comparison:**
+| Query Type | Time (small codebase) | Time (Linux kernel - 62K files) |
+|------------|----------------------|----------------------------------|
+| **Full-text search** | 2-5ms | 124ms |
+| **--symbols search** | 3-10ms | 224ms (parses ~10 files) |
+| **--ast query (no glob)** | 500ms-2s | 5-10s+ (parses ALL files) |
+| **--ast query (with glob)** | 50-200ms | 500ms-2s (parses filtered files) |
 
-1. **Refactoring**: Find all async functions to convert to sync
-2. **Code review**: Find all public methods in a class
-3. **Migration**: Find deprecated patterns to update
-4. **Analysis**: Count specific code structures (loops, error handlers, etc.)
+**ALWAYS use `--glob`** to limit scope and reduce parse time.
+
+### Use Cases (RARE - prefer --symbols in most cases)
+
+Use AST queries only for structural matching that cannot be done with `--symbols`:
+
+1. **Complex structural patterns**: Find async functions containing try/catch blocks
+2. **Nested structures**: Find classes with specific method signatures
+3. **AST node filtering**: Match specific tree-sitter node types not exposed via `--symbols`
+
+**For simple searches, use `--symbols` instead:**
+- ❌ AST: `rfx query "(function_item) @fn" --ast --lang rust --glob "src/**/*.rs"` (500ms)
+- ✅ Symbols: `rfx query "my_function" --symbols --lang rust` (5ms)
 
 ---
 
