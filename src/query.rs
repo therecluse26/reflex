@@ -472,10 +472,9 @@ impl QueryEngine {
             candidates.push(SearchResult {
                 path: file_path_str,
                 lang: detected_lang,
-                span: Span { start_line: 1, start_col: 1, end_line: 1, end_col: 1 },
+                span: Span { start_line: 1, end_line: 1 },
                 symbol: None,
                 kind: SymbolKind::Unknown("ast_query".to_string()),
-                scope: None,
                 preview: String::new(),
             });
         }
@@ -1172,14 +1171,11 @@ impl QueryEngine {
                         path: file_path_str.clone(),
                         lang: lang.clone(),
                         kind: SymbolKind::Unknown("text_match".to_string()),
-                        symbol: Some(pattern_owned.clone()),
+                        symbol: None,  // No symbol name for text matches (avoid duplication)
                         span: Span {
                             start_line: line_no,
                             end_line: line_no,
-                            start_col: 0,
-                            end_col: 0,
                         },
-                        scope: None,
                         preview: line.to_string(),
                     });
                 }
@@ -1360,10 +1356,7 @@ impl QueryEngine {
                     span: Span {
                         start_line: line_no,
                         end_line: line_no,
-                        start_col: 0,
-                        end_col: 0,
                     },
-                    scope: None,
                     preview: line.to_string(),
                 });
             }
