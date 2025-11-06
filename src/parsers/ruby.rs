@@ -6,7 +6,10 @@
 //! - Methods (instance and class methods)
 //! - Singleton methods
 //! - Constants
-//! - Attr readers/writers/accessors
+//! - Local variables (inside methods)
+//! - Instance variables (@var)
+//! - Class variables (@@var)
+//! - Attr readers/writers/accessors (attr_reader, attr_writer, attr_accessor)
 //! - Blocks (lambda, proc)
 
 use anyhow::{Context, Result};
@@ -37,6 +40,10 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_methods(source, &root_node, &language.into())?);
     symbols.extend(extract_singleton_methods(source, &root_node, &language.into())?);
     symbols.extend(extract_constants(source, &root_node, &language.into())?);
+    symbols.extend(extract_instance_variables(source, &root_node, &language.into())?);
+    symbols.extend(extract_class_variables(source, &root_node, &language.into())?);
+    symbols.extend(extract_attr_accessors(source, &root_node, &language.into())?);
+    symbols.extend(extract_local_variables(source, &root_node, &language.into())?);
 
     // Add file path to all symbols
     for symbol in &mut symbols {
@@ -240,6 +247,243 @@ fn extract_constants(
         .context("Failed to create constant query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Constant, None)
+}
+
+/// Extract local variables (inside methods)
+fn extract_local_variables(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let query_str = r#"
+        (assignment
+            left: (identifier) @name) @assignment
+    "#;
+
+    let query = Query::new(language, query_str)
+        .context("Failed to create local variable query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut symbols = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut name = None;
+        let mut assignment_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "name" => {
+                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                }
+                "assignment" => {
+                    assignment_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(name), Some(node)) = (name, assignment_node) {
+            // Check if this assignment is inside a method
+            let mut is_in_method = false;
+            let mut current = node;
+
+            while let Some(parent) = current.parent() {
+                if parent.kind() == "method" || parent.kind() == "singleton_method" {
+                    is_in_method = true;
+                    break;
+                }
+                // Stop at program/module/class level
+                if parent.kind() == "program" || parent.kind() == "module" || parent.kind() == "class" {
+                    break;
+                }
+                current = parent;
+            }
+
+            if is_in_method {
+                let span = node_to_span(&node);
+                let preview = extract_preview(source, &span);
+
+                symbols.push(SearchResult::new(
+                    String::new(),
+                    Language::Ruby,
+                    SymbolKind::Variable,
+                    Some(name),
+                    span,
+                    None,
+                    preview,
+                ));
+            }
+        }
+    }
+
+    Ok(symbols)
+}
+
+/// Extract instance variables (@variable)
+fn extract_instance_variables(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let query_str = r#"
+        (instance_variable) @name
+    "#;
+
+    let query = Query::new(language, query_str)
+        .context("Failed to create instance variable query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut symbols = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    while let Some(match_) = matches.next() {
+        for capture in match_.captures {
+            let name_text = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
+
+            // Only capture the first occurrence of each instance variable
+            if !seen.contains(name_text) {
+                seen.insert(name_text.to_string());
+
+                let span = node_to_span(&capture.node);
+                let preview = extract_preview(source, &span);
+
+                symbols.push(SearchResult::new(
+                    String::new(),
+                    Language::Ruby,
+                    SymbolKind::Variable,
+                    Some(name_text.to_string()),
+                    span,
+                    None,
+                    preview,
+                ));
+            }
+        }
+    }
+
+    Ok(symbols)
+}
+
+/// Extract class variables (@@variable)
+fn extract_class_variables(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let query_str = r#"
+        (class_variable) @name
+    "#;
+
+    let query = Query::new(language, query_str)
+        .context("Failed to create class variable query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut symbols = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    while let Some(match_) = matches.next() {
+        for capture in match_.captures {
+            let name_text = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
+
+            // Only capture the first occurrence of each class variable
+            if !seen.contains(name_text) {
+                seen.insert(name_text.to_string());
+
+                let span = node_to_span(&capture.node);
+                let preview = extract_preview(source, &span);
+
+                symbols.push(SearchResult::new(
+                    String::new(),
+                    Language::Ruby,
+                    SymbolKind::Variable,
+                    Some(name_text.to_string()),
+                    span,
+                    None,
+                    preview,
+                ));
+            }
+        }
+    }
+
+    Ok(symbols)
+}
+
+/// Extract attr_accessor, attr_reader, attr_writer declarations
+fn extract_attr_accessors(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let query_str = r#"
+        (call
+            method: (identifier) @method_type
+            arguments: (argument_list
+                (simple_symbol) @name))
+
+        (#match? @method_type "^(attr_reader|attr_writer|attr_accessor)$")
+    "#;
+
+    let query = Query::new(language, query_str)
+        .context("Failed to create attr accessor query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut symbols = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut method_type = None;
+        let mut name = None;
+        let mut call_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "method_type" => {
+                    method_type = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                }
+                "name" => {
+                    let symbol_text = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
+                    // Remove leading : from symbol
+                    name = Some(symbol_text.trim_start_matches(':').to_string());
+
+                    // Find the parent call node
+                    let mut current = capture.node;
+                    while let Some(parent) = current.parent() {
+                        if parent.kind() == "call" {
+                            call_node = Some(parent);
+                            break;
+                        }
+                        current = parent;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(_method_type), Some(name), Some(node)) = (method_type, name, call_node) {
+            let span = node_to_span(&node);
+            let preview = extract_preview(source, &span);
+
+            symbols.push(SearchResult::new(
+                String::new(),
+                Language::Ruby,
+                SymbolKind::Property,
+                Some(name),
+                span,
+                None,
+                preview,
+            ));
+        }
+    }
+
+    Ok(symbols)
 }
 
 /// Generic symbol extraction helper
@@ -519,5 +763,122 @@ end
         assert!(kinds.contains(&&SymbolKind::Module));
         assert!(kinds.contains(&&SymbolKind::Class));
         assert!(kinds.contains(&&SymbolKind::Method));
+    }
+
+    #[test]
+    fn test_local_variables_included() {
+        let source = r#"
+GLOBAL_CONSTANT = 100
+
+class Calculator
+  def calculate(input)
+    local_var = input * 2
+    result = local_var + 10
+    temp = result / 2
+    temp
+  end
+
+  def self.process(value)
+    squared = value * value
+    doubled = squared * 2
+    doubled
+  end
+end
+        "#;
+
+        let symbols = parse("test.rb", source).unwrap();
+
+        // Filter to just variables
+        let variables: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Variable))
+            .collect();
+
+        // Check that local variables are captured
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("local_var")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("result")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("temp")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("squared")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("doubled")));
+
+        // Verify that local variables have no scope
+        for var in variables {
+            assert_eq!(var.scope, None);
+        }
+
+        // Verify that GLOBAL_CONSTANT is not included as a variable
+        let var_names: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Variable))
+            .filter_map(|s| s.symbol.as_deref())
+            .collect();
+        assert!(!var_names.contains(&"GLOBAL_CONSTANT"));
+    }
+
+    #[test]
+    fn test_instance_and_class_variables() {
+        let source = r#"
+class Counter
+  @@total_count = 0
+
+  def initialize(name)
+    @name = name
+    @count = 0
+    @@total_count += 1
+  end
+
+  def increment
+    @count += 1
+  end
+
+  def self.get_total
+    @@total_count
+  end
+end
+        "#;
+
+        let symbols = parse("test.rb", source).unwrap();
+
+        // Filter to just variables
+        let variables: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Variable))
+            .collect();
+
+        // Check that instance variables are captured
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("@name")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("@count")));
+
+        // Check that class variables are captured
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("@@total_count")));
+    }
+
+    #[test]
+    fn test_attr_accessors() {
+        let source = r#"
+class Person
+  attr_reader :name, :age
+  attr_writer :email
+  attr_accessor :phone, :address
+
+  def initialize(name, age)
+    @name = name
+    @age = age
+  end
+end
+        "#;
+
+        let symbols = parse("test.rb", source).unwrap();
+
+        // Filter to properties
+        let properties: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Property))
+            .collect();
+
+        // Check that attr_* declarations are captured
+        assert!(properties.iter().any(|p| p.symbol.as_deref() == Some("name")));
+        assert!(properties.iter().any(|p| p.symbol.as_deref() == Some("age")));
+        assert!(properties.iter().any(|p| p.symbol.as_deref() == Some("email")));
+        assert!(properties.iter().any(|p| p.symbol.as_deref() == Some("phone")));
+        assert!(properties.iter().any(|p| p.symbol.as_deref() == Some("address")));
+
+        assert_eq!(properties.len(), 5);
     }
 }

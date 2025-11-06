@@ -6,7 +6,7 @@
 //! - Enums
 //! - Unions
 //! - Typedefs
-//! - Global variables (extern, static)
+//! - Variables (global, local, static, extern)
 //! - Macros (#define for function-like and constant macros)
 
 use anyhow::{Context, Result};
@@ -139,7 +139,7 @@ fn extract_typedefs(
     extract_symbols(source, root, &query, SymbolKind::Type, None)
 }
 
-/// Extract global variable declarations
+/// Extract variable declarations (global and local)
 fn extract_variables(
     source: &str,
     root: &tree_sitter::Node,
@@ -157,7 +157,7 @@ fn extract_variables(
     let query = Query::new(language, query_str)
         .context("Failed to create variable query")?;
 
-    // Filter to only top-level declarations (not inside functions)
+    // Extract all variable declarations (global and local)
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
 
@@ -177,31 +177,18 @@ fn extract_variables(
         }
 
         if let (Some(name), Some(node)) = (name, var_node) {
-            // Check if this is a top-level declaration (not inside a function)
-            let mut is_top_level = true;
-            let mut current = node;
-            while let Some(parent) = current.parent() {
-                if parent.kind() == "function_definition" || parent.kind() == "compound_statement" {
-                    is_top_level = false;
-                    break;
-                }
-                current = parent;
-            }
+            let span = node_to_span(&node);
+            let preview = extract_preview(source, &span);
 
-            if is_top_level {
-                let span = node_to_span(&node);
-                let preview = extract_preview(source, &span);
-
-                symbols.push(SearchResult::new(
-                    String::new(),
-                    Language::C,
-                    SymbolKind::Variable,
-                    Some(name),
-                    span,
-                    None,
-                    preview,
-                ));
-            }
+            symbols.push(SearchResult::new(
+                String::new(),
+                Language::C,
+                SymbolKind::Variable,
+                Some(name),
+                span,
+                None,
+                preview,
+            ));
         }
     }
 
@@ -463,7 +450,7 @@ typedef struct Node {
     }
 
     #[test]
-    fn test_local_variables_excluded() {
+    fn test_local_variables_included() {
         let source = r#"
 int global_var = 10;
 
@@ -479,8 +466,9 @@ int calculate(int x) {
             .filter(|s| matches!(s.kind, SymbolKind::Variable))
             .collect();
 
-        // Should only find global_var, not local_var
-        assert_eq!(var_symbols.len(), 1);
-        assert_eq!(var_symbols[0].symbol.as_deref(), Some("global_var"));
+        // Should find both global_var and local_var
+        assert_eq!(var_symbols.len(), 2);
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("global_var")));
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("local_var")));
     }
 }

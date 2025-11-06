@@ -199,46 +199,42 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
             },
             {
                 "name": "search_ast",
-                "description": "Structure-aware code search using Tree-sitter AST patterns (S-expressions).",
+                "description": "⚠️ ADVANCED USERS ONLY - DO NOT USE UNLESS ABSOLUTELY NECESSARY ⚠️\n\nStructure-aware code search using Tree-sitter AST patterns (S-expressions).\n\n**PERFORMANCE WARNING:** AST queries bypass trigram optimization and scan the ENTIRE codebase (500ms-10s+).\n\n**WHEN TO USE (RARE):**\n- You need to match code structure, not just text (e.g., \"all async functions with try/catch blocks\")\n- --symbols search is insufficient (e.g., need to match specific AST node types)\n- You have a very specific structural pattern that cannot be expressed as text\n\n**IN 95% OF CASES, USE search_code with symbols=true INSTEAD** (10-100x faster).\n\n**REQUIRED:** You MUST use glob patterns to limit scope (e.g., glob=['src/**/*.rs']) to avoid scanning thousands of files.\n\n**Example AST patterns:**\n- Rust: '(function_item) @fn' (all functions)\n- Python: '(function_definition) @fn' (all functions)\n- TypeScript: '(class_declaration) @class' (all classes)\n\nRefer to Tree-sitter documentation for each language's grammar.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "pattern": {
                             "type": "string",
-                            "description": "Text pattern for trigram filtering"
-                        },
-                        "ast_pattern": {
-                            "type": "string",
-                            "description": "AST pattern (Tree-sitter S-expression)"
+                            "description": "AST pattern (Tree-sitter S-expression, e.g., '(function_item) @fn')"
                         },
                         "lang": {
                             "type": "string",
-                            "description": "Language (required: rust, typescript, javascript, php)"
-                        },
-                        "file": {
-                            "type": "string",
-                            "description": "Filter by file path"
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of results"
+                            "description": "Language (REQUIRED: rust, typescript, javascript, python, go, java, c, cpp, csharp, php, ruby, kotlin, zig)"
                         },
                         "glob": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Include files matching glob patterns"
+                            "description": "Include files matching glob patterns (STRONGLY RECOMMENDED to limit scope, e.g., ['src/**/*.rs'])"
                         },
                         "exclude": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Exclude files matching glob patterns"
+                            "description": "Exclude files matching glob patterns (e.g., ['target/**', 'node_modules/**'])"
+                        },
+                        "file": {
+                            "type": "string",
+                            "description": "Filter by file path (substring)"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of results"
                         },
                         "paths": {
                             "type": "boolean",
                             "description": "Return only unique file paths"
                         }
                     },
-                    "required": ["pattern", "ast_pattern", "lang"]
+                    "required": ["pattern", "lang"]
                 }
             },
             {
@@ -311,6 +307,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 expand: expand.unwrap_or(false),
                 file_pattern: file,
                 exact: exact.unwrap_or(false),
+                use_contains: false, // Default to word-boundary matching for MCP
                 timeout_secs: 30, // Default 30 second timeout for MCP queries
                 glob_patterns,
                 exclude_patterns,
@@ -359,6 +356,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 expand: false,
                 file_pattern: file,
                 exact: false,
+                use_contains: false, // Regex mode uses substring matching via use_regex flag
                 timeout_secs: 30, // Default 30 second timeout for MCP queries
                 glob_patterns,
                 exclude_patterns,
@@ -377,35 +375,37 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             }))
         }
         "search_ast" => {
-            let pattern = arguments["pattern"]
+            // AST pattern (Tree-sitter S-expression)
+            let ast_pattern = arguments["pattern"]
                 .as_str()
-                .ok_or_else(|| anyhow::anyhow!("Missing pattern"))?
-                .to_string();
-
-            let ast_pattern = arguments["ast_pattern"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("Missing ast_pattern"))?
+                .ok_or_else(|| anyhow::anyhow!("Missing pattern (AST S-expression)"))?
                 .to_string();
 
             let lang_str = arguments["lang"]
                 .as_str()
-                .ok_or_else(|| anyhow::anyhow!("Missing lang"))?
+                .ok_or_else(|| anyhow::anyhow!("Missing lang (required for AST queries)"))?
                 .to_string();
 
             let file = arguments["file"].as_str().map(|s| s.to_string());
             let limit = arguments["limit"].as_u64().map(|n| n as usize);
-            let glob_patterns = arguments["glob"]
+            let glob_patterns: Vec<String> = arguments["glob"]
                 .as_array()
                 .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default();
-            let exclude_patterns = arguments["exclude"]
+            let exclude_patterns: Vec<String> = arguments["exclude"]
                 .as_array()
                 .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default();
             let paths_only = arguments["paths"].as_bool().unwrap_or(false);
 
             let language = parse_language(Some(lang_str))
-                .ok_or_else(|| anyhow::anyhow!("Invalid or unsupported language"))?;
+                .ok_or_else(|| anyhow::anyhow!("Invalid or unsupported language for AST queries"))?;
+
+            // Warn if glob patterns are not provided (performance issue)
+            if glob_patterns.is_empty() && exclude_patterns.is_empty() {
+                log::warn!("⚠️  AST query without glob patterns will scan the ENTIRE codebase. This may take 2-10+ seconds.");
+                log::warn!("    Strongly recommend using glob patterns, e.g., glob=['src/**/*.rs']");
+            }
 
             let filter = QueryFilter {
                 language: Some(language),
@@ -417,7 +417,8 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 expand: false,
                 file_pattern: file,
                 exact: false,
-                timeout_secs: 30, // Default 30 second timeout for MCP queries
+                use_contains: false,
+                timeout_secs: 60, // Longer timeout for AST queries (they're slow)
                 glob_patterns,
                 exclude_patterns,
                 paths_only,
@@ -425,7 +426,9 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 
             let cache = CacheManager::new(".");
             let engine = QueryEngine::new(cache);
-            let results = engine.search_ast_with_text_filter(&pattern, &ast_pattern, filter)?;
+
+            // Use the new search_ast_all_files method (no trigram filtering)
+            let results = engine.search_ast_all_files(&ast_pattern, filter)?;
 
             Ok(json!({
                 "content": [{

@@ -6,7 +6,7 @@
 //! - Interfaces
 //! - Type aliases
 //! - Enums
-//! - Variables and constants
+//! - Variables and constants (const, let, var - all scopes)
 //! - Methods (with class scope)
 //! - Modules/Namespaces
 //!
@@ -179,24 +179,27 @@ fn extract_enums(
     extract_symbols(source, root, &query, SymbolKind::Enum, None)
 }
 
-/// Extract variable and constant declarations
+/// Extract variable and constant declarations (const, let, var - all scopes)
 fn extract_variables(
     source: &str,
     root: &tree_sitter::Node,
     language: &tree_sitter::Language,
 ) -> Result<Vec<SearchResult>> {
-    // Only extract const declarations that are NOT arrow functions (skip let/var to reduce noise)
-    // Arrow functions are already handled by extract_arrow_functions
+    // Extract const/let (lexical_declaration) and var (variable_declaration)
+    // Skip arrow functions as they're already handled by extract_arrow_functions
     let query_str = r#"
         (lexical_declaration
             (variable_declarator
-                name: (identifier) @name)) @const
+                name: (identifier) @name)) @decl
+
+        (variable_declaration
+            (variable_declarator
+                name: (identifier) @name)) @decl
     "#;
 
     let query = Query::new(language, query_str)
         .context("Failed to create variable query")?;
 
-    // Filter to only const declarations that are not arrow functions
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
 
@@ -220,38 +223,40 @@ fn extract_variables(
         }
 
         if let (Some(name), Some(declarator)) = (name, declarator_node) {
-            // Check if this is a const declaration AND not an arrow function
-            if let Some(lexical_decl) = declarator.parent() {
-                let parent_text = lexical_decl.utf8_text(source.as_bytes()).unwrap_or("");
-
-                // Check if it's a const declaration
-                if parent_text.trim_start().starts_with("const") {
-                    // Check if the value is an arrow function
-                    let mut is_arrow_function = false;
-                    for i in 0..declarator.child_count() {
-                        if let Some(child) = declarator.child(i) {
-                            if child.kind() == "arrow_function" {
-                                is_arrow_function = true;
-                                break;
-                            }
-                        }
+            // Check if the value is an arrow function (skip those)
+            let mut is_arrow_function = false;
+            for i in 0..declarator.child_count() {
+                if let Some(child) = declarator.child(i) {
+                    if child.kind() == "arrow_function" {
+                        is_arrow_function = true;
+                        break;
                     }
+                }
+            }
 
-                    // Only add if it's NOT an arrow function
-                    if !is_arrow_function {
-                        let span = node_to_span(&lexical_decl);
-                        let preview = extract_preview(source, &span);
+            // Only add if it's NOT an arrow function
+            if !is_arrow_function {
+                if let Some(decl_node) = declarator.parent() {
+                    let span = node_to_span(&decl_node);
+                    let preview = extract_preview(source, &span);
 
-                        symbols.push(SearchResult::new(
-                            String::new(),
-                            Language::TypeScript,
-                            SymbolKind::Constant,
-                            Some(name),
-                            span,
-                            None,
-                            preview,
-                        ));
-                    }
+                    // Determine if it's a constant (const) or variable (let/var)
+                    let decl_text = decl_node.utf8_text(source.as_bytes()).unwrap_or("");
+                    let kind = if decl_text.trim_start().starts_with("const") {
+                        SymbolKind::Constant
+                    } else {
+                        SymbolKind::Variable
+                    };
+
+                    symbols.push(SearchResult::new(
+                        String::new(),
+                        Language::TypeScript,
+                        kind,
+                        Some(name),
+                        span,
+                        None,
+                        preview,
+                    ));
                 }
             }
         }
@@ -762,5 +767,47 @@ export class CentralUsersModule extends HttpFactory<WatchHookMap, WatchEvents> {
             "getAllUsers should be a Method, not {:?}",
             get_all_users_symbols[0].kind
         );
+    }
+
+    #[test]
+    fn test_local_variables_included() {
+        let source = r#"
+            const GLOBAL_CONSTANT = 100;
+            let globalLet = 50;
+            var globalVar = 25;
+
+            function calculate(x: number): number {
+                const localConst = x * 2;
+                let localLet = 5;
+                var localVar = 10;
+                return localConst + localLet + localVar;
+            }
+        "#;
+
+        let symbols = parse("test.ts", source, Language::TypeScript).unwrap();
+
+        let var_symbols: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Variable) || matches!(s.kind, SymbolKind::Constant))
+            .collect();
+
+        // Should find all: 3 global + 3 local = 6 variables
+        assert_eq!(var_symbols.len(), 6);
+
+        // Check globals
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("GLOBAL_CONSTANT")));
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("globalLet")));
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("globalVar")));
+
+        // Check locals
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("localConst")));
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("localLet")));
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("localVar")));
+
+        // Verify const vs variable classification
+        let global_const = var_symbols.iter().find(|s| s.symbol.as_deref() == Some("GLOBAL_CONSTANT")).unwrap();
+        assert!(matches!(global_const.kind, SymbolKind::Constant));
+
+        let global_let = var_symbols.iter().find(|s| s.symbol.as_deref() == Some("globalLet")).unwrap();
+        assert!(matches!(global_let.kind, SymbolKind::Variable));
     }
 }

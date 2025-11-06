@@ -179,18 +179,12 @@ pub fn execute_ast_query(
 }
 
 /// Get Tree-sitter language grammar for a given language
+///
+/// Delegates to ParserFactory::get_language_grammar() for centralized grammar loading.
+/// All languages with tree-sitter grammars are supported automatically.
 fn get_tree_sitter_language(lang: Language) -> Result<tree_sitter::Language> {
-    match lang {
-        Language::Rust => Ok(tree_sitter_rust::LANGUAGE.into()),
-        Language::TypeScript => Ok(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
-        Language::JavaScript => Ok(tree_sitter_typescript::LANGUAGE_TSX.into()),
-        Language::PHP => Ok(tree_sitter_php::LANGUAGE_PHP.into()),
-        // Add more languages as needed
-        _ => Err(anyhow!(
-            "Language {:?} not yet supported for AST queries. Supported: Rust, TypeScript, JavaScript, PHP",
-            lang
-        )),
-    }
+    crate::parsers::ParserFactory::get_language_grammar(lang)
+        .with_context(|| format!("Language {:?} not supported for AST queries", lang))
 }
 
 /// Extract symbol name and kind from a Tree-sitter node
@@ -254,14 +248,22 @@ fn extract_symbol_info(node: &tree_sitter::Node, source: &str) -> (Option<String
             }
         }
 
-        // PHP-specific nodes
+        // Python-specific nodes
+        "class_definition" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = source[name_node.start_byte()..name_node.end_byte()].to_string();
+                return (Some(name), Some(SymbolKind::Class));
+            }
+        }
+
+        // PHP-specific nodes (function_definition shared with Python above)
         "function_definition" => {
             if let Some(name_node) = node.child_by_field_name("name") {
                 let name = source[name_node.start_byte()..name_node.end_byte()].to_string();
                 return (Some(name), Some(SymbolKind::Function));
             }
         }
-        // Note: class_declaration already handled above for TS/JS
+        // Note: class_declaration handled above for TS/JS, class_definition for Python
         // PHP trait_declaration uses same node type as Rust trait_item handled above
         "enum_declaration" => {
             if let Some(name_node) = node.child_by_field_name("name") {
@@ -401,7 +403,46 @@ struct Config {
     #[test]
     fn test_unsupported_language() {
         let mut file_contents = HashMap::new();
-        file_contents.insert("test.py".to_string(), "def test(): pass".to_string());
+        file_contents.insert("test.vue".to_string(), "<script>export default {}</script>".to_string());
+
+        let candidates = vec![SearchResult {
+            path: "test.vue".to_string(),
+            lang: Language::Vue,
+            span: Span {
+                start_line: 1,
+                start_col: 1,
+                end_line: 1,
+                end_col: 1,
+            },
+            symbol: None,
+            kind: SymbolKind::Unknown("text_match".to_string()),
+            scope: None,
+            preview: String::new(),
+        }];
+
+        // Vue uses line-based parsing, not tree-sitter, so AST queries should fail
+        let ast_pattern = "(function_declaration) @fn";
+        let result = execute_ast_query(candidates, ast_pattern, Language::Vue, &file_contents);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not supported for AST queries"));
+    }
+
+    #[test]
+    fn test_python_function_query() {
+        let content = r#"
+def hello():
+    print("Hello")
+
+async def fetch_data():
+    return await get_data()
+
+def process(x):
+    return x * 2
+"#;
+
+        let mut file_contents = HashMap::new();
+        file_contents.insert("test.py".to_string(), content.to_string());
 
         let candidates = vec![SearchResult {
             path: "test.py".to_string(),
@@ -418,10 +459,15 @@ struct Config {
             preview: String::new(),
         }];
 
+        // Query for all Python functions
         let ast_pattern = "(function_definition) @fn";
-        let result = execute_ast_query(candidates, ast_pattern, Language::Python, &file_contents);
+        let results = execute_ast_query(candidates, ast_pattern, Language::Python, &file_contents)
+            .expect("AST query failed");
 
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not yet supported"));
+        // Should find all three functions
+        assert_eq!(results.len(), 3);
+        assert!(results.iter().any(|r| r.preview.contains("def hello")));
+        assert!(results.iter().any(|r| r.preview.contains("async def fetch_data")));
+        assert!(results.iter().any(|r| r.preview.contains("def process")));
     }
 }

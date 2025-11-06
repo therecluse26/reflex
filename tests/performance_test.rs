@@ -184,6 +184,7 @@ fn test_symbol_query_performance() {
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         symbols_mode: true,
+        use_contains: true,  // "gre" is substring of "greet", not at word boundary
         ..Default::default()
     };
 

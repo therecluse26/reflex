@@ -177,7 +177,10 @@ fn test_incremental_indexing_workflow() {
     // Verify both files are searchable (search for "main" which appears in both)
     let cache = CacheManager::new(project);
     let engine = QueryEngine::new(cache);
-    let filter = QueryFilter::default();
+    let filter = QueryFilter {
+        use_contains: true,  // "mai" is substring of "main", not at word boundary
+        ..Default::default()
+    };
     let results = engine.search("mai", filter).unwrap(); // "mai" is a trigram in "main"
     assert!(results.len() >= 1, "Should find at least main.rs");
 }
@@ -200,6 +203,7 @@ fn test_modify_file_and_reindex_workflow() {
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         symbols_mode: true,
+        use_contains: true,  // "old" in "old_function" is not at word boundary
         ..Default::default()
     };
     let results = engine.search("old", filter.clone()).unwrap();
@@ -307,6 +311,7 @@ fn test_combined_filters_workflow() {
         kind: Some(SymbolKind::Function),
         file_pattern: Some("src/".to_string()),
         symbols_mode: true,
+        use_contains: true,  // "poi" in "point_new" is not at word boundary
         ..Default::default()
     };
     let results = engine.search("poi", filter).unwrap();
@@ -336,6 +341,7 @@ fn test_limit_and_sorting_workflow() {
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         limit: Some(5),
+        use_contains: true,  // "test" in "test0", "test1" is not at word boundary
         ..Default::default()
     };
     let results = engine.search("test", filter).unwrap();
@@ -768,6 +774,7 @@ fn another_extract_pattern() {}
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         paths_only: true,
+        use_contains: true,  // "extract" in "extract_pattern" is not at word boundary
         ..Default::default()
     };
     let results = engine.search("extract", filter).unwrap();
@@ -830,6 +837,7 @@ fn test_paths_only_single_match_per_file() {
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         paths_only: true,
+        use_contains: true,  // "test" in "test0", "test1" is not at word boundary (followed by digit)
         ..Default::default()
     };
     let results = engine.search("test", filter).unwrap();
@@ -965,6 +973,7 @@ fn test() {
         glob_patterns: vec!["**/src/**".to_string()],
         exclude_patterns: vec!["**/tests/**".to_string()],
         symbols_mode: true,
+        use_contains: true,  // "extract" in "extract_pattern" is not at word boundary
         ..Default::default()
     };
     let results = engine.search("extract", filter).unwrap();
@@ -1003,6 +1012,7 @@ fn test_all_filters_together() {
         language: Some(reflex::Language::Rust),
         symbols_mode: true,
         paths_only: true,
+        use_contains: true,  // "extract" in "extract_pattern" is not at word boundary
         ..Default::default()
     };
     let results = engine.search("extract", filter).unwrap();
@@ -1043,4 +1053,300 @@ fn test_glob_exclude_paths_with_limit() {
     // Should limit to 5 unique paths
     assert_eq!(results.len(), 5);
     assert!(results.iter().all(|r| r.path.contains("src/")));
+}
+
+// ==================== AST Query Tests ====================
+
+#[test]
+fn test_ast_query_basic_rust() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create Rust files with functions
+    fs::write(
+        project.join("main.rs"),
+        "fn hello() {}\nfn world() {}\nstruct Point {}"
+    ).unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // AST query for all functions
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        language: Some(reflex::Language::Rust),
+        use_ast: true,
+        ..Default::default()
+    };
+    let results = engine.search_ast_all_files("(function_item) @fn", filter).unwrap();
+
+    // Should find both functions but not the struct
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.kind == SymbolKind::Function));
+    assert!(results.iter().any(|r| r.symbol.as_deref() == Some("hello")));
+    assert!(results.iter().any(|r| r.symbol.as_deref() == Some("world")));
+}
+
+#[test]
+fn test_ast_query_with_glob_pattern() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create nested directory structure
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("tests")).unwrap();
+
+    fs::write(project.join("src/lib.rs"), "fn src_func() {}").unwrap();
+    fs::write(project.join("tests/test.rs"), "fn test_func() {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // AST query with glob to limit to src/ only
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        language: Some(reflex::Language::Rust),
+        use_ast: true,
+        glob_patterns: vec!["**/src/**/*.rs".to_string()],
+        ..Default::default()
+    };
+    let results = engine.search_ast_all_files("(function_item) @fn", filter).unwrap();
+
+    // Should only find function in src/, not tests/
+    assert_eq!(results.len(), 1);
+    assert!(results[0].path.contains("src/lib.rs"));
+    assert_eq!(results[0].symbol.as_deref(), Some("src_func"));
+}
+
+#[test]
+fn test_ast_query_with_exclude_pattern() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("build")).unwrap();
+
+    fs::write(project.join("src/main.rs"), "fn main_func() {}").unwrap();
+    fs::write(project.join("build/generated.rs"), "fn gen_func() {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // AST query with exclude to skip build/
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        language: Some(reflex::Language::Rust),
+        use_ast: true,
+        exclude_patterns: vec!["**/build/**".to_string()],
+        ..Default::default()
+    };
+    let results = engine.search_ast_all_files("(function_item) @fn", filter).unwrap();
+
+    // Should only find function in src/
+    assert_eq!(results.len(), 1);
+    assert!(results[0].path.contains("src/main.rs"));
+    assert!(!results.iter().any(|r| r.path.contains("build/")));
+}
+
+#[test]
+fn test_ast_query_multiple_languages() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::write(project.join("main.rs"), "fn rust_func() {}").unwrap();
+    fs::write(project.join("app.py"), "def python_func(): pass").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // AST query for Rust functions
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter_rust = QueryFilter {
+        language: Some(reflex::Language::Rust),
+        use_ast: true,
+        ..Default::default()
+    };
+    let results_rust = engine.search_ast_all_files("(function_item) @fn", filter_rust).unwrap();
+    assert_eq!(results_rust.len(), 1);
+    assert_eq!(results_rust[0].symbol.as_deref(), Some("rust_func"));
+
+    // AST query for Python functions
+    let filter_python = QueryFilter {
+        language: Some(reflex::Language::Python),
+        use_ast: true,
+        ..Default::default()
+    };
+    let results_python = engine.search_ast_all_files("(function_definition) @fn", filter_python).unwrap();
+    assert_eq!(results_python.len(), 1);
+    assert!(results_python[0].preview.contains("python_func"));
+}
+
+#[test]
+fn test_ast_query_requires_language() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::write(project.join("main.rs"), "fn test() {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // AST query without language should fail
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        language: None,  // Missing language!
+        use_ast: true,
+        ..Default::default()
+    };
+    let result = engine.search_ast_all_files("(function_item) @fn", filter);
+
+    assert!(result.is_err());
+    let error_msg = result.unwrap_err().to_string();
+    assert!(error_msg.contains("Language must be specified"));
+}
+
+#[test]
+fn test_ast_query_structs() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::write(
+        project.join("main.rs"),
+        "struct Point {}\nstruct Line {}\nfn test() {}"
+    ).unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // AST query for structs
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        language: Some(reflex::Language::Rust),
+        use_ast: true,
+        ..Default::default()
+    };
+    let results = engine.search_ast_all_files("(struct_item) @struct", filter).unwrap();
+
+    // Should find both structs but not the function
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.kind == SymbolKind::Struct));
+    assert!(results.iter().any(|r| r.symbol.as_deref() == Some("Point")));
+    assert!(results.iter().any(|r| r.symbol.as_deref() == Some("Line")));
+}
+
+#[test]
+fn test_ast_query_glob_and_exclude_together() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::create_dir_all(project.join("src/parsers")).unwrap();
+    fs::create_dir_all(project.join("src/utils")).unwrap();
+    fs::create_dir_all(project.join("tests")).unwrap();
+
+    fs::write(project.join("src/parsers/rust.rs"), "fn parse_rust() {}").unwrap();
+    fs::write(project.join("src/parsers/generated.rs"), "fn gen_parse() {}").unwrap();
+    fs::write(project.join("src/utils/helpers.rs"), "fn helper() {}").unwrap();
+    fs::write(project.join("tests/test.rs"), "fn test() {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // AST query with glob (src/) and exclude (generated.rs)
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        language: Some(reflex::Language::Rust),
+        use_ast: true,
+        glob_patterns: vec!["**/src/**/*.rs".to_string()],
+        exclude_patterns: vec!["**/generated.rs".to_string()],
+        ..Default::default()
+    };
+    let results = engine.search_ast_all_files("(function_item) @fn", filter).unwrap();
+
+    // Should find parse_rust and helper but not gen_parse or test
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().any(|r| r.symbol.as_deref() == Some("parse_rust")));
+    assert!(results.iter().any(|r| r.symbol.as_deref() == Some("helper")));
+    assert!(!results.iter().any(|r| r.symbol.as_deref() == Some("gen_parse")));
+    assert!(!results.iter().any(|r| r.symbol.as_deref() == Some("test")));
+}
+
+#[test]
+fn test_ast_query_python_classes() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::write(
+        project.join("app.py"),
+        "class User:\n    pass\n\nclass Product:\n    pass\n\ndef helper():\n    pass"
+    ).unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // AST query for Python classes
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        language: Some(reflex::Language::Python),
+        use_ast: true,
+        ..Default::default()
+    };
+    let results = engine.search_ast_all_files("(class_definition) @class", filter).unwrap();
+
+    // Should find both classes but not the function
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.kind == SymbolKind::Class));
+    assert!(results.iter().any(|r| r.preview.contains("User")));
+    assert!(results.iter().any(|r| r.preview.contains("Product")));
+}
+
+#[test]
+fn test_ast_query_invalid_pattern() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::write(project.join("main.rs"), "fn test() {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // AST query with invalid S-expression (missing closing paren)
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        language: Some(reflex::Language::Rust),
+        use_ast: true,
+        ..Default::default()
+    };
+    let result = engine.search_ast_all_files("(function_item @fn", filter);
+
+    // Should fail with parse error
+    assert!(result.is_err());
+    let error_msg = result.unwrap_err().to_string();
+    assert!(error_msg.contains("Invalid AST query pattern") || error_msg.contains("error"));
 }

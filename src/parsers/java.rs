@@ -9,6 +9,7 @@
 //! - Fields (public, private, protected, static)
 //! - Constructors
 //! - Annotations
+//! - Local variables (inside method bodies)
 
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
@@ -40,6 +41,7 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_interface_methods(source, &root_node, &language.into())?);
     symbols.extend(extract_fields(source, &root_node, &language.into())?);
     symbols.extend(extract_constructors(source, &root_node, &language.into())?);
+    symbols.extend(extract_local_variables(source, &root_node, &language.into())?);
 
     // Add file path to all symbols
     for symbol in &mut symbols {
@@ -407,6 +409,24 @@ fn extract_interface_methods(
     }
 
     Ok(symbols)
+}
+
+/// Extract local variable declarations from method bodies
+fn extract_local_variables(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let query_str = r#"
+        (local_variable_declaration
+            declarator: (variable_declarator
+                name: (identifier) @name)) @var
+    "#;
+
+    let query = Query::new(language, query_str)
+        .context("Failed to create local variable query")?;
+
+    extract_symbols(source, root, &query, SymbolKind::Variable, None)
 }
 
 /// Generic symbol extraction helper
@@ -815,5 +835,39 @@ public class Container<T> {
             .collect();
 
         assert!(method_symbols.len() >= 3);
+    }
+
+    #[test]
+    fn test_local_variables_included() {
+        let source = r#"
+public class Calculator {
+    private int globalCount = 10;
+
+    public int calculate(int x) {
+        int localVar = x * 2;
+        int anotherLocal = 5;
+        return localVar + anotherLocal + globalCount;
+    }
+}
+        "#;
+
+        let symbols = parse("test.java", source).unwrap();
+
+        let var_symbols: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Variable))
+            .collect();
+
+        // Should find both field (globalCount) and local variables (localVar, anotherLocal)
+        assert_eq!(var_symbols.len(), 3);
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("globalCount")));
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("localVar")));
+        assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("anotherLocal")));
+
+        // Check scopes: field should have scope, local vars should not
+        let global_count = var_symbols.iter().find(|s| s.symbol.as_deref() == Some("globalCount")).unwrap();
+        assert_eq!(global_count.scope.as_ref().unwrap(), "class Calculator");
+
+        let local_var = var_symbols.iter().find(|s| s.symbol.as_deref() == Some("localVar")).unwrap();
+        assert_eq!(local_var.scope, None);
     }
 }

@@ -69,8 +69,9 @@ impl Indexer {
             let available_cores = std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(4);
-            // Use 80% of available cores (minimum 1)
-            ((available_cores as f64 * 0.8).ceil() as usize).max(1)
+            // Use 80% of available cores (minimum 1, maximum 8)
+            // Cap at 8 to prevent diminishing returns from cache contention on high-core systems
+            ((available_cores as f64 * 0.8).ceil() as usize).max(1).min(8)
         } else {
             self.config.parallel_threads
         };

@@ -4,7 +4,7 @@
 //! - Component exports (default export from script)
 //! - Functions and methods
 //! - Composables (useX functions)
-//! - Variables and constants
+//! - Variables and constants (const, let, var at all scopes)
 //! - Script setup declarations
 //!
 //! Vue SFCs contain multiple sections: template, script, and style.
@@ -180,7 +180,7 @@ fn extract_arrow_functions(
     extract_symbols(source, root, &query, SymbolKind::Function, None, line_offset)
 }
 
-/// Extract variable and constant declarations
+/// Extract variable and constant declarations (const, let, var at all scopes)
 fn extract_variables(
     source: &str,
     root: &tree_sitter::Node,
@@ -190,13 +190,16 @@ fn extract_variables(
     let query_str = r#"
         (lexical_declaration
             (variable_declarator
-                name: (identifier) @name)) @const
+                name: (identifier) @name)) @decl
+
+        (variable_declaration
+            (variable_declarator
+                name: (identifier) @name)) @decl
     "#;
 
     let query = Query::new(language, query_str)
         .context("Failed to create variable query")?;
 
-    // Filter to only const declarations that are not arrow functions
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(&query, *root, source.as_bytes());
 
@@ -205,49 +208,59 @@ fn extract_variables(
     while let Some(match_) = matches.next() {
         let mut name = None;
         let mut declarator_node = None;
+        let mut decl_node = None;
 
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
-            if capture_name == "name" {
-                name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
-                if let Some(parent) = capture.node.parent() {
-                    if parent.kind() == "variable_declarator" {
-                        declarator_node = Some(parent);
+            match capture_name {
+                "name" => {
+                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    if let Some(parent) = capture.node.parent() {
+                        if parent.kind() == "variable_declarator" {
+                            declarator_node = Some(parent);
+                        }
                     }
                 }
+                "decl" => {
+                    decl_node = Some(capture.node);
+                }
+                _ => {}
             }
         }
 
-        if let (Some(name), Some(declarator)) = (name, declarator_node) {
-            if let Some(lexical_decl) = declarator.parent() {
-                let parent_text = lexical_decl.utf8_text(source.as_bytes()).unwrap_or("");
-
-                if parent_text.trim_start().starts_with("const") {
-                    let mut is_arrow_function = false;
-                    for i in 0..declarator.child_count() {
-                        if let Some(child) = declarator.child(i) {
-                            if child.kind() == "arrow_function" {
-                                is_arrow_function = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    if !is_arrow_function {
-                        let span = node_to_span(&lexical_decl, line_offset);
-                        let preview = extract_preview(source, &span, line_offset);
-
-                        symbols.push(SearchResult::new(
-                            String::new(),
-                            Language::Vue,
-                            SymbolKind::Constant,
-                            Some(name),
-                            span,
-                            None,
-                            preview,
-                        ));
+        if let (Some(name), Some(declarator), Some(decl)) = (name, declarator_node, decl_node) {
+            // Check if this is an arrow function (skip those, handled separately)
+            let mut is_arrow_function = false;
+            for i in 0..declarator.child_count() {
+                if let Some(child) = declarator.child(i) {
+                    if child.kind() == "arrow_function" {
+                        is_arrow_function = true;
+                        break;
                     }
                 }
+            }
+
+            if !is_arrow_function {
+                // Determine the kind based on the keyword (const vs let/var)
+                let decl_text = decl.utf8_text(source.as_bytes()).unwrap_or("");
+                let kind = if decl_text.trim_start().starts_with("const") {
+                    SymbolKind::Constant
+                } else {
+                    SymbolKind::Variable
+                };
+
+                let span = node_to_span(&decl, line_offset);
+                let preview = extract_preview(source, &span, line_offset);
+
+                symbols.push(SearchResult::new(
+                    String::new(),
+                    Language::Vue,
+                    kind,
+                    Some(name),
+                    span,
+                    None,
+                    preview,
+                ));
             }
         }
     }
@@ -403,5 +416,60 @@ const user: User = {
         let symbols = parse("test.vue", source).unwrap();
         // Should extract user constant
         assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("user")));
+    }
+
+    #[test]
+    fn test_local_variables_included() {
+        let source = r#"
+<template>
+  <div>{{ result }}</div>
+</template>
+
+<script setup>
+const API_KEY = 'secret123'
+
+function calculate(input) {
+  let localVar = input * 2
+  var result = localVar + 10
+  const temp = result / 2
+  return temp
+}
+
+function process(value) {
+  let squared = value * value
+  var doubled = squared * 2
+  return doubled
+}
+</script>
+"#;
+
+        let symbols = parse("test.vue", source).unwrap();
+
+        // Filter to variables and constants
+        let variables: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Variable))
+            .collect();
+
+        let constants: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Constant))
+            .collect();
+
+        // Check that local variables (let/var) are captured
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("localVar")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("result")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("squared")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("doubled")));
+
+        // Check that const declarations are captured as constants
+        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("API_KEY")));
+        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("temp")));
+
+        // Verify that all have no scope
+        for var in variables {
+            assert_eq!(var.scope, None);
+        }
+        for constant in constants {
+            assert_eq!(constant.scope, None);
+        }
     }
 }

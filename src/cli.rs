@@ -53,12 +53,19 @@ pub enum Command {
     /// Query the code index
     ///
     /// Search modes:
-    ///   - Default: Full-text trigram search (finds all occurrences)
-    ///     Example: rfx query "extract_symbols"
+    ///   - Default: Word-boundary matching (precise, finds complete identifiers)
+    ///     Example: rfx query "Error" → finds "Error" but not "NetworkError"
+    ///     Example: rfx query "test" → finds "test" but not "test_helper"
     ///
-    ///   - Symbol search: Search symbol definitions only
-    ///     Example: rfx query "parse" --symbols
-    ///     Example: rfx query "parse" --kind function  (implies --symbols)
+    ///   - Symbol search: Word-boundary for text, exact match for symbols
+    ///     Example: rfx query "parse" --symbols → finds only "parse" function/class
+    ///     Example: rfx query "parse" --kind function → finds only "parse" functions
+    ///
+    ///   - Substring search: Expansive matching (opt-in with --contains)
+    ///     Example: rfx query "mb" --contains → finds "mb", "kmb_dai_ops", "symbol", etc.
+    ///
+    ///   - Regex search: Pattern-controlled matching (opt-in with --regex)
+    ///     Example: rfx query "^mb_.*" --regex → finds "mb_init", "mb_start", etc.
     Query {
         /// Search pattern
         pattern: String,
@@ -77,10 +84,22 @@ pub enum Command {
         #[arg(short, long)]
         kind: Option<String>,
 
-        /// AST pattern for structure-aware search (requires --lang)
-        /// Example: "(function_item (async))" to find async functions in Rust
+        /// Use AST pattern matching (SLOW: 500ms-2s+, scans all files)
+        ///
+        /// WARNING: AST queries bypass trigram optimization and scan the entire codebase.
+        /// In 95% of cases, use --symbols instead which is 10-100x faster.
+        ///
+        /// When --ast is set, the pattern parameter is interpreted as a Tree-sitter
+        /// S-expression query instead of text search.
+        ///
+        /// RECOMMENDED: Always use --glob to limit scope for better performance.
+        ///
+        /// Examples:
+        ///   Fast (2-50ms):    rfx query "fetch" --symbols --kind function --lang python
+        ///   Slow (500ms-2s):  rfx query "(function_definition) @fn" --ast --lang python
+        ///   Faster with glob: rfx query "(class_declaration) @class" --ast --lang typescript --glob "src/**/*.ts"
         #[arg(long)]
-        ast: Option<String>,
+        ast: bool,
 
         /// Use regex pattern matching
         #[arg(short = 'r', long)]
@@ -108,6 +127,11 @@ pub enum Command {
         /// Only applicable to symbol searches
         #[arg(long)]
         exact: bool,
+
+        /// Use substring matching for both text and symbols (expansive search)
+        /// Default behavior uses word-boundary and exact matching for precision
+        #[arg(long)]
+        contains: bool,
 
         /// Only show count and timing, not the actual results
         #[arg(short, long)]
@@ -230,8 +254,8 @@ impl Cli {
             Command::Index { path, force, languages, quiet } => {
                 handle_index(path, force, languages, quiet)
             }
-            Command::Query { pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, count, timeout, plain, glob, exclude, paths } => {
-                handle_query(pattern, symbols, lang, kind, ast.as_deref(), regex, json, limit, expand, file, exact, count, timeout, plain, glob, exclude, paths)
+            Command::Query { pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths } => {
+                handle_query(pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths)
             }
             Command::Serve { port, host } => {
                 handle_serve(port, host)
@@ -358,13 +382,14 @@ fn handle_query(
     symbols_flag: bool,
     lang: Option<String>,
     kind_str: Option<String>,
-    ast_pattern: Option<&str>,
+    use_ast: bool,
     use_regex: bool,
     as_json: bool,
     limit: Option<usize>,
     expand: bool,
     file_pattern: Option<String>,
     exact: bool,
+    use_contains: bool,
     count_only: bool,
     timeout_secs: u64,
     plain: bool,
@@ -449,27 +474,36 @@ fn handle_query(
     let symbols_mode = symbols_flag || kind.is_some();
 
     // Validate AST query requirements
-    if ast_pattern.is_some() && language.is_none() {
+    if use_ast && language.is_none() {
         anyhow::bail!(
             "AST pattern matching requires a language to be specified.\n\
              \n\
              Use --lang to specify the language for tree-sitter parsing.\n\
-             Supported languages for AST queries: rust, typescript, javascript, php\n\
              \n\
-             Example: rfx query \"pattern\" --ast \"(function_item)\" --lang rust"
+             Supported languages for AST queries:\n\
+             • rust, python, go, java, c, c++, c#, php, ruby, kotlin, zig, typescript, javascript\n\
+             \n\
+             Note: Vue and Svelte use line-based parsing and do not support AST queries.\n\
+             \n\
+             WARNING: AST queries are SLOW (500ms-2s+). Use --symbols instead for 95% of cases.\n\
+             \n\
+             Examples:\n\
+             • rfx query \"(function_definition) @fn\" --ast --lang python\n\
+             • rfx query \"(class_declaration) @class\" --ast --lang typescript --glob \"src/**/*.ts\""
         );
     }
 
     let filter = QueryFilter {
         language,
         kind,
-        use_ast: ast_pattern.is_some(),
+        use_ast,
         use_regex,
         limit,
         symbols_mode,
         expand,
         file_pattern,
         exact,
+        use_contains,
         timeout_secs,
         glob_patterns,
         exclude_patterns,
@@ -479,12 +513,11 @@ fn handle_query(
     // Measure query time
     let start = Instant::now();
 
-    // For AST queries, we need to pass the AST pattern separately
-    // The text pattern is used for trigram filtering (Phase 1)
-    // The AST pattern is used for structure matching (Phase 2)
-    let results = if let Some(ast_pat) = ast_pattern {
-        // AST query: use custom search path
-        engine.search_ast_with_text_filter(&pattern, ast_pat, filter.clone())?
+    // When --ast is set, pattern is the AST query (not text)
+    // AST queries scan all files (no trigram pre-filtering)
+    let results = if use_ast {
+        // AST query: pattern is the S-expression, scan all files
+        engine.search_ast_all_files(&pattern, filter.clone())?
     } else if as_json {
         // Use metadata-aware search for JSON output
         engine.search_with_metadata(&pattern, filter.clone())?.results
@@ -512,7 +545,7 @@ fn handle_query(
             eprintln!("Found {} unique files in {}", paths.len(), timing_str);
         } else {
             // Reconstruct QueryResponse for JSON output
-            let (status, can_trust_results, warning) = if ast_pattern.is_some() {
+            let (status, can_trust_results, warning) = if use_ast {
                 // For AST queries, skip metadata checks for now
                 (crate::models::IndexStatus::Fresh, true, None)
             } else {
@@ -572,7 +605,7 @@ fn handle_serve(port: u16, host: String) -> Result<()> {
     println!("Starting Reflex HTTP server...");
     println!("  Address: http://{}:{}", host, port);
     println!("\nEndpoints:");
-    println!("  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&expand=true&file=<pattern>&timeout=<secs>&glob=<pattern>&exclude=<pattern>&paths=true");
+    println!("  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&contains=true&expand=true&file=<pattern>&timeout=<secs>&glob=<pattern>&exclude=<pattern>&paths=true");
     println!("  GET  /stats");
     println!("  POST /index");
     println!("\nPress Ctrl+C to stop.");
@@ -618,6 +651,8 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         regex: bool,
         #[serde(default)]
         exact: bool,
+        #[serde(default)]
+        contains: bool,
         #[serde(default)]
         expand: bool,
         #[serde(default)]
@@ -712,6 +747,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             expand: params.expand,
             file_pattern: params.file,
             exact: params.exact,
+            use_contains: params.contains,
             timeout_secs: params.timeout,
             glob_patterns: params.glob,
             exclude_patterns: params.exclude,

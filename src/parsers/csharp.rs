@@ -8,8 +8,10 @@
 //! - Delegates
 //! - Records (C# 9+)
 //! - Methods (with class scope, visibility)
-//! - Properties
-//! - Events
+//! - Properties (class/struct/record members)
+//! - Events (class/struct/interface members)
+//! - Indexers (this[] accessor)
+//! - Local variables (inside methods)
 //! - Namespaces
 //! - Constructors
 
@@ -45,6 +47,9 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_delegates(source, &root_node, &language.into())?);
     symbols.extend(extract_methods(source, &root_node, &language.into())?);
     symbols.extend(extract_properties(source, &root_node, &language.into())?);
+    symbols.extend(extract_events(source, &root_node, &language.into())?);
+    symbols.extend(extract_indexers(source, &root_node, &language.into())?);
+    symbols.extend(extract_local_variables(source, &root_node, &language.into())?);
 
     // Add file path to all symbols
     for symbol in &mut symbols {
@@ -381,6 +386,194 @@ fn extract_properties(
     Ok(symbols)
 }
 
+/// Extract event declarations from classes, structs, and interfaces
+fn extract_events(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let query_str = r#"
+        (class_declaration
+            name: (identifier) @class_name
+            body: (declaration_list
+                (event_field_declaration
+                    (variable_declaration
+                        (variable_declarator
+                            (identifier) @event_name))))) @class
+
+        (struct_declaration
+            name: (identifier) @struct_name
+            body: (declaration_list
+                (event_field_declaration
+                    (variable_declaration
+                        (variable_declarator
+                            (identifier) @event_name))))) @struct
+
+        (interface_declaration
+            name: (identifier) @interface_name
+            body: (declaration_list
+                (event_field_declaration
+                    (variable_declaration
+                        (variable_declarator
+                            (identifier) @event_name))))) @interface
+    "#;
+
+    let query = Query::new(language, query_str)
+        .context("Failed to create event query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut symbols = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut scope_name = None;
+        let mut scope_type = None;
+        let mut event_name = None;
+        let mut event_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "class_name" => {
+                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_type = Some("class");
+                }
+                "struct_name" => {
+                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_type = Some("struct");
+                }
+                "interface_name" => {
+                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_type = Some("interface");
+                }
+                "event_name" => {
+                    event_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    // Find the parent event_field_declaration node
+                    let mut current = capture.node;
+                    while let Some(parent) = current.parent() {
+                        if parent.kind() == "event_field_declaration" {
+                            event_node = Some(parent);
+                            break;
+                        }
+                        current = parent;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(scope_name), Some(scope_type), Some(event_name), Some(node)) =
+            (scope_name, scope_type, event_name, event_node) {
+            let scope = format!("{} {}", scope_type, scope_name);
+            let span = node_to_span(&node);
+            let preview = extract_preview(source, &span);
+
+            symbols.push(SearchResult::new(
+                String::new(),
+                Language::CSharp,
+                SymbolKind::Event,
+                Some(event_name),
+                span,
+                Some(scope),
+                preview,
+            ));
+        }
+    }
+
+    Ok(symbols)
+}
+
+/// Extract indexer declarations from classes and structs
+fn extract_indexers(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let query_str = r#"
+        (class_declaration
+            name: (identifier) @class_name
+            body: (declaration_list
+                (indexer_declaration) @indexer_name)) @class
+
+        (struct_declaration
+            name: (identifier) @struct_name
+            body: (declaration_list
+                (indexer_declaration) @indexer_name)) @struct
+    "#;
+
+    let query = Query::new(language, query_str)
+        .context("Failed to create indexer query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut symbols = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut scope_name = None;
+        let mut scope_type = None;
+        let mut indexer_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "class_name" => {
+                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_type = Some("class");
+                }
+                "struct_name" => {
+                    scope_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    scope_type = Some("struct");
+                }
+                "indexer_name" => {
+                    indexer_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(scope_name), Some(scope_type), Some(node)) =
+            (scope_name, scope_type, indexer_node) {
+            let scope = format!("{} {}", scope_type, scope_name);
+            let span = node_to_span(&node);
+            let preview = extract_preview(source, &span);
+
+            // Use "this[]" as the indexer name (C# convention)
+            symbols.push(SearchResult::new(
+                String::new(),
+                Language::CSharp,
+                SymbolKind::Property,
+                Some("this[]".to_string()),
+                span,
+                Some(scope),
+                preview,
+            ));
+        }
+    }
+
+    Ok(symbols)
+}
+
+/// Extract local variable declarations inside methods
+fn extract_local_variables(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let query_str = r#"
+        (local_declaration_statement
+            (variable_declaration
+                (variable_declarator
+                    (identifier) @name))) @var
+    "#;
+
+    let query = Query::new(language, query_str)
+        .context("Failed to create local variable query")?;
+
+    extract_symbols(source, root, &query, SymbolKind::Variable, None)
+}
+
 /// Generic symbol extraction helper
 fn extract_symbols(
     source: &str,
@@ -696,5 +889,149 @@ namespace MyApp
         assert!(kinds.contains(&&SymbolKind::Class));
         assert!(kinds.contains(&&SymbolKind::Enum));
         assert!(kinds.contains(&&SymbolKind::Method));
+    }
+
+    #[test]
+    fn test_local_variables_included() {
+        let source = r#"
+public class Calculator
+{
+    public int Multiplier { get; set; } = 2;
+
+    public int Compute(int input)
+    {
+        int localVar = input * Multiplier;
+        var result = localVar + 10;
+        return result;
+    }
+}
+
+public class Helper
+{
+    public static string Format()
+    {
+        string message = "Hello";
+        var count = 5;
+        return message;
+    }
+}
+        "#;
+
+        let symbols = parse("test.cs", source).unwrap();
+
+        // Filter to just variables
+        let variables: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Variable))
+            .collect();
+
+        // Check that local variables are captured
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("localVar")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("result")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("message")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("count")));
+
+        // Check that class property is also captured
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("Multiplier")));
+
+        // Verify that local variables have no scope
+        let local_vars: Vec<_> = variables.iter()
+            .filter(|v| v.symbol.as_deref() == Some("localVar")
+                     || v.symbol.as_deref() == Some("result")
+                     || v.symbol.as_deref() == Some("message")
+                     || v.symbol.as_deref() == Some("count"))
+            .collect();
+
+        for var in local_vars {
+            assert_eq!(var.scope, None);
+        }
+
+        // Verify that class property has scope
+        let property = variables.iter()
+            .find(|v| v.symbol.as_deref() == Some("Multiplier"))
+            .unwrap();
+        assert_eq!(property.scope.as_ref().unwrap(), "class Calculator");
+    }
+
+    #[test]
+    fn test_parse_events() {
+        let source = r#"
+public class Button
+{
+    public event EventHandler Click;
+    public event Action Hover;
+}
+
+public interface INotifier
+{
+    event EventHandler<string> Notify;
+}
+        "#;
+
+        let symbols = parse("test.cs", source).unwrap();
+
+        let event_symbols: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Event))
+            .collect();
+
+        assert_eq!(event_symbols.len(), 3);
+        assert!(event_symbols.iter().any(|s| s.symbol.as_deref() == Some("Click")));
+        assert!(event_symbols.iter().any(|s| s.symbol.as_deref() == Some("Hover")));
+        assert!(event_symbols.iter().any(|s| s.symbol.as_deref() == Some("Notify")));
+
+        // Check scope
+        let click_event = event_symbols.iter()
+            .find(|s| s.symbol.as_deref() == Some("Click"))
+            .unwrap();
+        assert_eq!(click_event.scope.as_ref().unwrap(), "class Button");
+
+        let notify_event = event_symbols.iter()
+            .find(|s| s.symbol.as_deref() == Some("Notify"))
+            .unwrap();
+        assert_eq!(notify_event.scope.as_ref().unwrap(), "interface INotifier");
+    }
+
+    #[test]
+    fn test_parse_indexers() {
+        let source = r#"
+public class StringCollection
+{
+    private string[] items = new string[100];
+
+    public string this[int index]
+    {
+        get { return items[index]; }
+        set { items[index] = value; }
+    }
+}
+
+public struct Matrix
+{
+    public int this[int row, int col]
+    {
+        get { return 0; }
+        set { }
+    }
+}
+        "#;
+
+        let symbols = parse("test.cs", source).unwrap();
+
+        let indexer_symbols: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Property))
+            .filter(|s| s.symbol.as_deref() == Some("this[]"))
+            .collect();
+
+        assert_eq!(indexer_symbols.len(), 2);
+
+        // Check scopes
+        let class_indexer = indexer_symbols.iter()
+            .find(|s| s.scope.as_ref().unwrap().contains("StringCollection"))
+            .unwrap();
+        assert_eq!(class_indexer.scope.as_ref().unwrap(), "class StringCollection");
+
+        let struct_indexer = indexer_symbols.iter()
+            .find(|s| s.scope.as_ref().unwrap().contains("Matrix"))
+            .unwrap();
+        assert_eq!(struct_indexer.scope.as_ref().unwrap(), "struct Matrix");
     }
 }
