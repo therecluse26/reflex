@@ -51,6 +51,7 @@ pub enum SymbolKind {
     Event,
     Import,
     Export,
+    Attribute,
     /// Catch-all for symbol kinds not yet explicitly supported.
     /// This ensures no data loss when encountering new tree-sitter node types.
     /// The string contains the original kind name from the parser.

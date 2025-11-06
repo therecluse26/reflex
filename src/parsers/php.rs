@@ -39,6 +39,7 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_classes(source, &root_node, &language.into())?);
     symbols.extend(extract_interfaces(source, &root_node, &language.into())?);
     symbols.extend(extract_traits(source, &root_node, &language.into())?);
+    symbols.extend(extract_attributes(source, &root_node, &language.into())?);
     symbols.extend(extract_methods(source, &root_node, &language.into())?);
     symbols.extend(extract_properties(source, &root_node, &language.into())?);
     symbols.extend(extract_local_variables(source, &root_node, &language.into())?);
@@ -121,6 +122,84 @@ fn extract_traits(
         .context("Failed to create trait query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Trait, None)
+}
+
+/// Extract attributes: BOTH definitions and uses
+/// Definitions: #[Attribute] class Route { ... }
+/// Uses: #[Route("/api/users")] class UserController { ... }
+fn extract_attributes(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let mut symbols = Vec::new();
+
+    // Part 1: Extract attribute class DEFINITIONS (#[Attribute] class X)
+    let def_query_str = r#"
+        (class_declaration
+            (attribute_list)
+            name: (name) @name) @attribute_class
+    "#;
+
+    let def_query = Query::new(language, def_query_str)
+        .context("Failed to create attribute definition query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&def_query, *root, source.as_bytes());
+
+    while let Some(match_) = matches.next() {
+        let mut name = None;
+        let mut class_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &def_query.capture_names()[capture.index as usize];
+            match capture_name {
+                "name" => {
+                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                }
+                "attribute_class" => {
+                    class_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        // Check if this class has #[Attribute] specifically
+        if let (Some(name), Some(node)) = (name, class_node) {
+            let class_text = node.utf8_text(source.as_bytes()).unwrap_or("");
+
+            // Check if the class has #[Attribute] attribute
+            if class_text.contains("#[Attribute") {
+                let span = node_to_span(&node);
+                let preview = extract_preview(source, &span);
+
+                symbols.push(SearchResult::new(
+                    String::new(),
+                    Language::PHP,
+                    SymbolKind::Attribute,
+                    Some(name),
+                    span,
+                    None,
+                    preview,
+                ));
+            }
+        }
+    }
+
+    // Part 2: Extract attribute USES (#[Route(...)] on classes/methods)
+    let use_query_str = r#"
+        (attribute_list
+            (attribute_group
+                (attribute
+                    (name) @name))) @attr
+    "#;
+
+    let use_query = Query::new(language, use_query_str)
+        .context("Failed to create attribute use query")?;
+
+    symbols.extend(extract_symbols(source, root, &use_query, SymbolKind::Attribute, None)?);
+
+    Ok(symbols)
 }
 
 /// Extract method definitions from classes, traits, and interfaces
@@ -801,5 +880,97 @@ mod tests {
             .find(|v| v.symbol.as_deref() == Some("value"))
             .unwrap();
         assert_eq!(property.scope.as_ref().unwrap(), "class Math");
+    }
+
+    #[test]
+    fn test_parse_attribute_class() {
+        let source = r#"
+            <?php
+            #[Attribute]
+            class Route {
+                public function __construct(
+                    public string $path,
+                    public array $methods = []
+                ) {}
+            }
+
+            #[Attribute(Attribute::TARGET_METHOD)]
+            class Deprecated {
+                public string $message;
+            }
+        "#;
+
+        let symbols = parse("test.php", source).unwrap();
+
+        let attribute_symbols: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Attribute))
+            .collect();
+
+        // Should find Route and Deprecated attribute classes
+        assert!(attribute_symbols.len() >= 2);
+        assert!(attribute_symbols.iter().any(|s| s.symbol.as_deref() == Some("Route")));
+        assert!(attribute_symbols.iter().any(|s| s.symbol.as_deref() == Some("Deprecated")));
+    }
+
+    #[test]
+    fn test_parse_attribute_uses() {
+        let source = r#"
+            <?php
+            #[Attribute]
+            class Route {
+                public function __construct(public string $path) {}
+            }
+
+            #[Attribute]
+            class Deprecated {}
+
+            #[Route("/api/users")]
+            class UserController {
+                #[Route("/list")]
+                public function list() {
+                    return [];
+                }
+
+                #[Route("/get/{id}")]
+                #[Deprecated]
+                public function get($id) {
+                    return null;
+                }
+            }
+
+            #[Route("/api/posts")]
+            class PostController {
+                #[Route("/all")]
+                public function all() {
+                    return [];
+                }
+            }
+        "#;
+
+        let symbols = parse("test.php", source).unwrap();
+
+        let attribute_symbols: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Attribute))
+            .collect();
+
+        // Should find attribute class definitions (Route, Deprecated)
+        // AND attribute uses (Route appears 5 times, Deprecated appears 1 time)
+        // Total expected: 2 definitions + 6 uses = 8
+        assert!(attribute_symbols.len() >= 6);
+
+        // Count specific attribute uses
+        let route_count = attribute_symbols.iter()
+            .filter(|s| s.symbol.as_deref() == Some("Route"))
+            .count();
+
+        let deprecated_count = attribute_symbols.iter()
+            .filter(|s| s.symbol.as_deref() == Some("Deprecated"))
+            .count();
+
+        // Should find Route at least 5 times (1 definition + 5 uses)
+        assert!(route_count >= 5);
+
+        // Should find Deprecated at least 2 times (1 definition + 1 use)
+        assert!(deprecated_count >= 2);
     }
 }

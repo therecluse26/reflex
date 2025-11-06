@@ -47,6 +47,8 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_modules(source, &root_node)?);
     symbols.extend(extract_type_aliases(source, &root_node)?);
     symbols.extend(extract_macros(source, &root_node)?);
+    symbols.extend(extract_attributes(source, &root_node)?);
+
 
     // Add file path to all symbols
     for symbol in &mut symbols {
@@ -263,6 +265,139 @@ fn extract_macros(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchRe
         .context("Failed to create macro query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Macro, None)
+}
+
+/// Extract attributes: BOTH definitions and uses
+/// Definitions: #[proc_macro_attribute] pub fn route(...)
+/// Uses: #[test] fn my_test(), #[derive(Debug)] struct Foo
+fn extract_attributes(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchResult>> {
+    let language = tree_sitter_rust::LANGUAGE;
+    let mut symbols = Vec::new();
+
+    // Part 1: Extract attribute DEFINITIONS (proc macro attributes)
+    let func_query_str = r#"
+        (function_item
+            name: (identifier) @name) @function
+    "#;
+
+    let func_query = Query::new(&language.into(), func_query_str)
+        .context("Failed to create function query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&func_query, *root, source.as_bytes());
+
+    while let Some(match_) = matches.next() {
+        let mut name = None;
+        let mut func_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &func_query.capture_names()[capture.index as usize];
+            match capture_name {
+                "name" => {
+                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                }
+                "function" => {
+                    func_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        // Check if this function has #[proc_macro_attribute] attribute
+        if let (Some(name), Some(func_node)) = (name, func_node) {
+            let mut has_proc_macro_attr = false;
+
+            if let Some(parent) = func_node.parent() {
+                let mut func_index = None;
+                for i in 0..parent.child_count() {
+                    if let Some(child) = parent.child(i) {
+                        if child.id() == func_node.id() {
+                            func_index = Some(i);
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(func_idx) = func_index {
+                    for i in (0..func_idx).rev() {
+                        if let Some(child) = parent.child(i) {
+                            if child.kind() == "attribute_item" {
+                                let attr_text = child.utf8_text(source.as_bytes()).unwrap_or("");
+                                if attr_text.contains("proc_macro_attribute") {
+                                    has_proc_macro_attr = true;
+                                }
+                            } else if !child.kind().contains("comment") && child.kind() != "line_comment" {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if has_proc_macro_attr {
+                let span = node_to_span(&func_node);
+                let preview = extract_preview(source, &span);
+
+                symbols.push(SearchResult::new(
+                    String::new(),
+                    Language::Rust,
+                    SymbolKind::Attribute,
+                    Some(name),
+                    span,
+                    None,
+                    preview,
+                ));
+            }
+        }
+    }
+
+    // Part 2: Extract attribute USES (#[test], #[derive(...)], etc.)
+    let attr_query_str = r#"
+        (attribute_item
+            (attribute
+                (identifier) @attr_name)) @attr
+    "#;
+
+    let attr_query = Query::new(&language.into(), attr_query_str)
+        .context("Failed to create attribute use query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&attr_query, *root, source.as_bytes());
+
+    while let Some(match_) = matches.next() {
+        let mut attr_name = None;
+        let mut attr_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &attr_query.capture_names()[capture.index as usize];
+            match capture_name {
+                "attr_name" => {
+                    attr_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                }
+                "attr" => {
+                    attr_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(name), Some(node)) = (attr_name, attr_node) {
+            let span = node_to_span(&node);
+            let preview = extract_preview(source, &span);
+
+            symbols.push(SearchResult::new(
+                String::new(),
+                Language::Rust,
+                SymbolKind::Attribute,
+                Some(name),
+                span,
+                None,
+                preview,
+            ));
+        }
+    }
+
+    Ok(symbols)
 }
 
 /// Generic symbol extraction helper
@@ -564,5 +699,85 @@ mod tests {
         assert!(macros.iter().any(|m| m.symbol.as_deref() == Some("say_hello")));
         assert!(macros.iter().any(|m| m.symbol.as_deref() == Some("vec_of_strings")));
         assert_eq!(macros.len(), 2);
+    }
+
+    #[test]
+    fn test_attribute_proc_macros() {
+        let source = r#"
+            use proc_macro::TokenStream;
+
+            #[proc_macro_attribute]
+            pub fn test(attr: TokenStream, item: TokenStream) -> TokenStream {
+                item
+            }
+
+            #[proc_macro_attribute]
+            pub fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
+                item
+            }
+
+            // Regular function - should NOT be captured
+            pub fn helper() {}
+        "#;
+
+        let symbols = parse("test.rs", source).unwrap();
+
+        // Filter to attributes
+        let attributes: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Attribute))
+            .collect();
+
+        // Check that attribute proc macro DEFINITIONS are captured
+        assert!(attributes.iter().any(|a| a.symbol.as_deref() == Some("test")));
+        assert!(attributes.iter().any(|a| a.symbol.as_deref() == Some("route")));
+
+        // Verify helper function is NOT captured as attribute
+        assert!(!attributes.iter().any(|a| a.symbol.as_deref() == Some("helper")));
+
+        // Should find 2 proc macro definitions + 2 attribute uses (#[proc_macro_attribute])
+        assert_eq!(attributes.len(), 4);
+    }
+
+    #[test]
+    fn test_attribute_uses() {
+        let source = r#"
+            #[test]
+            fn test_something() {
+                assert_eq!(1, 1);
+            }
+
+            #[test]
+            #[should_panic]
+            fn test_panic() {
+                panic!("expected");
+            }
+
+            #[derive(Debug, Clone)]
+            struct MyStruct {
+                field: i32
+            }
+
+            #[cfg(test)]
+            mod tests {
+                #[test]
+                fn nested_test() {}
+            }
+        "#;
+
+        let symbols = parse("test.rs", source).unwrap();
+
+        // Filter to attributes
+        let attributes: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Attribute))
+            .collect();
+
+        // Check that attribute USES are captured
+        assert!(attributes.iter().any(|a| a.symbol.as_deref() == Some("test")));
+        assert!(attributes.iter().any(|a| a.symbol.as_deref() == Some("should_panic")));
+        assert!(attributes.iter().any(|a| a.symbol.as_deref() == Some("derive")));
+        assert!(attributes.iter().any(|a| a.symbol.as_deref() == Some("cfg")));
+
+        // Should find: test (3x), should_panic (1x), derive (1x), cfg (1x) = 6 total
+        assert_eq!(attributes.len(), 6);
     }
 }

@@ -45,6 +45,7 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_enums(source, &root_node, &language.into())?);
     symbols.extend(extract_records(source, &root_node, &language.into())?);
     symbols.extend(extract_delegates(source, &root_node, &language.into())?);
+    symbols.extend(extract_attributes(source, &root_node, &language.into())?);
     symbols.extend(extract_methods(source, &root_node, &language.into())?);
     symbols.extend(extract_properties(source, &root_node, &language.into())?);
     symbols.extend(extract_events(source, &root_node, &language.into())?);
@@ -180,6 +181,98 @@ fn extract_delegates(
         .context("Failed to create delegate query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Type, None)
+}
+
+/// Extract attributes: BOTH definitions and uses
+/// Definitions: class TestAttribute : Attribute { ... }
+/// Uses: [Test] public void TestMethod() { ... }
+fn extract_attributes(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let mut symbols = Vec::new();
+
+    // Part 1: Extract attribute class DEFINITIONS
+    let def_query_str = r#"
+        (class_declaration
+            name: (identifier) @name) @class
+    "#;
+
+    let def_query = Query::new(language, def_query_str)
+        .context("Failed to create attribute definition query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&def_query, *root, source.as_bytes());
+
+    while let Some(match_) = matches.next() {
+        let mut name = None;
+        let mut full_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &def_query.capture_names()[capture.index as usize];
+            match capture_name {
+                "name" => {
+                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                }
+                "class" => {
+                    full_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        // Extract classes that end with "Attribute" suffix (C# naming convention)
+        // or that have Attribute in their base_list
+        if let (Some(name), Some(node)) = (name, full_node) {
+            let mut is_attribute = name.ends_with("Attribute");
+
+            // Also check if the class inherits from Attribute
+            if !is_attribute {
+                // Check base_list for inheritance
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i) {
+                        if child.kind() == "base_list" {
+                            let base_text = child.utf8_text(source.as_bytes()).unwrap_or("");
+                            if base_text.contains("Attribute") {
+                                is_attribute = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if is_attribute {
+                let span = node_to_span(&node);
+                let preview = extract_preview(source, &span);
+
+                symbols.push(SearchResult::new(
+                    String::new(),
+                    Language::CSharp,
+                    SymbolKind::Attribute,
+                    Some(name),
+                    span,
+                    None,
+                    preview,
+                ));
+            }
+        }
+    }
+
+    // Part 2: Extract attribute USES ([Test], [Obsolete], etc.)
+    let use_query_str = r#"
+        (attribute_list
+            (attribute
+                name: (_) @name)) @attr
+    "#;
+
+    let use_query = Query::new(language, use_query_str)
+        .context("Failed to create attribute use query")?;
+
+    symbols.extend(extract_symbols(source, root, &use_query, SymbolKind::Attribute, None)?);
+
+    Ok(symbols)
 }
 
 /// Extract method declarations from classes, structs, and interfaces
@@ -1033,5 +1126,121 @@ public struct Matrix
             .find(|s| s.scope.as_ref().unwrap().contains("Matrix"))
             .unwrap();
         assert_eq!(struct_indexer.scope.as_ref().unwrap(), "struct Matrix");
+    }
+
+    #[test]
+    fn test_parse_attribute_class() {
+        let source = r#"
+using System;
+
+// Attribute with naming convention (ends with "Attribute")
+public class TestAttribute : Attribute
+{
+    public string Name { get; set; }
+    public TestAttribute(string name) { Name = name; }
+}
+
+// Attribute without suffix but inherits from Attribute
+public class Obsolete : Attribute
+{
+    public string Message { get; set; }
+}
+
+// Not an attribute (regular class without "Attribute" suffix)
+public class RegularClass
+{
+    public void DoSomething() { }
+}
+
+// Attribute with only suffix (no explicit inheritance)
+public class CustomAttribute
+{
+    public int Value { get; set; }
+}
+        "#;
+
+        let symbols = parse("test.cs", source).unwrap();
+
+        let attribute_symbols: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Attribute))
+            .collect();
+
+        // Should find TestAttribute, Obsolete, and CustomAttribute
+        assert_eq!(attribute_symbols.len(), 3);
+        assert!(attribute_symbols.iter().any(|s| s.symbol.as_deref() == Some("TestAttribute")));
+        assert!(attribute_symbols.iter().any(|s| s.symbol.as_deref() == Some("Obsolete")));
+        assert!(attribute_symbols.iter().any(|s| s.symbol.as_deref() == Some("CustomAttribute")));
+
+        // Should NOT find RegularClass
+        assert!(!attribute_symbols.iter().any(|s| s.symbol.as_deref() == Some("RegularClass")));
+    }
+
+    #[test]
+    fn test_parse_attribute_uses() {
+        let source = r#"
+using System;
+
+public class TestAttribute : Attribute { }
+public class ObsoleteAttribute : Attribute { }
+
+[Test]
+public class TestClass
+{
+    [Test]
+    public void TestMethod1()
+    {
+        // Test code
+    }
+
+    [Test]
+    [Obsolete]
+    public void TestMethod2()
+    {
+        // Another test
+    }
+}
+
+[Obsolete]
+public class LegacyClass
+{
+    [Test]
+    public void OldTest()
+    {
+        // Legacy test
+    }
+}
+        "#;
+
+        let symbols = parse("test.cs", source).unwrap();
+
+        let attribute_symbols: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Attribute))
+            .collect();
+
+        // Should find attribute class definitions (TestAttribute, ObsoleteAttribute)
+        // AND attribute uses (Test appears 4 times, Obsolete appears 2 times)
+        // Total expected: 2 definitions + 6 uses = 8
+        assert!(attribute_symbols.len() >= 6);
+
+        // Count specific attribute uses
+        let test_count = attribute_symbols.iter()
+            .filter(|s| {
+                let symbol = s.symbol.as_deref().unwrap_or("");
+                symbol == "Test" || symbol == "TestAttribute"
+            })
+            .count();
+
+        let obsolete_count = attribute_symbols.iter()
+            .filter(|s| {
+                let symbol = s.symbol.as_deref().unwrap_or("");
+                symbol == "Obsolete" || symbol == "ObsoleteAttribute"
+            })
+            .count();
+
+        // Should find Test/TestAttribute at least 4 times (1 definition + 4 uses)
+        assert!(test_count >= 4);
+
+        // Should find Obsolete/ObsoleteAttribute at least 3 times (1 definition + 2 uses)
+        assert!(obsolete_count >= 3);
     }
 }

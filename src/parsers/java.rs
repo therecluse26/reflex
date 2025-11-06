@@ -37,6 +37,7 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_classes(source, &root_node, &language.into())?);
     symbols.extend(extract_interfaces(source, &root_node, &language.into())?);
     symbols.extend(extract_enums(source, &root_node, &language.into())?);
+    symbols.extend(extract_annotations(source, &root_node, &language.into())?);
     symbols.extend(extract_class_methods(source, &root_node, &language.into())?);
     symbols.extend(extract_interface_methods(source, &root_node, &language.into())?);
     symbols.extend(extract_fields(source, &root_node, &language.into())?);
@@ -101,6 +102,44 @@ fn extract_enums(
         .context("Failed to create enum query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Enum, None)
+}
+
+/// Extract annotations: BOTH definitions and uses
+/// Definitions: @interface Test { ... }
+/// Uses: @Test public void testMethod()
+fn extract_annotations(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let mut symbols = Vec::new();
+
+    // Part 1: Extract annotation type DEFINITIONS (@interface)
+    let def_query_str = r#"
+        (annotation_type_declaration
+            name: (identifier) @name) @annotation
+    "#;
+
+    let def_query = Query::new(language, def_query_str)
+        .context("Failed to create annotation definition query")?;
+
+    symbols.extend(extract_symbols(source, root, &def_query, SymbolKind::Attribute, None)?);
+
+    // Part 2: Extract annotation USES (@Test, @Override, etc.)
+    let use_query_str = r#"
+        (marker_annotation
+            name: (identifier) @name) @annotation
+
+        (annotation
+            name: (identifier) @name) @annotation
+    "#;
+
+    let use_query = Query::new(language, use_query_str)
+        .context("Failed to create annotation use query")?;
+
+    symbols.extend(extract_symbols(source, root, &use_query, SymbolKind::Attribute, None)?);
+
+    Ok(symbols)
 }
 
 /// Extract method declarations from classes
@@ -869,5 +908,77 @@ public class Calculator {
 
         let local_var = var_symbols.iter().find(|s| s.symbol.as_deref() == Some("localVar")).unwrap();
         assert_eq!(local_var.scope, None);
+    }
+
+    #[test]
+    fn test_parse_annotation_type() {
+        let source = r#"
+public @interface Test {
+}
+
+@interface Author {
+    String name();
+    String date();
+}
+
+@interface Retention {
+    RetentionPolicy value();
+}
+        "#;
+
+        let symbols = parse("test.java", source).unwrap();
+
+        let annotation_symbols: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Attribute))
+            .collect();
+
+        // Should find annotation definitions
+        assert!(annotation_symbols.iter().any(|s| s.symbol.as_deref() == Some("Test")));
+        assert!(annotation_symbols.iter().any(|s| s.symbol.as_deref() == Some("Author")));
+        assert!(annotation_symbols.iter().any(|s| s.symbol.as_deref() == Some("Retention")));
+    }
+
+    #[test]
+    fn test_parse_annotation_uses() {
+        let source = r#"
+@Test
+public void testMethod() {
+    assertEquals(1, 1);
+}
+
+@Override
+@Deprecated
+public String toString() {
+    return "example";
+}
+
+@SuppressWarnings("unchecked")
+public class MyClass {
+    @Autowired
+    private Service service;
+
+    @Test
+    @DisplayName("Should work")
+    public void anotherTest() {}
+}
+        "#;
+
+        let symbols = parse("test.java", source).unwrap();
+
+        let annotation_symbols: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Attribute))
+            .collect();
+
+        // Should find annotation uses
+        assert!(annotation_symbols.iter().any(|s| s.symbol.as_deref() == Some("Test")));
+        assert!(annotation_symbols.iter().any(|s| s.symbol.as_deref() == Some("Override")));
+        assert!(annotation_symbols.iter().any(|s| s.symbol.as_deref() == Some("Deprecated")));
+        assert!(annotation_symbols.iter().any(|s| s.symbol.as_deref() == Some("SuppressWarnings")));
+        assert!(annotation_symbols.iter().any(|s| s.symbol.as_deref() == Some("Autowired")));
+        assert!(annotation_symbols.iter().any(|s| s.symbol.as_deref() == Some("DisplayName")));
+
+        // Should find Test twice (2 uses)
+        let test_count = annotation_symbols.iter().filter(|s| s.symbol.as_deref() == Some("Test")).count();
+        assert_eq!(test_count, 2);
     }
 }

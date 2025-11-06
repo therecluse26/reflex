@@ -250,6 +250,7 @@ impl OutputFormatter {
             SymbolKind::Event => ("event", |s| s.bright_red().to_string()),
             SymbolKind::Import => ("import", |s| s.bright_blue().to_string()),
             SymbolKind::Export => ("export", |s| s.bright_blue().to_string()),
+            SymbolKind::Attribute => ("attribute", |s| s.bright_yellow().to_string()),
             SymbolKind::Unknown(_) => ("", |s| s.white().to_string()),
         };
 

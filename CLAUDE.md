@@ -57,6 +57,14 @@ Reflex uses **trigram-based indexing** to enable sub-100ms full-text search acro
     → Finds variable declarations (global `var counter` and local `int counter = 0`)
     → Does NOT find usage sites like `counter++` or `return counter`
 
+    # Filter to specific symbol kind (find attribute/annotation definitions)
+    rfx query "test" --kind Attribute --lang rust
+    → Finds #[proc_macro_attribute] test attribute definitions in Rust
+    rfx query "test" --kind Attribute --lang java
+    → Finds @interface Test annotation definitions in Java
+    rfx query "deprecated" --kind Attribute --lang csharp
+    → Finds DeprecatedAttribute class definitions in C#
+
     # Full-text search with language filter
     rfx query "unwrap" --lang rust
 
@@ -245,18 +253,18 @@ Reflex currently supports symbol extraction for the following languages and fram
 
 | Language/Framework | Extensions | Symbol Extraction | Notes |
 |-------------------|------------|------------------|-------|
-| **Rust** | `.rs` | Functions, structs, enums, traits, impls, modules, methods, constants, local variables (let bindings), type aliases, macros (macro_rules!), static variables | Complete Rust support |
+| **Rust** | `.rs` | Functions, structs, enums, traits, impls, modules, methods, constants, local variables (let bindings), type aliases, macros (macro_rules!), static variables, attribute proc macros (#[proc_macro_attribute]) | Complete Rust support |
 | **Python** | `.py` | Functions, classes, methods, constants, local variables, global variables (non-uppercase), lambdas, decorators (@property, etc.) | Full Python support including async/await |
 | **TypeScript** | `.ts`, `.tsx`, `.mts`, `.cts` | Functions, classes, interfaces, types, enums, methods, local variables (const, let, var) | Full TypeScript + JSX support |
 | **JavaScript** | `.js`, `.jsx`, `.mjs`, `.cjs` | Functions, classes, constants, methods, local variables (const, let, var) | Includes React/JSX support via TSX grammar |
 | **Go** | `.go` | Functions, structs, interfaces, methods, constants, variables (global + local var/`:=`), packages | Full Go support |
-| **Java** | `.java` | Classes, interfaces, enums, methods, fields, local variables, constructors, annotations | Full Java support including generics |
+| **Java** | `.java` | Classes, interfaces, enums, methods, fields, local variables, constructors, annotation definitions (@interface) | Full Java support including generics and annotations |
 | **C** | `.c`, `.h` | Functions, structs, enums, unions, typedefs, variables (global + local), macros | Complete C support |
 | **C++** | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.C`, `.H` | Functions, classes, structs, namespaces, templates, methods, constructors, destructors, local variables, type aliases | Full C++ support including templates |
-| **C#** | `.cs` | Classes, interfaces, structs, enums, records, delegates, methods, properties, events, indexers (this[]), local variables, namespaces | Full C# support (C# 1-13) |
-| **PHP** | `.php` | Functions, classes, interfaces, traits, methods, properties, constants, local variables, namespaces, enums | Full PHP support including PHP 8.1+ enums |
+| **C#** | `.cs` | Classes, interfaces, structs, enums, records, delegates, methods, properties, events, indexers (this[]), local variables, namespaces, attribute classes (Attribute suffix or base class) | Full C# support (C# 1-13) |
+| **PHP** | `.php` | Functions, classes, interfaces, traits, methods, properties, constants, local variables, namespaces, enums, attribute classes (#[Attribute]) | Full PHP support including PHP 8.0+ attributes |
 | **Ruby** | `.rb`, `.rake`, `.gemspec` | Classes, modules, methods, singleton methods, constants, local variables, instance variables (@var), class variables (@@var), attr_accessor/reader/writer, blocks | Full Ruby support including Rails patterns |
-| **Kotlin** | `.kt`, `.kts` | Classes, objects, interfaces, functions, properties, local variables (val/var), data classes, sealed classes | Full Kotlin support including Android development |
+| **Kotlin** | `.kt`, `.kts` | Classes, objects, interfaces, functions, properties, local variables (val/var), data classes, sealed classes, annotation classes | Full Kotlin support including Android development |
 | **Zig** | `.zig` | Functions, structs, enums, constants, variables (global + local var/const), tests, error sets | Full Zig support |
 | **~~Swift~~** | `.swift` | ~~Classes, structs, enums, protocols, functions, extensions, properties, actors~~ | **Temporarily disabled** - requires tree-sitter 0.23 (Reflex uses 0.24) |
 | **Vue** | `.vue` | Functions, constants, local variables (const, let, var), methods from `<script>` blocks | Supports both Options API and Composition API |
@@ -290,6 +298,36 @@ Reflex currently supports symbol extraction for the following languages and fram
 - **Constants**: Class constants and global constants
 - **Namespaces**: Full namespace support
 - **Enums**: PHP 8.1+ enum declarations
+- **Attributes**: PHP 8.0+ attribute class definitions (classes decorated with `#[Attribute]`)
+
+### Attribute/Annotation Support Details
+Reflex supports finding attribute, annotation, and decorator definitions across multiple languages using the `--kind Attribute` filter:
+
+- **Rust**: Attribute proc macros (functions with `#[proc_macro_attribute]`)
+- **Java**: `@interface` annotation definitions (e.g., `@interface Test { ... }`)
+- **Kotlin**: `annotation class` definitions (e.g., `annotation class Entity`)
+- **PHP**: PHP 8.0+ attribute classes (classes with `#[Attribute]` decorator)
+- **C#**: Attribute classes (classes ending with "Attribute" suffix or inheriting from System.Attribute)
+
+**Example queries:**
+```bash
+# Find all test attribute proc macros in Rust
+rfx query "test" --kind Attribute --lang rust
+
+# Find all test annotations in Java
+rfx query "test" --kind Attribute --lang java
+
+# Find all composable annotations in Kotlin (Jetpack Compose)
+rfx query "composable" --kind Attribute --lang kotlin
+
+# Find all route attributes in PHP
+rfx query "route" --kind Attribute --lang php
+
+# Find all validation attributes in C#
+rfx query "validation" --kind Attribute --lang csharp
+```
+
+**Note**: This finds attribute/annotation **definitions**, not their usage sites. For usage, use full-text search without `--kind`.
 
 **Coverage**: Reflex supports **90%+ of all codebases** across web, mobile, systems, enterprise, and AI/ML development (18 languages: Rust, Python, TypeScript, JavaScript, Go, Java, C, C++, C#, PHP, Ruby, Kotlin, Zig, Vue, Svelte, plus experimental Swift support once tree-sitter compatibility is resolved).
 
