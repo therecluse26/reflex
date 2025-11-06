@@ -46,6 +46,9 @@ pub enum SymbolKind {
     Module,
     Namespace,
     Type,
+    Macro,
+    Property,
+    Event,
     Import,
     Export,
     /// Catch-all for symbol kinds not yet explicitly supported.

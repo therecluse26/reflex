@@ -3,10 +3,11 @@
 //! Extracts symbols from Python source code:
 //! - Functions (def, async def)
 //! - Classes (regular, abstract)
-//! - Methods (regular, async, static, class methods, properties)
+//! - Methods (regular, async, static, class methods, properties via @property)
 //! - Decorators (tracked in scope)
 //! - Lambda expressions assigned to variables
 //! - Local variables (inside functions)
+//! - Global variables (module-level non-uppercase variables)
 //! - Constants (module-level uppercase variables)
 //! - Imports/Exports
 
@@ -37,6 +38,7 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_classes(source, &root_node, &language.into())?);
     symbols.extend(extract_methods(source, &root_node, &language.into())?);
     symbols.extend(extract_constants(source, &root_node, &language.into())?);
+    symbols.extend(extract_global_variables(source, &root_node, &language.into())?);
     symbols.extend(extract_local_variables(source, &root_node, &language.into())?);
     symbols.extend(extract_lambdas(source, &root_node, &language.into())?);
 
@@ -212,6 +214,70 @@ fn extract_constants(
                 String::new(),
                 Language::Python,
                 SymbolKind::Constant,
+                Some(name),
+                span,
+                None,
+                preview,
+            ));
+        }
+    }
+
+    Ok(symbols)
+}
+
+/// Extract module-level global variables (non-uppercase variable assignments)
+fn extract_global_variables(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let query_str = r#"
+        (module
+            (expression_statement
+                (assignment
+                    left: (identifier) @name))) @var
+    "#;
+
+    let query = Query::new(language, query_str)
+        .context("Failed to create global variable query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut symbols = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut name = None;
+        let mut var_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            if capture_name == "name" {
+                let name_text = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
+                // Only include if it's NOT all uppercase (constants are handled separately)
+                if !name_text.chars().all(|c| c.is_uppercase() || c == '_' || c.is_numeric()) {
+                    name = Some(name_text.to_string());
+                    // Get the assignment node
+                    let mut current = capture.node;
+                    while let Some(parent) = current.parent() {
+                        if parent.kind() == "assignment" {
+                            var_node = Some(parent);
+                            break;
+                        }
+                        current = parent;
+                    }
+                }
+            }
+        }
+
+        if let (Some(name), Some(node)) = (name, var_node) {
+            let span = node_to_span(&node);
+            let preview = extract_preview(source, &span);
+
+            symbols.push(SearchResult::new(
+                String::new(),
+                Language::Python,
+                SymbolKind::Variable,
                 Some(name),
                 span,
                 None,
@@ -650,6 +716,51 @@ class Calculator:
         assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("final")));
 
         // Verify that local variables have no scope
+        for var in variables {
+            assert_eq!(var.scope, None);
+        }
+    }
+
+    #[test]
+    fn test_global_variables() {
+        let source = r#"
+# Global constants (uppercase)
+MAX_SIZE = 100
+DEFAULT_TIMEOUT = 30
+
+# Global variables (non-uppercase)
+database_url = "postgresql://localhost/mydb"
+config = {"debug": True}
+current_user = None
+
+def get_config():
+    return config
+        "#;
+
+        let symbols = parse("test.py", source).unwrap();
+
+        // Filter to constants and variables
+        let constants: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Constant))
+            .collect();
+
+        let variables: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Variable))
+            .collect();
+
+        // Check that constants are captured (uppercase)
+        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("MAX_SIZE")));
+        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("DEFAULT_TIMEOUT")));
+
+        // Check that global variables are captured (non-uppercase)
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("database_url")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("config")));
+        assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("current_user")));
+
+        // Verify no scope for both
+        for constant in constants {
+            assert_eq!(constant.scope, None);
+        }
         for var in variables {
             assert_eq!(var.scope, None);
         }

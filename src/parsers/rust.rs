@@ -11,7 +11,7 @@
 //! - Local variables (let bindings)
 //! - Modules
 //! - Type aliases
-//! - Macros
+//! - Macros (macro_rules! definitions)
 
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
@@ -42,9 +42,11 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_traits(source, &root_node)?);
     symbols.extend(extract_impls(source, &root_node)?);
     symbols.extend(extract_constants(source, &root_node)?);
+    symbols.extend(extract_statics(source, &root_node)?);
     symbols.extend(extract_local_variables(source, &root_node)?);
     symbols.extend(extract_modules(source, &root_node)?);
     symbols.extend(extract_type_aliases(source, &root_node)?);
+    symbols.extend(extract_macros(source, &root_node)?);
 
     // Add file path to all symbols
     for symbol in &mut symbols {
@@ -193,6 +195,20 @@ fn extract_constants(source: &str, root: &tree_sitter::Node) -> Result<Vec<Searc
     extract_symbols(source, root, &query, SymbolKind::Constant, None)
 }
 
+/// Extract static variables
+fn extract_statics(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchResult>> {
+    let language = tree_sitter_rust::LANGUAGE;
+    let query_str = r#"
+        (static_item
+            name: (identifier) @name) @static
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create static query")?;
+
+    extract_symbols(source, root, &query, SymbolKind::Variable, None)
+}
+
 /// Extract local variable bindings (let statements)
 fn extract_local_variables(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchResult>> {
     let language = tree_sitter_rust::LANGUAGE;
@@ -233,6 +249,20 @@ fn extract_type_aliases(source: &str, root: &tree_sitter::Node) -> Result<Vec<Se
         .context("Failed to create type query")?;
 
     extract_symbols(source, root, &query, SymbolKind::Type, None)
+}
+
+/// Extract macro definitions (macro_rules!)
+fn extract_macros(source: &str, root: &tree_sitter::Node) -> Result<Vec<SearchResult>> {
+    let language = tree_sitter_rust::LANGUAGE;
+    let query_str = r#"
+        (macro_definition
+            name: (identifier) @name) @macro
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create macro query")?;
+
+    extract_symbols(source, root, &query, SymbolKind::Macro, None)
 }
 
 /// Generic symbol extraction helper
@@ -469,5 +499,70 @@ mod tests {
         for var in variables {
             assert_eq!(var.scope, None);
         }
+    }
+
+    #[test]
+    fn test_static_variables() {
+        let source = r#"
+            static GLOBAL_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            static mut MUTABLE_GLOBAL: i32 = 0;
+
+            const MAX_SIZE: usize = 100;
+
+            fn increment() {
+                GLOBAL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        "#;
+
+        let symbols = parse("test.rs", source).unwrap();
+
+        // Filter to statics and constants
+        let statics: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Variable))
+            .collect();
+
+        let constants: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Constant))
+            .collect();
+
+        // Check that static variables are captured
+        assert!(statics.iter().any(|v| v.symbol.as_deref() == Some("GLOBAL_COUNTER")));
+        assert!(statics.iter().any(|v| v.symbol.as_deref() == Some("MUTABLE_GLOBAL")));
+
+        // Check that constants are still separate
+        assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("MAX_SIZE")));
+    }
+
+    #[test]
+    fn test_macros() {
+        let source = r#"
+            macro_rules! say_hello {
+                () => {
+                    println!("Hello!");
+                };
+            }
+
+            macro_rules! vec_of_strings {
+                ($($x:expr),*) => {
+                    vec![$($x.to_string()),*]
+                };
+            }
+
+            fn main() {
+                say_hello!();
+            }
+        "#;
+
+        let symbols = parse("test.rs", source).unwrap();
+
+        // Filter to macros
+        let macros: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Macro))
+            .collect();
+
+        // Check that macros are captured
+        assert!(macros.iter().any(|m| m.symbol.as_deref() == Some("say_hello")));
+        assert!(macros.iter().any(|m| m.symbol.as_deref() == Some("vec_of_strings")));
+        assert_eq!(macros.len(), 2);
     }
 }

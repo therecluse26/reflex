@@ -22,13 +22,50 @@ pub mod kotlin;
 // pub mod swift;  // Temporarily disabled - requires tree-sitter 0.23
 pub mod zig;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use crate::models::{Language, SearchResult};
 
 /// Parser factory that selects the appropriate parser based on language
 pub struct ParserFactory;
 
 impl ParserFactory {
+    /// Get the tree-sitter grammar for a language
+    ///
+    /// This is the single source of truth for tree-sitter language grammars.
+    /// Used by both symbol parsers and AST query matching.
+    ///
+    /// Returns an error for:
+    /// - Vue/Svelte (use line-based parsing instead of tree-sitter)
+    /// - Swift (temporarily disabled due to tree-sitter version incompatibility)
+    /// - Unknown languages
+    pub fn get_language_grammar(language: Language) -> Result<tree_sitter::Language> {
+        match language {
+            Language::Rust => Ok(tree_sitter_rust::LANGUAGE.into()),
+            Language::Python => Ok(tree_sitter_python::LANGUAGE.into()),
+            Language::TypeScript => Ok(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
+            Language::JavaScript => Ok(tree_sitter_typescript::LANGUAGE_TSX.into()),
+            Language::Go => Ok(tree_sitter_go::LANGUAGE.into()),
+            Language::Java => Ok(tree_sitter_java::LANGUAGE.into()),
+            Language::C => Ok(tree_sitter_c::LANGUAGE.into()),
+            Language::Cpp => Ok(tree_sitter_cpp::LANGUAGE.into()),
+            Language::CSharp => Ok(tree_sitter_c_sharp::LANGUAGE.into()),
+            Language::PHP => Ok(tree_sitter_php::LANGUAGE_PHP.into()),
+            Language::Ruby => Ok(tree_sitter_ruby::LANGUAGE.into()),
+            Language::Kotlin => Ok(tree_sitter_kotlin_ng::LANGUAGE.into()),
+            Language::Zig => Ok(tree_sitter_zig::LANGUAGE.into()),
+            Language::Swift => Err(anyhow!(
+                "Swift support temporarily disabled (requires tree-sitter 0.23)"
+            )),
+            Language::Vue => Err(anyhow!(
+                "Vue uses line-based parsing, not tree-sitter (tree-sitter-vue incompatible with tree-sitter 0.24+)"
+            )),
+            Language::Svelte => Err(anyhow!(
+                "Svelte uses line-based parsing, not tree-sitter (tree-sitter-svelte incompatible with tree-sitter 0.24+)"
+            )),
+            Language::Unknown => Err(anyhow!("Unknown language")),
+        }
+    }
+
     /// Parse a file and extract symbols based on its language
     pub fn parse(
         path: &str,

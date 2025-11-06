@@ -87,6 +87,120 @@ Reflex uses **trigram-based indexing** to enable sub-100ms full-text search acro
     # Serve a local HTTP API (optional)
     rfx serve --port 7878
 
+    # AST pattern matching (structure-aware search)
+    # Find async functions in Rust
+    rfx query "async" --ast "(function_item (async)) @fn" --lang rust
+
+    # Find all Python function definitions
+    rfx query "def" --ast "(function_definition) @fn" --lang python
+
+    # Find TypeScript class declarations
+    rfx query "class" --ast "(class_declaration) @class" --lang typescript
+
+    # Find Go struct definitions
+    rfx query "type" --ast "(type_declaration (type_spec (struct_type))) @struct" --lang go
+
+---
+
+## AST Pattern Matching
+
+Reflex supports **structure-aware code search** using Tree-sitter S-expression queries via the `--ast` flag. This allows you to match specific code structures rather than just text patterns.
+
+### How It Works
+
+AST queries combine trigram pre-filtering with Tree-sitter parsing:
+
+1. **Phase 1**: Trigram search narrows candidates (e.g., "async" → 100 files)
+2. **Phase 2**: Parse only candidate files with tree-sitter
+3. **Phase 3**: Execute S-expression pattern on AST nodes
+4. **Return**: Matched code structures with context
+
+### Supported Languages
+
+**All tree-sitter languages** support AST queries automatically:
+- Rust, Python, Go, Java, C, C++, C#
+- PHP, Ruby, Kotlin, Zig
+- TypeScript, JavaScript
+
+**Not supported**: Vue, Svelte (use line-based parsing, not tree-sitter)
+
+### Architecture: Centralized Grammar Loading
+
+AST support is **automatic** for all tree-sitter languages through a centralized grammar loader in `src/parsers/mod.rs`:
+
+```rust
+impl ParserFactory {
+    /// Single source of truth for tree-sitter grammars
+    /// Used by both symbol parsers AND AST query matching
+    pub fn get_language_grammar(language: Language) -> Result<tree_sitter::Language> {
+        match language {
+            Language::Rust => Ok(tree_sitter_rust::LANGUAGE.into()),
+            Language::Python => Ok(tree_sitter_python::LANGUAGE.into()),
+            // ... all other languages
+        }
+    }
+}
+```
+
+**Result**: Adding a new language to Reflex automatically enables AST queries. No separate maintenance required.
+
+### Examples
+
+**Rust: Find async functions**
+```bash
+rfx query "async" --ast "(function_item (async)) @fn" --lang rust
+```
+
+**Python: Find all class definitions**
+```bash
+rfx query "class" --ast "(class_definition) @class" --lang python
+```
+
+**Go: Find method declarations**
+```bash
+rfx query "func" --ast "(method_declaration) @method" --lang go
+```
+
+**TypeScript: Find interface declarations**
+```bash
+rfx query "interface" --ast "(interface_declaration) @interface" --lang typescript
+```
+
+**C: Find struct definitions**
+```bash
+rfx query "struct" --ast "(struct_specifier) @struct" --lang c
+```
+
+### S-Expression Syntax
+
+Tree-sitter queries use S-expression patterns:
+
+- `(node_type)` - Match a node type
+- `(parent (child))` - Match nested structure
+- `@name` - Capture the match (required)
+- Field names: `name:`, `type:`, `body:`
+
+**Example**: Match async functions with specific name
+```
+(function_item
+  (async)
+  name: (identifier) @name) @function
+```
+
+### Performance
+
+AST queries are **fast** because:
+- Trigrams filter 62K files → ~10-100 candidates
+- Parse only candidates (not entire codebase)
+- Expected query time: **50-200ms**
+
+### Use Cases
+
+1. **Refactoring**: Find all async functions to convert to sync
+2. **Code review**: Find all public methods in a class
+3. **Migration**: Find deprecated patterns to update
+4. **Analysis**: Count specific code structures (loops, error handlers, etc.)
+
 ---
 
 ## Supported Languages & Frameworks
@@ -97,17 +211,17 @@ Reflex currently supports symbol extraction for the following languages and fram
 
 | Language/Framework | Extensions | Symbol Extraction | Notes |
 |-------------------|------------|------------------|-------|
-| **Rust** | `.rs` | Functions, structs, enums, traits, impls, modules, methods, constants, local variables (let bindings), type aliases | Complete Rust support |
-| **Python** | `.py` | Functions, classes, methods, constants, local variables, lambdas, decorators | Full Python support including async/await |
+| **Rust** | `.rs` | Functions, structs, enums, traits, impls, modules, methods, constants, local variables (let bindings), type aliases, macros (macro_rules!), static variables | Complete Rust support |
+| **Python** | `.py` | Functions, classes, methods, constants, local variables, global variables (non-uppercase), lambdas, decorators (@property, etc.) | Full Python support including async/await |
 | **TypeScript** | `.ts`, `.tsx`, `.mts`, `.cts` | Functions, classes, interfaces, types, enums, methods, local variables (const, let, var) | Full TypeScript + JSX support |
 | **JavaScript** | `.js`, `.jsx`, `.mjs`, `.cjs` | Functions, classes, constants, methods, local variables (const, let, var) | Includes React/JSX support via TSX grammar |
 | **Go** | `.go` | Functions, structs, interfaces, methods, constants, variables (global + local var/`:=`), packages | Full Go support |
 | **Java** | `.java` | Classes, interfaces, enums, methods, fields, local variables, constructors, annotations | Full Java support including generics |
 | **C** | `.c`, `.h` | Functions, structs, enums, unions, typedefs, variables (global + local), macros | Complete C support |
-| **C++** | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.C`, `.H` | Functions, classes, structs, namespaces, templates, methods, local variables, type aliases | Full C++ support including templates |
-| **C#** | `.cs` | Classes, interfaces, structs, enums, records, delegates, methods, properties, local variables, namespaces | Full C# support (C# 1-13) |
+| **C++** | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.C`, `.H` | Functions, classes, structs, namespaces, templates, methods, constructors, destructors, local variables, type aliases | Full C++ support including templates |
+| **C#** | `.cs` | Classes, interfaces, structs, enums, records, delegates, methods, properties, events, indexers (this[]), local variables, namespaces | Full C# support (C# 1-13) |
 | **PHP** | `.php` | Functions, classes, interfaces, traits, methods, properties, constants, local variables, namespaces, enums | Full PHP support including PHP 8.1+ enums |
-| **Ruby** | `.rb`, `.rake`, `.gemspec` | Classes, modules, methods, singleton methods, constants, local variables, blocks | Full Ruby support including Rails patterns |
+| **Ruby** | `.rb`, `.rake`, `.gemspec` | Classes, modules, methods, singleton methods, constants, local variables, instance variables (@var), class variables (@@var), attr_accessor/reader/writer, blocks | Full Ruby support including Rails patterns |
 | **Kotlin** | `.kt`, `.kts` | Classes, objects, interfaces, functions, properties, local variables (val/var), data classes, sealed classes | Full Kotlin support including Android development |
 | **Zig** | `.zig` | Functions, structs, enums, constants, variables (global + local var/const), tests, error sets | Full Zig support |
 | **~~Swift~~** | `.swift` | ~~Classes, structs, enums, protocols, functions, extensions, properties, actors~~ | **Temporarily disabled** - requires tree-sitter 0.23 (Reflex uses 0.24) |

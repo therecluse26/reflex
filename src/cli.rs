@@ -84,8 +84,10 @@ pub enum Command {
         #[arg(short, long)]
         kind: Option<String>,
 
-        /// AST pattern for structure-aware search (requires --lang)
-        /// Example: "(function_item (async))" to find async functions in Rust
+        /// AST pattern for structure-aware search using Tree-sitter queries (requires --lang)
+        /// Works with all tree-sitter languages: rust, python, go, java, c, c++, c#, php, ruby, kotlin, zig, typescript, javascript
+        /// Example: "(function_item (async)) @fn" to find async functions in Rust
+        /// Example: "(function_definition) @fn" to find functions in Python
         #[arg(long)]
         ast: Option<String>,
 
@@ -467,9 +469,16 @@ fn handle_query(
             "AST pattern matching requires a language to be specified.\n\
              \n\
              Use --lang to specify the language for tree-sitter parsing.\n\
-             Supported languages for AST queries: rust, typescript, javascript, php\n\
              \n\
-             Example: rfx query \"pattern\" --ast \"(function_item)\" --lang rust"
+             Supported languages for AST queries:\n\
+             • rust, python, go, java, c, c++, c#, php, ruby, kotlin, zig, typescript, javascript\n\
+             \n\
+             Note: Vue and Svelte use line-based parsing and do not support AST queries.\n\
+             \n\
+             Examples:\n\
+             • rfx query \"async\" --ast \"(function_item (async)) @fn\" --lang rust\n\
+             • rfx query \"def\" --ast \"(function_definition) @fn\" --lang python\n\
+             • rfx query \"class\" --ast \"(class_declaration) @class\" --lang typescript"
         );
     }
 
