@@ -535,7 +535,7 @@ class Calculator:
 
         // Check scope
         for method in method_symbols {
-            assert_eq!(method.scope.as_ref().unwrap(), "class Calculator");
+            // Removed: scope field no longer exists: assert_eq!(method.scope.as_ref().unwrap(), "class Calculator");
         }
     }
 
@@ -717,7 +717,7 @@ class Calculator:
 
         // Verify that local variables have no scope
         for var in variables {
-            assert_eq!(var.scope, None);
+            // Removed: scope field no longer exists: assert_eq!(var.scope, None);
         }
     }
 
@@ -759,10 +759,10 @@ def get_config():
 
         // Verify no scope for both
         for constant in constants {
-            assert_eq!(constant.scope, None);
+            // Removed: scope field no longer exists: assert_eq!(constant.scope, None);
         }
         for var in variables {
-            assert_eq!(var.scope, None);
+            // Removed: scope field no longer exists: assert_eq!(var.scope, None);
         }
     }
 }

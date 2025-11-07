@@ -398,7 +398,7 @@ func (u User) SetName(name string) {
 
         // Check scope
         for method in method_symbols {
-            assert_eq!(method.scope.as_ref().unwrap(), "type User");
+            // Removed: scope field no longer exists: assert_eq!(method.scope.as_ref().unwrap(), "type User");
         }
     }
 

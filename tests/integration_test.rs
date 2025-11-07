@@ -1350,3 +1350,648 @@ fn test_ast_query_invalid_pattern() {
     let error_msg = result.unwrap_err().to_string();
     assert!(error_msg.contains("Invalid AST query pattern") || error_msg.contains("error"));
 }
+
+// ==================== Keyword Detection Tests ====================
+//
+// These tests verify that keyword queries (searching for language keywords like
+// "struct", "class", "function") properly trigger keyword mode and return accurate
+// symbol counts across multiple languages and edge cases.
+
+#[test]
+fn test_keyword_rust_struct() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Copy Rust structs corpus file
+    let corpus_content = include_str!("corpus/rust/structs.rs");
+    fs::write(project.join("structs.rs"), corpus_content).unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search for "struct" keyword with --symbols
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        language: Some(reflex::Language::Rust),
+        ..Default::default()
+    };
+    let results = engine.search("struct", filter).unwrap();
+
+    // Should find 11 structs (per corpus file documentation)
+    assert_eq!(results.len(), 11);
+    assert!(results.iter().all(|r| r.kind == SymbolKind::Struct));
+}
+
+#[test]
+fn test_keyword_php_class() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Copy PHP classes corpus file
+    let corpus_content = include_str!("corpus/php/classes.php");
+    fs::write(project.join("classes.php"), corpus_content).unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search for "class" keyword with --symbols
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        language: Some(reflex::Language::PHP),
+        ..Default::default()
+    };
+    let results = engine.search("class", filter).unwrap();
+
+    // Should find 7 classes (per corpus file documentation)
+    assert_eq!(results.len(), 7);
+    assert!(results.iter().all(|r| r.kind == SymbolKind::Class));
+}
+
+#[test]
+fn test_keyword_typescript_interface() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Copy TypeScript interfaces corpus file
+    let corpus_content = include_str!("corpus/typescript/interfaces.ts");
+    fs::write(project.join("interfaces.ts"), corpus_content).unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search for "interface" keyword with --symbols
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        language: Some(reflex::Language::TypeScript),
+        ..Default::default()
+    };
+    let results = engine.search("interface", filter).unwrap();
+
+    // Should find 11 interfaces (per corpus file documentation)
+    assert_eq!(results.len(), 11);
+    assert!(results.iter().all(|r| r.kind == SymbolKind::Interface));
+}
+
+#[test]
+fn test_keyword_without_lang_flag() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create mixed-language files with classes
+    let php_content = include_str!("corpus/edge_cases/mixed_languages/php_classes.php");
+    let ts_content = include_str!("corpus/edge_cases/mixed_languages/ts_classes.ts");
+    let js_content = include_str!("corpus/edge_cases/mixed_languages/js_classes.js");
+
+    fs::write(project.join("test.php"), php_content).unwrap();
+    fs::write(project.join("test.ts"), ts_content).unwrap();
+    fs::write(project.join("test.js"), js_content).unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search for "class" without --lang flag
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        language: None,  // No language filter!
+        ..Default::default()
+    };
+    let results = engine.search("class", filter).unwrap();
+
+    // Should find classes from ALL languages (2 PHP + 2 TS + 2 JS = 6)
+    assert_eq!(results.len(), 6);
+    assert!(results.iter().all(|r| r.kind == SymbolKind::Class));
+}
+
+#[test]
+fn test_keyword_with_lang_filter() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create mixed-language files with classes
+    let php_content = include_str!("corpus/edge_cases/mixed_languages/php_classes.php");
+    let ts_content = include_str!("corpus/edge_cases/mixed_languages/ts_classes.ts");
+
+    fs::write(project.join("test.php"), php_content).unwrap();
+    fs::write(project.join("test.ts"), ts_content).unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search for "class" WITH --lang php
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        language: Some(reflex::Language::PHP),
+        ..Default::default()
+    };
+    let results = engine.search("class", filter).unwrap();
+
+    // Should find only PHP classes (2)
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.kind == SymbolKind::Class));
+    assert!(results.iter().all(|r| r.path.ends_with(".php")));
+}
+
+#[test]
+fn test_keywords_in_strings_ignored() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Use keywords_in_strings corpus file
+    let corpus_content = include_str!("corpus/edge_cases/keywords_in_strings.rs");
+    fs::write(project.join("test.rs"), corpus_content).unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search for "struct" keyword - should find 0 structs (all in strings/comments)
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        language: Some(reflex::Language::Rust),
+        ..Default::default()
+    };
+    let results = engine.search("struct", filter.clone()).unwrap();
+
+    // Should find 0 structs (keywords in strings/comments don't count)
+    assert_eq!(results.len(), 0);
+
+    // Search for "fn" - should find 5 actual functions
+    let results_fn = engine.search("fn", filter).unwrap();
+    assert_eq!(results_fn.len(), 5);
+    assert!(results_fn.iter().all(|r| r.kind == SymbolKind::Function));
+}
+
+#[test]
+fn test_exact_counts_rust_corpus() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Copy Rust structs corpus file (documented: 11 structs)
+    let corpus_content = include_str!("corpus/rust/structs.rs");
+    fs::write(project.join("structs.rs"), corpus_content).unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Verify exact count
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        language: Some(reflex::Language::Rust),
+        ..Default::default()
+    };
+    let results = engine.search("struct", filter).unwrap();
+
+    // Per corpus file: 11 structs expected
+    assert_eq!(results.len(), 11, "Expected 11 structs in rust/structs.rs corpus");
+    assert!(results.iter().all(|r| r.kind == SymbolKind::Struct));
+}
+
+#[test]
+fn test_keyword_plus_glob() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("tests")).unwrap();
+
+    // Create files in different directories
+    fs::write(project.join("src/lib.rs"), "struct SrcStruct {}").unwrap();
+    fs::write(project.join("tests/test.rs"), "struct TestStruct {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search for "struct" with glob filter
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        glob_patterns: vec!["**/src/**".to_string()],
+        ..Default::default()
+    };
+    let results = engine.search("struct", filter).unwrap();
+
+    // Should find only struct in src/
+    assert_eq!(results.len(), 1);
+    assert!(results[0].path.contains("src/"));
+    assert!(results[0].symbol.as_deref() == Some("SrcStruct"));
+}
+
+#[test]
+fn test_keyword_plus_exclude() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("target")).unwrap();
+
+    // Create files
+    fs::write(project.join("src/lib.rs"), "struct SrcStruct {}").unwrap();
+    fs::write(project.join("target/debug.rs"), "struct TargetStruct {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search for "struct" with exclude filter
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        exclude_patterns: vec!["**/target/**".to_string()],
+        ..Default::default()
+    };
+    let results = engine.search("struct", filter).unwrap();
+
+    // Should exclude target/ directory
+    assert_eq!(results.len(), 1);
+    assert!(results[0].path.contains("src/"));
+    assert!(!results.iter().any(|r| r.path.contains("target/")));
+}
+
+// ==================== Keyword Mode Triggering Tests ====================
+//
+// These tests verify when keyword mode should and should not be triggered
+
+#[test]
+fn test_non_keyword_search_normal_mode() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create file with struct and identifier containing "struct"
+    fs::write(
+        project.join("test.rs"),
+        "struct Point {}\nfn my_struct_builder() {}\nlet my_struct = Point {};"
+    ).unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search for "my_struct" (NOT a keyword)
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        use_contains: true,  // "my_struct" in identifiers
+        ..Default::default()
+    };
+    let results = engine.search("my_struct", filter).unwrap();
+
+    // Should find function and variable, not trigger keyword mode
+    // (keyword mode would only return structs)
+    assert!(results.len() >= 1);
+    assert!(results.iter().any(|r| r.kind == SymbolKind::Function));
+}
+
+#[test]
+fn test_uppercase_keyword_not_trigger() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create file with uppercase and lowercase structs
+    fs::write(
+        project.join("test.rs"),
+        "struct lowercase {}\nstruct UPPERCASE {}"
+    ).unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search for "STRUCT" (uppercase keyword - NOT a keyword)
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        ..Default::default()
+    };
+    let results = engine.search("STRUCT", filter).unwrap();
+
+    // Should do full-text search, not keyword mode
+    // Will find the identifier "UPPERCASE" but not trigger "list all structs" behavior
+    // In this case, it won't match anything because "STRUCT" is not in the code
+    // (only "struct" lowercase and "UPPERCASE" identifier exist)
+    assert_eq!(results.len(), 0);
+}
+
+#[test]
+fn test_explicit_kind_overrides_keyword_inference() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create file with functions and structs
+    fs::write(
+        project.join("test.rs"),
+        "fn greet() {}\nfn process() {}\nstruct Point {}"
+    ).unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search for "struct" but with explicit --kind Function
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        kind: Some(SymbolKind::Function),  // Explicit kind override
+        ..Default::default()
+    };
+    let results = engine.search("struct", filter).unwrap();
+
+    // Should use explicit kind (Function), not infer from keyword
+    // Keyword mode + explicit kind = list all symbols of explicit kind
+    // So "struct" keyword + kind=Function = list all functions
+    assert_eq!(results.len(), 2);  // Both functions (greet and process)
+    assert!(results.iter().all(|r| r.kind == SymbolKind::Function));
+}
+
+#[test]
+fn test_partial_keyword_match_normal_search() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Use partial keywords corpus
+    let corpus_content = include_str!("corpus/edge_cases/keywords_partial.rs");
+    fs::write(project.join("test.rs"), corpus_content).unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search for "struct_builder" (contains "struct" but not exact keyword)
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        use_contains: true,  // "struct_builder" contains "struct"
+        ..Default::default()
+    };
+    let results = engine.search("struct_builder", filter).unwrap();
+
+    // Should find function named struct_builder, NOT trigger keyword mode
+    assert!(results.len() >= 1);
+    assert!(results.iter().any(|r| r.kind == SymbolKind::Function));
+    assert!(results.iter().any(|r| r.symbol.as_ref().map_or(false, |s| s.contains("struct_builder"))));
+}
+
+#[test]
+fn test_keyword_exact_match_required() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create file with "fn" in various contexts
+    fs::write(
+        project.join("test.rs"),
+        "fn test() {}\nfn another() {}\nlet fn_pointer = test;"
+    ).unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search for exact keyword "fn"
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        language: Some(reflex::Language::Rust),
+        ..Default::default()
+    };
+    let results = engine.search("fn", filter).unwrap();
+
+    // Should trigger keyword mode and find all functions
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.kind == SymbolKind::Function));
+}
+
+// ==================== Additional Edge Case and Filter Tests ====================
+
+#[test]
+fn test_keyword_empty_results() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create file with NO structs (only functions)
+    fs::write(
+        project.join("test.rs"),
+        "fn test() {}\nfn another() {}"
+    ).unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search for "struct" keyword when no structs exist
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        language: Some(reflex::Language::Rust),
+        ..Default::default()
+    };
+    let results = engine.search("struct", filter).unwrap();
+
+    // Should return 0 results
+    assert_eq!(results.len(), 0);
+}
+
+#[test]
+fn test_multi_language_exact_counts() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Copy multiple language corpus files
+    let python_classes = include_str!("corpus/python/classes.py");
+    let go_structs = include_str!("corpus/go/structs.go");
+    let java_classes = include_str!("corpus/java/classes.java");
+
+    fs::write(project.join("test.py"), python_classes).unwrap();
+    fs::write(project.join("test.go"), go_structs).unwrap();
+    fs::write(project.join("test.java"), java_classes).unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search for "class" across all languages
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        ..Default::default()
+    };
+    let results = engine.search("class", filter).unwrap();
+
+    // Should find Python (13 including nested/metaclass) + Java (11 including nested/anonymous) = 24 classes
+    // (Go has structs, not classes)
+    assert_eq!(results.len(), 24);
+    assert!(results.iter().all(|r| r.kind == SymbolKind::Class));
+
+    // Verify language distribution
+    let python_count = results.iter().filter(|r| r.path.ends_with(".py")).count();
+    let java_count = results.iter().filter(|r| r.path.ends_with(".java")).count();
+    assert_eq!(python_count, 13);  // Includes nested, metaclass, mixin
+    assert_eq!(java_count, 11);    // Includes nested, inner, anonymous
+}
+
+#[test]
+fn test_keyword_with_paths_only() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create multiple files with structs
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/models.rs"), "struct User {}\nstruct Post {}").unwrap();
+    fs::write(project.join("src/types.rs"), "struct Config {}\nstruct State {}").unwrap();
+    fs::write(project.join("src/lib.rs"), "struct App {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search for "struct" with paths_only
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        paths_only: true,
+        ..Default::default()
+    };
+    let results = engine.search("struct", filter).unwrap();
+
+    // Should return 3 unique paths (one per file)
+    assert_eq!(results.len(), 3);
+
+    // Verify paths are unique
+    let paths: Vec<_> = results.iter().map(|r| &r.path).collect();
+    let unique_paths: std::collections::HashSet<_> = paths.iter().collect();
+    assert_eq!(unique_paths.len(), 3);
+}
+
+#[test]
+fn test_keyword_with_limit() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Copy Rust structs corpus (11 structs)
+    let corpus_content = include_str!("corpus/rust/structs.rs");
+    fs::write(project.join("test.rs"), corpus_content).unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Search for "struct" with limit=5
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        limit: Some(5),
+        ..Default::default()
+    };
+    let results = engine.search("struct", filter).unwrap();
+
+    // Should return only 5 results (limited from 11 total)
+    assert_eq!(results.len(), 5);
+    assert!(results.iter().all(|r| r.kind == SymbolKind::Struct));
+}
+
+#[test]
+fn test_keyword_multi_language_function_synonyms() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create files with function definitions in multiple languages
+    fs::write(project.join("test.rs"), "fn rust_func() {}").unwrap();
+    fs::write(project.join("test.py"), "def python_func(): pass").unwrap();
+    fs::write(project.join("test.js"), "function js_func() {}").unwrap();
+    fs::write(project.join("test.go"), "func go_func() {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Test Rust "fn" keyword
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter_rust = QueryFilter {
+        symbols_mode: true,
+        language: Some(reflex::Language::Rust),
+        ..Default::default()
+    };
+    let results_rust = engine.search("fn", filter_rust).unwrap();
+    assert_eq!(results_rust.len(), 1);
+    assert!(results_rust[0].path.ends_with(".rs"));
+
+    // Test Python "def" keyword
+    let filter_python = QueryFilter {
+        symbols_mode: true,
+        language: Some(reflex::Language::Python),
+        ..Default::default()
+    };
+    let results_python = engine.search("def", filter_python).unwrap();
+    assert_eq!(results_python.len(), 1);
+    assert!(results_python[0].path.ends_with(".py"));
+
+    // Test JavaScript "function" keyword
+    let filter_js = QueryFilter {
+        symbols_mode: true,
+        language: Some(reflex::Language::JavaScript),
+        ..Default::default()
+    };
+    let results_js = engine.search("function", filter_js).unwrap();
+    assert_eq!(results_js.len(), 1);
+    assert!(results_js[0].path.ends_with(".js"));
+
+    // Test Go "func" keyword
+    let filter_go = QueryFilter {
+        symbols_mode: true,
+        language: Some(reflex::Language::Go),
+        ..Default::default()
+    };
+    let results_go = engine.search("func", filter_go).unwrap();
+    assert_eq!(results_go.len(), 1);
+    assert!(results_go[0].path.ends_with(".go"));
+}

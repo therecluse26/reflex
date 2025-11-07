@@ -497,7 +497,7 @@ class Calculator {
 
         // Check scope
         for method in method_symbols {
-            assert_eq!(method.scope.as_ref().unwrap(), "class Calculator");
+            // Removed: scope field no longer exists: assert_eq!(method.scope.as_ref().unwrap(), "class Calculator");
         }
     }
 

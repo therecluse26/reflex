@@ -50,19 +50,14 @@ pub fn main() {
     println!("   ✅ Found {} symbols\n", symbols.len());
 
     println!("📊 Extracted Symbols:");
-    println!("   {:<15} {:<20} {:>6}:{:<4}", "Type", "Name", "Line", "Col");
+    println!("   {:<15} {:<20} {:>6}", "Type", "Name", "Line");
     println!("   {}", "-".repeat(50));
 
     for symbol in &symbols {
-        println!("   {:<15} {:<20} {:>6}:{:<4}",
+        println!("   {:<15} {:<20} {:>6}",
                  format!("{:?}", symbol.kind),
                  symbol.symbol.as_deref().unwrap_or("<no symbol>"),
-                 symbol.span.start_line,
-                 symbol.span.start_col);
-
-        if let Some(scope) = &symbol.scope {
-            println!("      └─ Scope: {}", scope);
-        }
+                 symbol.span.start_line);
     }
 
     println!("\n📋 Summary:");
