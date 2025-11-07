@@ -102,8 +102,80 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
     Ok(json!({
         "tools": [
             {
+                "name": "list_files",
+                "description": "⭐ RECOMMENDED FIRST STEP - Fast file discovery with minimal token usage.\n\n**Purpose:** Find which files contain a pattern without loading content (70-90% fewer tokens than search_code).\n\n**Use this when:**\n- Starting exploration (\"which files use CourtCase?\")\n- Counting affected files\n- Building a file list for targeted analysis\n- You need paths only, not content\n\n**Returns:** Unique file paths only (no previews, no line numbers).\n\n**Workflow:**\n1. Use list_files to discover (cheap)\n2. Use search_code on specific files if you need details (targeted)\n\n**Supports:** lang, file, glob, exclude filters\n**No limit:** Returns ALL matching files\n\n**Example:** Pattern \"CourtCase\" → [\"app/Models/CourtCase.php\", \"app/Http/Controllers/CourtController.php\"]",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "Search pattern (text to find)"
+                        },
+                        "lang": {
+                            "type": "string",
+                            "description": "Filter by language (php, rust, typescript, python, etc.)"
+                        },
+                        "file": {
+                            "type": "string",
+                            "description": "Filter by file path substring (e.g., 'Controllers')"
+                        },
+                        "glob": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Include files matching patterns (e.g., ['app/**/*.php'])"
+                        },
+                        "exclude": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Exclude files matching patterns (e.g., ['vendor/**', 'tests/**'])"
+                        }
+                    },
+                    "required": ["pattern"]
+                }
+            },
+            {
+                "name": "count_occurrences",
+                "description": "Quick statistics - count how many times a pattern occurs (minimal token usage).\n\n**Purpose:** Get total occurrence count and file count without loading any content.\n\n**Use this when:**\n- You need quick stats (\"how many times is CourtCase used?\")\n- Checking impact before refactoring\n- Validating search scope\n\n**Returns:** Total occurrences, unique files, and pagination info (no content, no previews).\n\n**Token usage:** ~100 bytes (vs ~10KB for full search_code results)\n\n**Supports:** All filters (lang, file, glob, exclude, symbols)\n\n**Example output:** {\"total\": 87, \"files\": 12, \"pattern\": \"CourtCase\"}",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "Search pattern (text to find)"
+                        },
+                        "lang": {
+                            "type": "string",
+                            "description": "Filter by language"
+                        },
+                        "symbols": {
+                            "type": "boolean",
+                            "description": "Count symbol definitions only (not usages)"
+                        },
+                        "kind": {
+                            "type": "string",
+                            "description": "Filter by symbol kind (function, class, etc.)"
+                        },
+                        "file": {
+                            "type": "string",
+                            "description": "Filter by file path substring"
+                        },
+                        "glob": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Include files matching patterns"
+                        },
+                        "exclude": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Exclude files matching patterns"
+                        }
+                    },
+                    "required": ["pattern"]
+                }
+            },
+            {
                 "name": "search_code",
-                "description": "Primary code search tool - fast full-text or symbol-only search with trigram optimization.\n\n**Search modes:**\n- Full-text (default): Finds ALL occurrences - definitions + usages\n- Symbol-only (symbols=true): Finds ONLY definitions where symbols are declared\n\n**Use this for:** General code exploration, finding function calls, locating symbol definitions. Handles 95% of search needs.\n\n**Token efficiency:**\n- Previews are auto-truncated to ~100 chars to minimize token usage\n- Use paths=true when you only need file paths (drastically reduces tokens)\n- Use limit parameter to cap result count (e.g., limit=10 for quick exploration)\n- Combine glob/exclude patterns to narrow search scope\n\n**Note:** If results seem outdated or missing new files, run index_project first.",
+                "description": "Full-text or symbol-only code search with detailed results.\n\n**⚠️ TOKEN USAGE:** Returns detailed results (previews, line numbers, spans). For discovery, use list_files first (70-90% fewer tokens).\n\n**Search modes:**\n- Full-text (default): Finds ALL occurrences - definitions + usages\n- Symbol-only (symbols=true): Finds ONLY definitions where symbols are declared\n\n**Use this for:**\n- Detailed analysis after list_files discovery\n- When you need line numbers and code previews\n- Symbol definition searches\n\n**Token efficiency tips:**\n- Start with list_files, then target specific files with file= filter\n- Use limit=10 for quick sampling\n- Use glob/exclude to narrow scope\n- Paginate with offset when has_more=true\n\n**Pagination:** Check response.pagination.has_more. If true, use offset parameter to fetch next page.\n\n**Note:** If results seem outdated, run index_project first.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -133,11 +205,11 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum number of results (use with offset for pagination)"
+                            "description": "Maximum results per page (default: 100). IMPORTANT: If response.pagination.has_more is true, you MUST fetch more pages using offset parameter."
                         },
                         "offset": {
                             "type": "integer",
-                            "description": "Pagination offset (skip first N results after sorting). Example: offset=0 limit=10, then offset=10 limit=10"
+                            "description": "Pagination offset (skip first N results). ALWAYS paginate when has_more=true. Example: First call offset=0, second call offset=100, third offset=200, etc."
                         },
                         "expand": {
                             "type": "boolean",
@@ -282,6 +354,134 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
     let arguments = params["arguments"].clone();
 
     match name {
+        "list_files" => {
+            // Paths-only discovery tool (minimal token usage)
+            let pattern = arguments["pattern"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing pattern"))?
+                .to_string();
+
+            let lang = arguments["lang"].as_str().map(|s| s.to_string());
+            let file = arguments["file"].as_str().map(|s| s.to_string());
+            let glob_patterns = arguments["glob"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            let exclude_patterns = arguments["exclude"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+
+            let language = parse_language(lang);
+
+            let filter = QueryFilter {
+                language,
+                kind: None,
+                use_ast: false,
+                use_regex: false,
+                limit: None,  // No limit for paths-only mode
+                symbols_mode: false,
+                expand: false,
+                file_pattern: file,
+                exact: false,
+                use_contains: false,
+                timeout_secs: 30,
+                glob_patterns,
+                exclude_patterns,
+                paths_only: true,  // KEY: Enable paths-only mode
+                offset: None,
+            };
+
+            let cache = CacheManager::new(".");
+            let engine = QueryEngine::new(cache);
+            let response = engine.search_with_metadata(&pattern, filter)?;
+
+            // Extract just the unique paths (minimal JSON)
+            let paths: Vec<String> = response.results.iter()
+                .map(|r| r.path.clone())
+                .collect();
+
+            // Return compact response (just paths + count)
+            let compact_response = json!({
+                "status": response.status,
+                "total_files": paths.len(),
+                "paths": paths
+            });
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&compact_response)?
+                }]
+            }))
+        }
+        "count_occurrences" => {
+            // Quick stats tool (minimal token usage)
+            let pattern = arguments["pattern"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing pattern"))?
+                .to_string();
+
+            let lang = arguments["lang"].as_str().map(|s| s.to_string());
+            let kind = arguments["kind"].as_str().map(|s| s.to_string());
+            let symbols = arguments["symbols"].as_bool();
+            let file = arguments["file"].as_str().map(|s| s.to_string());
+            let glob_patterns = arguments["glob"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            let exclude_patterns = arguments["exclude"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+
+            let language = parse_language(lang);
+            let parsed_kind = parse_symbol_kind(kind);
+            let symbols_mode = symbols.unwrap_or(false) || parsed_kind.is_some();
+
+            let filter = QueryFilter {
+                language,
+                kind: parsed_kind,
+                use_ast: false,
+                use_regex: false,
+                limit: None,  // No limit for counting
+                symbols_mode,
+                expand: false,
+                file_pattern: file,
+                exact: false,
+                use_contains: false,
+                timeout_secs: 30,
+                glob_patterns,
+                exclude_patterns,
+                paths_only: false,  // Need to count all occurrences
+                offset: None,
+            };
+
+            let cache = CacheManager::new(".");
+            let engine = QueryEngine::new(cache);
+            let response = engine.search_with_metadata(&pattern, filter)?;
+
+            // Count unique files
+            use std::collections::HashSet;
+            let unique_files: HashSet<String> = response.results.iter()
+                .map(|r| r.path.clone())
+                .collect();
+
+            // Return minimal stats
+            let stats = json!({
+                "status": response.status,
+                "pattern": pattern,
+                "total": response.pagination.total,
+                "files": unique_files.len()
+            });
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&stats)?
+                }]
+            }))
+        }
         "search_code" => {
             let pattern = arguments["pattern"]
                 .as_str()

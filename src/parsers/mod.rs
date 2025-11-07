@@ -66,6 +66,33 @@ impl ParserFactory {
         }
     }
 
+    /// Get language keywords that should trigger "list all symbols" behavior
+    ///
+    /// When a user searches for a keyword (like "class", "function") with --symbols,
+    /// we interpret it as "list all symbols of that type" rather than looking for
+    /// a symbol literally named "class" or "function".
+    ///
+    /// Returns an empty slice for languages without common keywords or unsupported languages.
+    pub fn get_keywords(language: Language) -> &'static [&'static str] {
+        match language {
+            Language::Rust => &["fn", "struct", "enum", "trait", "impl", "mod", "const", "static", "type", "macro"],
+            Language::PHP => &["class", "function", "trait", "interface", "enum"],
+            Language::Python => &["class", "def", "async"],
+            Language::TypeScript | Language::JavaScript => &["class", "function", "interface", "type", "enum", "const", "let", "var"],
+            Language::Go => &["func", "struct", "interface", "type", "const", "var"],
+            Language::Java => &["class", "interface", "enum", "@interface"],
+            Language::C => &["struct", "enum", "union", "typedef"],
+            Language::Cpp => &["class", "struct", "enum", "union", "typedef", "namespace", "template"],
+            Language::CSharp => &["class", "struct", "interface", "enum", "delegate", "record", "namespace"],
+            Language::Ruby => &["class", "module", "def"],
+            Language::Kotlin => &["class", "fun", "interface", "object", "enum", "annotation"],
+            Language::Zig => &["fn", "struct", "enum", "const", "var", "type"],
+            Language::Swift => &["class", "struct", "enum", "protocol", "func", "var", "let"],
+            Language::Vue | Language::Svelte => &["function", "const", "let", "var"],
+            Language::Unknown => &[],
+        }
+    }
+
     /// Parse a file and extract symbols based on its language
     pub fn parse(
         path: &str,
