@@ -175,17 +175,17 @@ impl QueryEngine {
         };
 
         // KEYWORD DETECTION (early): Check if this is a keyword query that should scan ALL files
-        // When a user searches for a language keyword (like "class", "function") with --symbols and --lang,
-        // we interpret it as "list all symbols of that type" and should scan ALL files of that language,
+        // When a user searches for a language keyword (like "class", "function") with --symbols or --kind,
+        // we interpret it as "list all symbols of that type" and should scan ALL files,
         // not just the first 100 candidates from trigram search.
         //
         // Requirements for keyword query mode:
         // 1. Symbol mode active (--symbols or --kind)
-        // 2. Language filter specified (required to determine which keywords apply)
-        // 3. Pattern matches a keyword for that language
-        let is_keyword_query = if (filter.symbols_mode || filter.kind.is_some()) && filter.language.is_some() {
-            let lang = filter.language.unwrap();
-            ParserFactory::get_keywords(lang).contains(&pattern)
+        // 2. Pattern matches a keyword in ANY supported language
+        //
+        // Note: --lang is optional. If specified, language filtering happens naturally in Phase 2/3.
+        let is_keyword_query = if filter.symbols_mode || filter.kind.is_some() {
+            ParserFactory::get_all_keywords().contains(&pattern)
         } else {
             false
         };
@@ -203,10 +203,14 @@ impl QueryEngine {
 
         // PHASE 1: Get initial candidates (choose search strategy)
         let mut results = if is_keyword_query {
-            // KEYWORD QUERY MODE: Scan all files of the target language (bypass trigram search)
+            // KEYWORD QUERY MODE: Scan all files (or files of target language if --lang specified)
             // This ensures we find ALL classes/functions/etc, not just those in the first 100 trigram matches
-            log::info!("Keyword query detected for '{}' - scanning all {:?} files (bypassing trigram search)",
-                      pattern, filter.language.unwrap());
+            if let Some(lang) = filter.language {
+                log::info!("Keyword query detected for '{}' - scanning all {:?} files (bypassing trigram search)",
+                          pattern, lang);
+            } else {
+                log::info!("Keyword query detected for '{}' - scanning all files (bypassing trigram search)", pattern);
+            }
             self.get_all_language_files(&filter)?
         } else if filter.use_regex {
             // Regex pattern search with trigram optimization
@@ -1279,10 +1283,8 @@ impl QueryEngine {
     ///
     /// Similar to `search_ast_all_files()` but works for symbol queries instead of AST queries.
     fn get_all_language_files(&self, filter: &QueryFilter) -> Result<Vec<SearchResult>> {
-        // Require language filter (keyword detection already verified this, but double-check)
-        let lang = filter.language.ok_or_else(|| anyhow::anyhow!(
-            "Language filter required for keyword queries"
-        ))?;
+        // Language filter is optional - if not specified, scan all files
+        // If specified, only scan files of that language
 
         // Load content store
         let content_path = self.cache.path().join("content.bin");
@@ -1333,9 +1335,11 @@ impl QueryEngine {
                 .unwrap_or("");
             let detected_lang = Language::from_extension(ext);
 
-            // Filter by language
-            if detected_lang != lang {
-                continue;
+            // Filter by language (if specified)
+            if let Some(lang) = filter.language {
+                if detected_lang != lang {
+                    continue;
+                }
             }
 
             let file_path_str = file_path.to_string_lossy().to_string();
@@ -1367,7 +1371,11 @@ impl QueryEngine {
             });
         }
 
-        log::info!("Keyword query will scan {} {:?} files for symbol extraction", candidates.len(), lang);
+        if let Some(lang) = filter.language {
+            log::info!("Keyword query will scan {} {:?} files for symbol extraction", candidates.len(), lang);
+        } else {
+            log::info!("Keyword query will scan {} files (all languages) for symbol extraction", candidates.len());
+        }
 
         Ok(candidates)
     }

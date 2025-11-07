@@ -93,6 +93,31 @@ impl ParserFactory {
         }
     }
 
+    /// Get all keywords across all supported languages
+    ///
+    /// Returns a deduplicated union of keywords from all languages.
+    /// Used for keyword detection when --lang is not specified.
+    ///
+    /// When a user searches for a keyword with --symbols or --kind,
+    /// we enable keyword mode regardless of language filter.
+    pub fn get_all_keywords() -> &'static [&'static str] {
+        &[
+            // Functions
+            "fn", "function", "def", "func",
+            // Classes and types
+            "class", "struct", "enum", "interface", "trait", "type", "record",
+            // Modules and namespaces
+            "mod", "module", "namespace",
+            // Variables and constants
+            "const", "static", "let", "var",
+            // Other constructs
+            "impl", "async", "object", "annotation", "protocol",
+            "union", "typedef", "delegate", "template",
+            // Java annotations
+            "@interface",
+        ]
+    }
+
     /// Parse a file and extract symbols based on its language
     pub fn parse(
         path: &str,
