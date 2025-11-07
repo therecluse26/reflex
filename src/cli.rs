@@ -528,13 +528,16 @@ fn handle_query(
     // Smart limit handling:
     // 1. If --count is set: no limit (count should always show total)
     // 2. If --all is set: no limit (None)
-    // 3. If --paths is set and user didn't specify --limit: no limit (None)
-    // 4. If user specified --limit: use that value
-    // 5. Otherwise: use default limit of 100
+    // 3. If --limit 0 is set: no limit (None) - treat 0 as "unlimited"
+    // 4. If --paths is set and user didn't specify --limit: no limit (None)
+    // 5. If user specified --limit: use that value
+    // 6. Otherwise: use default limit of 100
     let final_limit = if count_only {
         None  // --count always shows total count, no pagination
     } else if all {
         None  // --all means no limit
+    } else if limit == Some(0) {
+        None  // --limit 0 means no limit (unlimited results)
     } else if paths_only && limit.is_none() {
         None  // --paths without explicit --limit means no limit
     } else if let Some(user_limit) = limit {
