@@ -174,6 +174,11 @@ pub enum Command {
         /// By default, previews are truncated to ~100 chars to reduce token usage
         #[arg(long)]
         no_truncate: bool,
+
+        /// Return all results (no limit)
+        /// Equivalent to --limit 0, convenience flag for getting unlimited results
+        #[arg(short = 'a', long)]
+        all: bool,
     },
 
     /// Start a local HTTP API server
@@ -277,8 +282,8 @@ impl Cli {
             Command::Index { path, force, languages, quiet } => {
                 handle_index(path, force, languages, quiet)
             }
-            Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate } => {
-                handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate)
+            Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all } => {
+                handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all)
             }
             Command::Serve { port, host } => {
                 handle_serve(port, host)
@@ -442,6 +447,7 @@ fn handle_query(
     exclude_patterns: Vec<String>,
     paths_only: bool,
     no_truncate: bool,
+    all: bool,
 ) -> Result<()> {
     log::info!("Starting query command");
 
@@ -519,6 +525,24 @@ fn handle_query(
     // Smart behavior: --kind implies --symbols
     let symbols_mode = symbols_flag || kind.is_some();
 
+    // Smart limit handling:
+    // 1. If --count is set: no limit (count should always show total)
+    // 2. If --all is set: no limit (None)
+    // 3. If --paths is set and user didn't specify --limit: no limit (None)
+    // 4. If user specified --limit: use that value
+    // 5. Otherwise: use default limit of 100
+    let final_limit = if count_only {
+        None  // --count always shows total count, no pagination
+    } else if all {
+        None  // --all means no limit
+    } else if paths_only && limit.is_none() {
+        None  // --paths without explicit --limit means no limit
+    } else if let Some(user_limit) = limit {
+        Some(user_limit)  // Use user-specified limit
+    } else {
+        Some(100)  // Default: limit to 100 results for token efficiency
+    };
+
     // Validate AST query requirements
     if use_ast && language.is_none() {
         anyhow::bail!(
@@ -544,7 +568,7 @@ fn handle_query(
         kind,
         use_ast,
         use_regex,
-        limit,
+        limit: final_limit,
         symbols_mode,
         expand,
         file_pattern,
@@ -560,17 +584,19 @@ fn handle_query(
     // Measure query time
     let start = Instant::now();
 
-    // When --ast is set, pattern is the AST query (not text)
-    // AST queries scan all files (no trigram pre-filtering)
-    let mut results = if use_ast {
+    // Execute query and get pagination metadata
+    // We always use search_with_metadata to get total count for pagination info
+    let (mut results, total_results, has_more) = if use_ast {
         // AST query: pattern is the S-expression, scan all files
-        engine.search_ast_all_files(&pattern, filter.clone())?
-    } else if as_json {
-        // Use metadata-aware search for JSON output
-        engine.search_with_metadata(&pattern, filter.clone())?.results
+        let ast_results = engine.search_ast_all_files(&pattern, filter.clone())?;
+        let count = ast_results.len();
+        (ast_results, count, false)
     } else {
-        // Use standard search
-        engine.search(&pattern, filter.clone())?
+        // Use metadata-aware search for all queries (to get pagination info)
+        let response = engine.search_with_metadata(&pattern, filter.clone())?;
+        let total = response.pagination.total;
+        let has_more = response.pagination.has_more;
+        (response.results, total, has_more)
     };
 
     // Apply preview truncation unless --no-truncate is set
@@ -655,16 +681,27 @@ fn handle_query(
                 eprintln!("Found {} unique files in {}", results.len(), timing_str);
             }
         } else {
-            // Print summary line
+            // Standard result formatting
             if results.is_empty() {
                 println!("No results found (searched in {}).", timing_str);
             } else {
-                println!("Found {} results in {}:\n", results.len(), timing_str);
-            }
+                // Use formatter for pretty output
+                let formatter = crate::formatter::OutputFormatter::new(plain);
+                formatter.format_results(&results, &pattern)?;
 
-            // Use formatter for pretty output
-            let formatter = crate::formatter::OutputFormatter::new(plain);
-            formatter.format_results(&results, &pattern)?;
+                // Print summary at the bottom with pagination details
+                if total_results > results.len() {
+                    // Results were paginated - show detailed count
+                    println!("\nFound {} results ({} total) in {}", results.len(), total_results, timing_str);
+                    // Show pagination hint if there are more results available
+                    if has_more {
+                        println!("Use --limit and --offset to paginate");
+                    }
+                } else {
+                    // All results shown - simple count
+                    println!("\nFound {} results in {}", results.len(), timing_str);
+                }
+            }
         }
     }
 
@@ -812,12 +849,21 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         // Smart behavior: --kind implies --symbols
         let symbols_mode = params.symbols || kind.is_some();
 
+        // Smart limit handling (same as CLI and MCP)
+        let final_limit = if params.paths && params.limit.is_none() {
+            None  // --paths without explicit limit means no limit
+        } else if let Some(user_limit) = params.limit {
+            Some(user_limit)  // Use user-specified limit
+        } else {
+            Some(100)  // Default: limit to 100 results for token efficiency
+        };
+
         let filter = QueryFilter {
             language,
             kind,
             use_ast: false,
             use_regex: params.regex,
-            limit: params.limit,
+            limit: final_limit,
             symbols_mode,
             expand: params.expand,
             file_pattern: params.file,

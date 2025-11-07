@@ -58,7 +58,7 @@ impl Default for QueryFilter {
             kind: None,
             use_ast: false,
             use_regex: false,
-            limit: None,
+            limit: Some(100),  // Default: limit to 100 results for token efficiency
             symbols_mode: false,
             expand: false,
             file_pattern: None,
@@ -183,6 +183,10 @@ impl QueryEngine {
             self.get_trigram_candidates(pattern, &filter)?
         };
 
+        // Capture total count from Phase 1 (before any filtering or limiting)
+        // This is the total number of candidate matches from the trigram search
+        let total_count = results.len();
+
         // Check timeout after Phase 1
         if let Some(timeout_duration) = timeout {
             if start_time.elapsed() > timeout_duration {
@@ -199,6 +203,37 @@ impl QueryEngine {
                     filter.timeout_secs,
                     pattern
                 );
+            }
+        }
+
+        // EARLY LIMIT: Reduce candidates before expensive Phase 2 operations (PERFORMANCE OPTIMIZATION)
+        // Only apply if we're doing symbol enrichment or AST matching (Phase 2 is expensive)
+        // This dramatically reduces tree-sitter parsing workload for symbol queries
+        if filter.symbols_mode || filter.kind.is_some() || filter.use_ast {
+            // Sort early to get deterministic top-N results before limiting
+            results.sort_by(|a, b| {
+                a.path.cmp(&b.path)
+                    .then_with(|| a.span.start_line.cmp(&b.span.start_line))
+            });
+
+            // Apply early limit to reduce tree-sitter parse load
+            // Add offset to limit to ensure we have enough results after filtering
+            if let Some(limit) = filter.limit {
+                let offset = filter.offset.unwrap_or(0);
+                // Request slightly more than needed to account for potential filtering in Phase 2/3
+                // Cap at 500 to prevent excessive file parsing even with large limits
+                let early_limit = (limit + offset).min(500);
+
+                if results.len() > early_limit {
+                    log::debug!(
+                        "Early limiting: truncating {} candidates to {} before Phase 2 (limit={}, offset={})",
+                        results.len(),
+                        early_limit,
+                        limit,
+                        offset
+                    );
+                    results.truncate(early_limit);
+                }
             }
         }
 
@@ -351,9 +386,6 @@ impl QueryEngine {
             a.path.cmp(&b.path)
                 .then_with(|| a.span.start_line.cmp(&b.span.start_line))
         });
-
-        // Track total count BEFORE applying offset/limit (for pagination metadata)
-        let total_count = results.len();
 
         // Step 5.5: Apply offset (pagination)
         if let Some(offset) = filter.offset {

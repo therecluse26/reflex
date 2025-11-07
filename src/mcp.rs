@@ -311,12 +311,24 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 
             let offset = arguments["offset"].as_u64().map(|n| n as usize);
 
+            // Smart limit handling:
+            // 1. If --paths is set and user didn't specify limit: no limit (None)
+            // 2. If user specified limit: use that value
+            // 3. Otherwise: use default limit of 100
+            let final_limit = if paths_only && limit.is_none() {
+                None  // --paths without explicit limit means no limit
+            } else if let Some(user_limit) = limit {
+                Some(user_limit)  // Use user-specified limit
+            } else {
+                Some(100)  // Default: limit to 100 results for token efficiency
+            };
+
             let filter = QueryFilter {
                 language,
                 kind: parsed_kind,
                 use_ast: false,
                 use_regex: false,
-                limit,
+                limit: final_limit,
                 symbols_mode,
                 expand: expand.unwrap_or(false),
                 file_pattern: file,
@@ -368,12 +380,21 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let language = parse_language(lang);
             let offset = arguments["offset"].as_u64().map(|n| n as usize);
 
+            // Smart limit handling (same as search_code)
+            let final_limit = if paths_only && limit.is_none() {
+                None  // --paths without explicit limit means no limit
+            } else if let Some(user_limit) = limit {
+                Some(user_limit)  // Use user-specified limit
+            } else {
+                Some(100)  // Default: limit to 100 results for token efficiency
+            };
+
             let filter = QueryFilter {
                 language,
                 kind: None,
                 use_ast: false,
                 use_regex: true,
-                limit,
+                limit: final_limit,
                 symbols_mode: false,
                 expand: false,
                 file_pattern: file,
@@ -438,12 +459,21 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 
             let offset = arguments["offset"].as_u64().map(|n| n as usize);
 
+            // Smart limit handling (same as search_code)
+            let final_limit = if paths_only && limit.is_none() {
+                None  // --paths without explicit limit means no limit
+            } else if let Some(user_limit) = limit {
+                Some(user_limit)  // Use user-specified limit
+            } else {
+                Some(100)  // Default: limit to 100 results for token efficiency
+            };
+
             let filter = QueryFilter {
                 language: Some(language),
                 kind: None,
                 use_ast: true,
                 use_regex: false,
-                limit,
+                limit: final_limit,
                 symbols_mode: false,
                 expand: false,
                 file_pattern: file,
