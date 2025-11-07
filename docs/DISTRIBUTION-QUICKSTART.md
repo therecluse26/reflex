@@ -7,8 +7,8 @@
 - [ ] Add: `reflex-search/reflex` + `publish-packages.yml`
 
 ### 2. Create External Repos (10 min)
-- [ ] Create `reflex-search/homebrew-reflex`
-  - Copy files from `distribution-templates/homebrew-reflex/`
+- [ ] Create `reflex-search/homebrew-tap`
+  - Copy files from `distribution-templates/homebrew-tap/`
 
 ### 3. Add GitHub Secrets (15 min)
 Go to repo Settings → Secrets → Actions, add:
