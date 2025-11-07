@@ -47,6 +47,8 @@ pub struct QueryFilter {
     pub exclude_patterns: Vec<String>,
     /// Return only unique file paths (deduplicated)
     pub paths_only: bool,
+    /// Pagination offset (skip first N results after sorting)
+    pub offset: Option<usize>,
 }
 
 impl Default for QueryFilter {
@@ -66,6 +68,7 @@ impl Default for QueryFilter {
             glob_patterns: Vec::new(),
             exclude_patterns: Vec::new(),
             paths_only: false,
+            offset: None,
         }
     }
 }
@@ -107,12 +110,23 @@ impl QueryEngine {
         let (status, can_trust_results, warning) = self.get_index_status()?;
 
         // Execute the search
-        let results = self.search_internal(pattern, filter)?;
+        let (results, total) = self.search_internal(pattern, filter.clone())?;
+
+        // Build pagination metadata
+        use crate::models::PaginationInfo;
+        let pagination = PaginationInfo {
+            total,
+            count: results.len(),
+            offset: filter.offset.unwrap_or(0),
+            limit: filter.limit,
+            has_more: total > filter.offset.unwrap_or(0) + results.len(),
+        };
 
         Ok(QueryResponse {
             status,
             can_trust_results,
             warning,
+            pagination,
             results,
         })
     }
@@ -142,12 +156,14 @@ impl QueryEngine {
         // Show non-blocking warnings about branch state and staleness
         self.check_index_freshness()?;
 
-        // Execute the search
-        self.search_internal(pattern, filter)
+        // Execute the search (discard total count - legacy method doesn't use it)
+        let (results, _total_count) = self.search_internal(pattern, filter)?;
+        Ok(results)
     }
 
     /// Internal search implementation (used by both search methods)
-    fn search_internal(&self, pattern: &str, filter: QueryFilter) -> Result<Vec<SearchResult>> {
+    /// Returns (results, total_count) where total_count is the count before offset/limit
+    fn search_internal(&self, pattern: &str, filter: QueryFilter) -> Result<(Vec<SearchResult>, usize)> {
         use std::time::{Duration, Instant};
 
         // Start timeout timer if configured
@@ -336,14 +352,27 @@ impl QueryEngine {
                 .then_with(|| a.span.start_line.cmp(&b.span.start_line))
         });
 
+        // Track total count BEFORE applying offset/limit (for pagination metadata)
+        let total_count = results.len();
+
+        // Step 5.5: Apply offset (pagination)
+        if let Some(offset) = filter.offset {
+            if offset < results.len() {
+                results = results.into_iter().skip(offset).collect();
+            } else {
+                // Offset beyond results - return empty
+                results.clear();
+            }
+        }
+
         // Step 6: Apply limit
         if let Some(limit) = filter.limit {
             results.truncate(limit);
         }
 
-        log::info!("Query returned {} results", results.len());
+        log::info!("Query returned {} results (total before pagination: {})", results.len(), total_count);
 
-        Ok(results)
+        Ok((results, total_count))
     }
 
     /// Search for symbols by exact name match
@@ -543,6 +572,15 @@ impl QueryEngine {
                 .then_with(|| a.span.start_line.cmp(&b.span.start_line))
         });
 
+        // Apply offset (pagination)
+        if let Some(offset) = filter.offset {
+            if offset < results.len() {
+                results = results.into_iter().skip(offset).collect();
+            } else {
+                results.clear();
+            }
+        }
+
         // Apply limit
         if let Some(limit) = filter.limit {
             results.truncate(limit);
@@ -692,6 +730,15 @@ impl QueryEngine {
             a.path.cmp(&b.path)
                 .then_with(|| a.span.start_line.cmp(&b.span.start_line))
         });
+
+        // Apply offset (pagination)
+        if let Some(offset) = filter.offset {
+            if offset < results.len() {
+                results = results.into_iter().skip(offset).collect();
+            } else {
+                results.clear();
+            }
+        }
 
         // Apply limit
         if let Some(limit) = filter.limit {

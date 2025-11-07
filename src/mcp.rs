@@ -133,7 +133,11 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum number of results"
+                            "description": "Maximum number of results (use with offset for pagination)"
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Pagination offset (skip first N results after sorting). Example: offset=0 limit=10, then offset=10 limit=10"
                         },
                         "expand": {
                             "type": "boolean",
@@ -177,7 +181,11 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum number of results"
+                            "description": "Maximum number of results (use with offset for pagination)"
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Pagination offset (skip first N results after sorting)"
                         },
                         "glob": {
                             "type": "array",
@@ -227,7 +235,11 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum number of results"
+                            "description": "Maximum number of results (use with offset for pagination)"
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Pagination offset (skip first N results after sorting)"
                         },
                         "paths": {
                             "type": "boolean",
@@ -297,6 +309,8 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let parsed_kind = parse_symbol_kind(kind);
             let symbols_mode = symbols.unwrap_or(false) || parsed_kind.is_some();
 
+            let offset = arguments["offset"].as_u64().map(|n| n as usize);
+
             let filter = QueryFilter {
                 language,
                 kind: parsed_kind,
@@ -312,6 +326,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 glob_patterns,
                 exclude_patterns,
                 paths_only,
+                offset,
             };
 
             let cache = CacheManager::new(".");
@@ -351,6 +366,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let paths_only = arguments["paths"].as_bool().unwrap_or(false);
 
             let language = parse_language(lang);
+            let offset = arguments["offset"].as_u64().map(|n| n as usize);
 
             let filter = QueryFilter {
                 language,
@@ -367,6 +383,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 glob_patterns,
                 exclude_patterns,
                 paths_only,
+                offset,
             };
 
             let cache = CacheManager::new(".");
@@ -419,6 +436,8 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 log::warn!("    Strongly recommend using glob patterns, e.g., glob=['src/**/*.rs']");
             }
 
+            let offset = arguments["offset"].as_u64().map(|n| n as usize);
+
             let filter = QueryFilter {
                 language: Some(language),
                 kind: None,
@@ -434,6 +453,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 glob_patterns,
                 exclude_patterns,
                 paths_only,
+                offset,
             };
 
             let cache = CacheManager::new(".");

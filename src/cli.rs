@@ -118,6 +118,11 @@ pub enum Command {
         #[arg(short = 'n', long)]
         limit: Option<usize>,
 
+        /// Pagination offset (skip first N results after sorting)
+        /// Use with --limit for pagination: --offset 0 --limit 10, then --offset 10 --limit 10
+        #[arg(short = 'o', long)]
+        offset: Option<usize>,
+
         /// Show full symbol definition (entire function/class body)
         /// Only applicable to symbol searches
         #[arg(long)]
@@ -272,8 +277,8 @@ impl Cli {
             Command::Index { path, force, languages, quiet } => {
                 handle_index(path, force, languages, quiet)
             }
-            Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, limit, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate } => {
-                handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, limit, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate)
+            Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate } => {
+                handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate)
             }
             Command::Serve { port, host } => {
                 handle_serve(port, host)
@@ -425,6 +430,7 @@ fn handle_query(
     as_json: bool,
     pretty_json: bool,
     limit: Option<usize>,
+    offset: Option<usize>,
     expand: bool,
     file_pattern: Option<String>,
     exact: bool,
@@ -548,6 +554,7 @@ fn handle_query(
         glob_patterns,
         exclude_patterns,
         paths_only,
+        offset,
     };
 
     // Measure query time
@@ -597,21 +604,29 @@ fn handle_query(
             println!("{}", json_output);
             eprintln!("Found {} unique files in {}", paths.len(), timing_str);
         } else {
-            // Reconstruct QueryResponse for JSON output
-            let (status, can_trust_results, warning) = if use_ast {
-                // For AST queries, skip metadata checks for now
-                (crate::models::IndexStatus::Fresh, true, None)
+            // Get or build QueryResponse for JSON output
+            let response = if use_ast {
+                // For AST queries, build a response with minimal metadata
+                use crate::models::{PaginationInfo, IndexStatus};
+                crate::models::QueryResponse {
+                    status: IndexStatus::Fresh,
+                    can_trust_results: true,
+                    warning: None,
+                    pagination: PaginationInfo {
+                        total: results.len(),
+                        count: results.len(),
+                        offset: offset.unwrap_or(0),
+                        limit,
+                        has_more: false, // AST already applied pagination
+                    },
+                    results,
+                }
             } else {
-                // Use cached status from search_with_metadata call above
-                let response = engine.search_with_metadata(&pattern, filter)?;
-                (response.status, response.can_trust_results, response.warning)
-            };
-
-            let response = crate::models::QueryResponse {
-                status,
-                can_trust_results,
-                warning,
-                results,
+                // Use search_with_metadata which already has pagination info
+                let mut response = engine.search_with_metadata(&pattern, filter)?;
+                // Replace results with truncated ones (search_with_metadata returns non-truncated)
+                response.results = results;
+                response
             };
 
             let json_output = if pretty_json {
@@ -703,6 +718,8 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         kind: Option<String>,
         #[serde(default)]
         limit: Option<usize>,
+        #[serde(default)]
+        offset: Option<usize>,
         #[serde(default)]
         symbols: bool,
         #[serde(default)]
@@ -810,6 +827,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             glob_patterns: params.glob,
             exclude_patterns: params.exclude,
             paths_only: params.paths,
+            offset: params.offset,
         };
 
         match engine.search_with_metadata(&params.q, filter) {

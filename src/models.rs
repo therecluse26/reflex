@@ -276,6 +276,22 @@ pub struct IndexWarningDetails {
     pub indexed_commit: Option<String>,
 }
 
+/// Pagination information for query results
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaginationInfo {
+    /// Total number of results (before offset/limit applied)
+    pub total: usize,
+    /// Number of results in this response (after offset/limit)
+    pub count: usize,
+    /// Offset used (starting position)
+    pub offset: usize,
+    /// Limit used (max results per page)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    /// Whether there are more results after this page
+    pub has_more: bool,
+}
+
 /// Query response with results and index status
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResponse {
@@ -286,6 +302,8 @@ pub struct QueryResponse {
     /// Warning information (only present if stale)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<IndexWarning>,
+    /// Pagination information
+    pub pagination: PaginationInfo,
     /// Search results
     pub results: Vec<SearchResult>,
 }
