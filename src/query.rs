@@ -47,6 +47,8 @@ pub struct QueryFilter {
     pub exclude_patterns: Vec<String>,
     /// Return only unique file paths (deduplicated)
     pub paths_only: bool,
+    /// Pagination offset (skip first N results after sorting)
+    pub offset: Option<usize>,
 }
 
 impl Default for QueryFilter {
@@ -56,7 +58,7 @@ impl Default for QueryFilter {
             kind: None,
             use_ast: false,
             use_regex: false,
-            limit: None,
+            limit: Some(100),  // Default: limit to 100 results for token efficiency
             symbols_mode: false,
             expand: false,
             file_pattern: None,
@@ -66,6 +68,7 @@ impl Default for QueryFilter {
             glob_patterns: Vec::new(),
             exclude_patterns: Vec::new(),
             paths_only: false,
+            offset: None,
         }
     }
 }
@@ -107,12 +110,23 @@ impl QueryEngine {
         let (status, can_trust_results, warning) = self.get_index_status()?;
 
         // Execute the search
-        let results = self.search_internal(pattern, filter)?;
+        let (results, total) = self.search_internal(pattern, filter.clone())?;
+
+        // Build pagination metadata
+        use crate::models::PaginationInfo;
+        let pagination = PaginationInfo {
+            total,
+            count: results.len(),
+            offset: filter.offset.unwrap_or(0),
+            limit: filter.limit,
+            has_more: total > filter.offset.unwrap_or(0) + results.len(),
+        };
 
         Ok(QueryResponse {
             status,
             can_trust_results,
             warning,
+            pagination,
             results,
         })
     }
@@ -142,12 +156,14 @@ impl QueryEngine {
         // Show non-blocking warnings about branch state and staleness
         self.check_index_freshness()?;
 
-        // Execute the search
-        self.search_internal(pattern, filter)
+        // Execute the search (discard total count - legacy method doesn't use it)
+        let (results, _total_count) = self.search_internal(pattern, filter)?;
+        Ok(results)
     }
 
     /// Internal search implementation (used by both search methods)
-    fn search_internal(&self, pattern: &str, filter: QueryFilter) -> Result<Vec<SearchResult>> {
+    /// Returns (results, total_count) where total_count is the count before offset/limit
+    fn search_internal(&self, pattern: &str, filter: QueryFilter) -> Result<(Vec<SearchResult>, usize)> {
         use std::time::{Duration, Instant};
 
         // Start timeout timer if configured
@@ -167,6 +183,7 @@ impl QueryEngine {
             self.get_trigram_candidates(pattern, &filter)?
         };
 
+
         // Check timeout after Phase 1
         if let Some(timeout_duration) = timeout {
             if start_time.elapsed() > timeout_duration {
@@ -183,6 +200,37 @@ impl QueryEngine {
                     filter.timeout_secs,
                     pattern
                 );
+            }
+        }
+
+        // EARLY LIMIT: Reduce candidates before expensive Phase 2 operations (PERFORMANCE OPTIMIZATION)
+        // Only apply if we're doing symbol enrichment or AST matching (Phase 2 is expensive)
+        // This dramatically reduces tree-sitter parsing workload for symbol queries
+        if filter.symbols_mode || filter.kind.is_some() || filter.use_ast {
+            // Sort early to get deterministic top-N results before limiting
+            results.sort_by(|a, b| {
+                a.path.cmp(&b.path)
+                    .then_with(|| a.span.start_line.cmp(&b.span.start_line))
+            });
+
+            // Apply early limit to reduce tree-sitter parse load
+            // Add offset to limit to ensure we have enough results after filtering
+            if let Some(limit) = filter.limit {
+                let offset = filter.offset.unwrap_or(0);
+                // Request slightly more than needed to account for potential filtering in Phase 2/3
+                // Cap at 500 to prevent excessive file parsing even with large limits
+                let early_limit = (limit + offset).min(500);
+
+                if results.len() > early_limit {
+                    log::debug!(
+                        "Early limiting: truncating {} candidates to {} before Phase 2 (limit={}, offset={})",
+                        results.len(),
+                        early_limit,
+                        limit,
+                        offset
+                    );
+                    results.truncate(early_limit);
+                }
             }
         }
 
@@ -336,14 +384,28 @@ impl QueryEngine {
                 .then_with(|| a.span.start_line.cmp(&b.span.start_line))
         });
 
+        // Capture total count AFTER all filtering but BEFORE pagination (offset/limit)
+        // This is the total number of results the user can paginate through
+        let total_count = results.len();
+
+        // Step 5.5: Apply offset (pagination)
+        if let Some(offset) = filter.offset {
+            if offset < results.len() {
+                results = results.into_iter().skip(offset).collect();
+            } else {
+                // Offset beyond results - return empty
+                results.clear();
+            }
+        }
+
         // Step 6: Apply limit
         if let Some(limit) = filter.limit {
             results.truncate(limit);
         }
 
-        log::info!("Query returned {} results", results.len());
+        log::info!("Query returned {} results (total before pagination: {})", results.len(), total_count);
 
-        Ok(results)
+        Ok((results, total_count))
     }
 
     /// Search for symbols by exact name match
@@ -472,10 +534,9 @@ impl QueryEngine {
             candidates.push(SearchResult {
                 path: file_path_str,
                 lang: detected_lang,
-                span: Span { start_line: 1, start_col: 1, end_line: 1, end_col: 1 },
+                span: Span { start_line: 1, end_line: 1 },
                 symbol: None,
                 kind: SymbolKind::Unknown("ast_query".to_string()),
-                scope: None,
                 preview: String::new(),
             });
         }
@@ -543,6 +604,15 @@ impl QueryEngine {
             a.path.cmp(&b.path)
                 .then_with(|| a.span.start_line.cmp(&b.span.start_line))
         });
+
+        // Apply offset (pagination)
+        if let Some(offset) = filter.offset {
+            if offset < results.len() {
+                results = results.into_iter().skip(offset).collect();
+            } else {
+                results.clear();
+            }
+        }
 
         // Apply limit
         if let Some(limit) = filter.limit {
@@ -693,6 +763,15 @@ impl QueryEngine {
             a.path.cmp(&b.path)
                 .then_with(|| a.span.start_line.cmp(&b.span.start_line))
         });
+
+        // Apply offset (pagination)
+        if let Some(offset) = filter.offset {
+            if offset < results.len() {
+                results = results.into_iter().skip(offset).collect();
+            } else {
+                results.clear();
+            }
+        }
 
         // Apply limit
         if let Some(limit) = filter.limit {
@@ -1172,14 +1251,11 @@ impl QueryEngine {
                         path: file_path_str.clone(),
                         lang: lang.clone(),
                         kind: SymbolKind::Unknown("text_match".to_string()),
-                        symbol: Some(pattern_owned.clone()),
+                        symbol: None,  // No symbol name for text matches (avoid duplication)
                         span: Span {
                             start_line: line_no,
                             end_line: line_no,
-                            start_col: 0,
-                            end_col: 0,
                         },
-                        scope: None,
                         preview: line.to_string(),
                     });
                 }
@@ -1360,10 +1436,7 @@ impl QueryEngine {
                     span: Span {
                         start_line: line_no,
                         end_line: line_no,
-                        start_col: 0,
-                        end_col: 0,
                     },
-                    scope: None,
                     preview: line.to_string(),
                 });
             }

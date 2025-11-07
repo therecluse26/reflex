@@ -26,16 +26,8 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     let script_blocks = extract_script_blocks(source)?;
 
     // Parse each script block with the TypeScript parser
-    for (script_source, script_offset, is_module) in script_blocks {
-        let mut script_symbols = parse_script_block(path, &script_source, script_offset)?;
-
-        // Mark module context symbols with scope
-        if is_module {
-            for symbol in &mut script_symbols {
-                symbol.scope = Some("module context".to_string());
-            }
-        }
-
+    for (script_source, script_offset, _is_module) in script_blocks {
+        let script_symbols = parse_script_block(path, &script_source, script_offset)?;
         symbols.extend(script_symbols);
     }
 
@@ -264,15 +256,14 @@ fn extract_variables(
                 let span = node_to_span(&decl, line_offset);
                 let preview = extract_preview(source, &span, line_offset);
 
-                symbols.push(SearchResult::new(
-                    String::new(),
-                    Language::Svelte,
+                symbols.push(SearchResult {
+                    path: String::new(),
+                    lang: Language::Svelte,
                     kind,
-                    Some(name),
+                    symbol: Some(name),
                     span,
-                    None,
                     preview,
-                ));
+                });
             }
         }
     }
@@ -331,15 +322,14 @@ fn extract_reactive_declarations(
                 let span = node_to_span(&node, line_offset);
                 let preview = extract_preview(source, &span, line_offset);
 
-                symbols.push(SearchResult::new(
-                    String::new(),
-                    Language::Svelte,
-                    SymbolKind::Variable,
-                    Some(name),
+                symbols.push(SearchResult {
+                    path: String::new(),
+                    lang: Language::Svelte,
+                    kind: SymbolKind::Variable,
+                    symbol: Some(name),
                     span,
-                    Some("reactive".to_string()),
                     preview,
-                ));
+                });
             }
         }
     }
@@ -353,7 +343,7 @@ fn extract_symbols(
     root: &tree_sitter::Node,
     query: &Query,
     kind: SymbolKind,
-    scope: Option<String>,
+    _scope: Option<String>,
     line_offset: usize,
 ) -> Result<Vec<SearchResult>> {
     let mut cursor = QueryCursor::new();
@@ -378,15 +368,14 @@ fn extract_symbols(
             let span = node_to_span(&node, line_offset);
             let preview = extract_preview(source, &span, line_offset);
 
-            symbols.push(SearchResult::new(
-                String::new(),
-                Language::Svelte,
-                kind.clone(),
-                Some(name),
+            symbols.push(SearchResult {
+                path: String::new(),
+                lang: Language::Svelte,
+                kind: kind.clone(),
+                symbol: Some(name),
                 span,
-                scope.clone(),
                 preview,
-            ));
+            });
         }
     }
 
@@ -459,7 +448,7 @@ mod tests {
 
         let symbols = parse("test.svelte", source).unwrap();
         assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("count")));
-        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("doubled") && s.scope == Some("reactive".to_string())));
+        assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("doubled")));
         assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("increment")));
     }
 
@@ -484,11 +473,8 @@ mod tests {
 
         let symbols = parse("test.svelte", source).unwrap();
 
-        // Should have module context symbol
-        let module_symbols: Vec<_> = symbols.iter()
-            .filter(|s| s.scope == Some("module context".to_string()))
-            .collect();
-        assert!(module_symbols.len() > 0);
+        // Should have symbols from both script blocks
+        assert!(symbols.len() > 0);
 
         // Should have component symbols
         assert!(symbols.iter().any(|s| s.symbol.as_deref() == Some("data")));
@@ -560,15 +546,5 @@ mod tests {
         // Check that const declarations are captured as constants
         assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("API_KEY")));
         assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("temp")));
-
-        // Verify that all have no scope (except reactive declarations)
-        for var in &variables {
-            if var.scope != Some("reactive".to_string()) {
-                assert_eq!(var.scope, None);
-            }
-        }
-        for constant in constants {
-            assert_eq!(constant.scope, None);
-        }
     }
 }

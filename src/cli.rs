@@ -109,9 +109,19 @@ pub enum Command {
         #[arg(long)]
         json: bool,
 
+        /// Pretty-print JSON output (only with --json)
+        /// By default, JSON is minified to reduce token usage
+        #[arg(long)]
+        pretty: bool,
+
         /// Maximum number of results
         #[arg(short = 'n', long)]
         limit: Option<usize>,
+
+        /// Pagination offset (skip first N results after sorting)
+        /// Use with --limit for pagination: --offset 0 --limit 10, then --offset 10 --limit 10
+        #[arg(short = 'o', long)]
+        offset: Option<usize>,
 
         /// Show full symbol definition (entire function/class body)
         /// Only applicable to symbol searches
@@ -159,6 +169,16 @@ pub enum Command {
         /// Compatible with --json to output ["path1", "path2", ...]
         #[arg(short = 'p', long)]
         paths: bool,
+
+        /// Disable smart preview truncation (show full lines)
+        /// By default, previews are truncated to ~100 chars to reduce token usage
+        #[arg(long)]
+        no_truncate: bool,
+
+        /// Return all results (no limit)
+        /// Equivalent to --limit 0, convenience flag for getting unlimited results
+        #[arg(short = 'a', long)]
+        all: bool,
     },
 
     /// Start a local HTTP API server
@@ -177,6 +197,10 @@ pub enum Command {
         /// Output format as JSON
         #[arg(long)]
         json: bool,
+
+        /// Pretty-print JSON output (only with --json)
+        #[arg(long)]
+        pretty: bool,
     },
 
     /// Clear the local cache
@@ -191,6 +215,10 @@ pub enum Command {
         /// Output format as JSON
         #[arg(long)]
         json: bool,
+
+        /// Pretty-print JSON output (only with --json)
+        #[arg(long)]
+        pretty: bool,
     },
 
     /// Watch for file changes and auto-reindex
@@ -254,20 +282,20 @@ impl Cli {
             Command::Index { path, force, languages, quiet } => {
                 handle_index(path, force, languages, quiet)
             }
-            Command::Query { pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths } => {
-                handle_query(pattern, symbols, lang, kind, ast, regex, json, limit, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths)
+            Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all } => {
+                handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all)
             }
             Command::Serve { port, host } => {
                 handle_serve(port, host)
             }
-            Command::Stats { json } => {
-                handle_stats(json)
+            Command::Stats { json, pretty } => {
+                handle_stats(json, pretty)
             }
             Command::Clear { yes } => {
                 handle_clear(yes)
             }
-            Command::ListFiles { json } => {
-                handle_list_files(json)
+            Command::ListFiles { json, pretty } => {
+                handle_list_files(json, pretty)
             }
             Command::Watch { path, debounce, quiet } => {
                 handle_watch(path, debounce, quiet)
@@ -376,6 +404,26 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// Smart truncate preview to reduce token usage
+/// Truncates at word boundary if possible, adds ellipsis if truncated
+pub fn truncate_preview(preview: &str, max_length: usize) -> String {
+    if preview.len() <= max_length {
+        return preview.to_string();
+    }
+
+    // Find a good break point (prefer word boundary)
+    let truncate_at = preview.char_indices()
+        .take(max_length)
+        .filter(|(_, c)| c.is_whitespace())
+        .last()
+        .map(|(i, _)| i)
+        .unwrap_or(max_length.min(preview.len()));
+
+    let mut truncated = preview[..truncate_at].to_string();
+    truncated.push_str("…");
+    truncated
+}
+
 /// Handle the `query` subcommand
 fn handle_query(
     pattern: String,
@@ -385,7 +433,9 @@ fn handle_query(
     use_ast: bool,
     use_regex: bool,
     as_json: bool,
+    pretty_json: bool,
     limit: Option<usize>,
+    offset: Option<usize>,
     expand: bool,
     file_pattern: Option<String>,
     exact: bool,
@@ -396,6 +446,8 @@ fn handle_query(
     glob_patterns: Vec<String>,
     exclude_patterns: Vec<String>,
     paths_only: bool,
+    no_truncate: bool,
+    all: bool,
 ) -> Result<()> {
     log::info!("Starting query command");
 
@@ -473,6 +525,27 @@ fn handle_query(
     // Smart behavior: --kind implies --symbols
     let symbols_mode = symbols_flag || kind.is_some();
 
+    // Smart limit handling:
+    // 1. If --count is set: no limit (count should always show total)
+    // 2. If --all is set: no limit (None)
+    // 3. If --limit 0 is set: no limit (None) - treat 0 as "unlimited"
+    // 4. If --paths is set and user didn't specify --limit: no limit (None)
+    // 5. If user specified --limit: use that value
+    // 6. Otherwise: use default limit of 100
+    let final_limit = if count_only {
+        None  // --count always shows total count, no pagination
+    } else if all {
+        None  // --all means no limit
+    } else if limit == Some(0) {
+        None  // --limit 0 means no limit (unlimited results)
+    } else if paths_only && limit.is_none() {
+        None  // --paths without explicit --limit means no limit
+    } else if let Some(user_limit) = limit {
+        Some(user_limit)  // Use user-specified limit
+    } else {
+        Some(100)  // Default: limit to 100 results for token efficiency
+    };
+
     // Validate AST query requirements
     if use_ast && language.is_none() {
         anyhow::bail!(
@@ -498,7 +571,7 @@ fn handle_query(
         kind,
         use_ast,
         use_regex,
-        limit,
+        limit: final_limit,
         symbols_mode,
         expand,
         file_pattern,
@@ -508,23 +581,34 @@ fn handle_query(
         glob_patterns,
         exclude_patterns,
         paths_only,
+        offset,
     };
 
     // Measure query time
     let start = Instant::now();
 
-    // When --ast is set, pattern is the AST query (not text)
-    // AST queries scan all files (no trigram pre-filtering)
-    let results = if use_ast {
+    // Execute query and get pagination metadata
+    // We always use search_with_metadata to get total count for pagination info
+    let (mut results, total_results, has_more) = if use_ast {
         // AST query: pattern is the S-expression, scan all files
-        engine.search_ast_all_files(&pattern, filter.clone())?
-    } else if as_json {
-        // Use metadata-aware search for JSON output
-        engine.search_with_metadata(&pattern, filter.clone())?.results
+        let ast_results = engine.search_ast_all_files(&pattern, filter.clone())?;
+        let count = ast_results.len();
+        (ast_results, count, false)
     } else {
-        // Use standard search
-        engine.search(&pattern, filter.clone())?
+        // Use metadata-aware search for all queries (to get pagination info)
+        let response = engine.search_with_metadata(&pattern, filter.clone())?;
+        let total = response.pagination.total;
+        let has_more = response.pagination.has_more;
+        (response.results, total, has_more)
     };
+
+    // Apply preview truncation unless --no-truncate is set
+    if !no_truncate {
+        const MAX_PREVIEW_LENGTH: usize = 100;
+        for result in &mut results {
+            result.preview = truncate_preview(&result.preview, MAX_PREVIEW_LENGTH);
+        }
+    }
 
     let elapsed = start.elapsed();
 
@@ -541,27 +625,45 @@ fn handle_query(
             let paths: Vec<String> = results.iter()
                 .map(|r| r.path.clone())
                 .collect();
-            println!("{}", serde_json::to_string_pretty(&paths)?);
+            let json_output = if pretty_json {
+                serde_json::to_string_pretty(&paths)?
+            } else {
+                serde_json::to_string(&paths)?
+            };
+            println!("{}", json_output);
             eprintln!("Found {} unique files in {}", paths.len(), timing_str);
         } else {
-            // Reconstruct QueryResponse for JSON output
-            let (status, can_trust_results, warning) = if use_ast {
-                // For AST queries, skip metadata checks for now
-                (crate::models::IndexStatus::Fresh, true, None)
+            // Get or build QueryResponse for JSON output
+            let response = if use_ast {
+                // For AST queries, build a response with minimal metadata
+                use crate::models::{PaginationInfo, IndexStatus};
+                crate::models::QueryResponse {
+                    status: IndexStatus::Fresh,
+                    can_trust_results: true,
+                    warning: None,
+                    pagination: PaginationInfo {
+                        total: results.len(),
+                        count: results.len(),
+                        offset: offset.unwrap_or(0),
+                        limit,
+                        has_more: false, // AST already applied pagination
+                    },
+                    results,
+                }
             } else {
-                // Use cached status from search_with_metadata call above
-                let response = engine.search_with_metadata(&pattern, filter)?;
-                (response.status, response.can_trust_results, response.warning)
+                // Use search_with_metadata which already has pagination info
+                let mut response = engine.search_with_metadata(&pattern, filter)?;
+                // Replace results with truncated ones (search_with_metadata returns non-truncated)
+                response.results = results;
+                response
             };
 
-            let response = crate::models::QueryResponse {
-                status,
-                can_trust_results,
-                warning,
-                results,
+            let json_output = if pretty_json {
+                serde_json::to_string_pretty(&response)?
+            } else {
+                serde_json::to_string(&response)?
             };
-
-            println!("{}", serde_json::to_string_pretty(&response)?);
+            println!("{}", json_output);
             eprintln!("Found {} results in {}", response.results.len(), timing_str);
         }
     } else {
@@ -582,16 +684,27 @@ fn handle_query(
                 eprintln!("Found {} unique files in {}", results.len(), timing_str);
             }
         } else {
-            // Print summary line
+            // Standard result formatting
             if results.is_empty() {
                 println!("No results found (searched in {}).", timing_str);
             } else {
-                println!("Found {} results in {}:\n", results.len(), timing_str);
-            }
+                // Use formatter for pretty output
+                let formatter = crate::formatter::OutputFormatter::new(plain);
+                formatter.format_results(&results, &pattern)?;
 
-            // Use formatter for pretty output
-            let formatter = crate::formatter::OutputFormatter::new(plain);
-            formatter.format_results(&results, &pattern)?;
+                // Print summary at the bottom with pagination details
+                if total_results > results.len() {
+                    // Results were paginated - show detailed count
+                    println!("\nFound {} results ({} total) in {}", results.len(), total_results, timing_str);
+                    // Show pagination hint if there are more results available
+                    if has_more {
+                        println!("Use --limit and --offset to paginate");
+                    }
+                } else {
+                    // All results shown - simple count
+                    println!("\nFound {} results in {}", results.len(), timing_str);
+                }
+            }
         }
     }
 
@@ -645,6 +758,8 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         kind: Option<String>,
         #[serde(default)]
         limit: Option<usize>,
+        #[serde(default)]
+        offset: Option<usize>,
         #[serde(default)]
         symbols: bool,
         #[serde(default)]
@@ -737,12 +852,21 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         // Smart behavior: --kind implies --symbols
         let symbols_mode = params.symbols || kind.is_some();
 
+        // Smart limit handling (same as CLI and MCP)
+        let final_limit = if params.paths && params.limit.is_none() {
+            None  // --paths without explicit limit means no limit
+        } else if let Some(user_limit) = params.limit {
+            Some(user_limit)  // Use user-specified limit
+        } else {
+            Some(100)  // Default: limit to 100 results for token efficiency
+        };
+
         let filter = QueryFilter {
             language,
             kind,
             use_ast: false,
             use_regex: params.regex,
-            limit: params.limit,
+            limit: final_limit,
             symbols_mode,
             expand: params.expand,
             file_pattern: params.file,
@@ -752,6 +876,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             glob_patterns: params.glob,
             exclude_patterns: params.exclude,
             paths_only: params.paths,
+            offset: params.offset,
         };
 
         match engine.search_with_metadata(&params.q, filter) {
@@ -880,7 +1005,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
 }
 
 /// Handle the `stats` subcommand
-fn handle_stats(as_json: bool) -> Result<()> {
+fn handle_stats(as_json: bool, pretty_json: bool) -> Result<()> {
     log::info!("Showing index statistics");
 
     let cache = CacheManager::new(".");
@@ -901,7 +1026,12 @@ fn handle_stats(as_json: bool) -> Result<()> {
     let stats = cache.stats()?;
 
     if as_json {
-        println!("{}", serde_json::to_string_pretty(&stats)?);
+        let json_output = if pretty_json {
+            serde_json::to_string_pretty(&stats)?
+        } else {
+            serde_json::to_string(&stats)?
+        };
+        println!("{}", json_output);
     } else {
         println!("Reflex Index Statistics");
         println!("=======================");
@@ -978,7 +1108,7 @@ fn handle_clear(skip_confirm: bool) -> Result<()> {
 }
 
 /// Handle the `list-files` subcommand
-fn handle_list_files(as_json: bool) -> Result<()> {
+fn handle_list_files(as_json: bool, pretty_json: bool) -> Result<()> {
     let cache = CacheManager::new(".");
 
     if !cache.exists() {
@@ -997,7 +1127,12 @@ fn handle_list_files(as_json: bool) -> Result<()> {
     let files = cache.list_files()?;
 
     if as_json {
-        println!("{}", serde_json::to_string_pretty(&files)?);
+        let json_output = if pretty_json {
+            serde_json::to_string_pretty(&files)?
+        } else {
+            serde_json::to_string(&files)?
+        };
+        println!("{}", json_output);
     } else if files.is_empty() {
         println!("No files indexed yet.");
     } else {

@@ -103,7 +103,7 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
         "tools": [
             {
                 "name": "search_code",
-                "description": "Primary code search tool - fast full-text or symbol-only search with trigram optimization.\n\n**Search modes:**\n- Full-text (default): Finds ALL occurrences - definitions + usages\n- Symbol-only (symbols=true): Finds ONLY definitions where symbols are declared\n\n**Use this for:** General code exploration, finding function calls, locating symbol definitions. Handles 95% of search needs.\n\n**Note:** If results seem outdated or missing new files, run index_project first.",
+                "description": "Primary code search tool - fast full-text or symbol-only search with trigram optimization.\n\n**Search modes:**\n- Full-text (default): Finds ALL occurrences - definitions + usages\n- Symbol-only (symbols=true): Finds ONLY definitions where symbols are declared\n\n**Use this for:** General code exploration, finding function calls, locating symbol definitions. Handles 95% of search needs.\n\n**Token efficiency:**\n- Previews are auto-truncated to ~100 chars to minimize token usage\n- Use paths=true when you only need file paths (drastically reduces tokens)\n- Use limit parameter to cap result count (e.g., limit=10 for quick exploration)\n- Combine glob/exclude patterns to narrow search scope\n\n**Note:** If results seem outdated or missing new files, run index_project first.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -133,7 +133,11 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum number of results"
+                            "description": "Maximum number of results (use with offset for pagination)"
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Pagination offset (skip first N results after sorting). Example: offset=0 limit=10, then offset=10 limit=10"
                         },
                         "expand": {
                             "type": "boolean",
@@ -159,7 +163,7 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
             },
             {
                 "name": "search_regex",
-                "description": "Regex-based code search for complex pattern matching (e.g., 'fn (get|set)_\\w+').\n\n**Use for:** Complex patterns requiring regex, case-insensitive variants, word boundaries.\n\n**Don't use for:** Simple text searches or symbol definitions (use search_code instead).",
+                "description": "Regex-based code search for complex pattern matching (e.g., 'fn (get|set)_\\w+').\n\n**Use for:** Complex patterns requiring regex, case-insensitive variants, word boundaries.\n\n**Don't use for:** Simple text searches or symbol definitions (use search_code instead).\n\n**Token efficiency:** Previews are auto-truncated to ~100 chars. Use paths=true for minimal token usage.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -177,7 +181,11 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum number of results"
+                            "description": "Maximum number of results (use with offset for pagination)"
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Pagination offset (skip first N results after sorting)"
                         },
                         "glob": {
                             "type": "array",
@@ -199,7 +207,7 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
             },
             {
                 "name": "search_ast",
-                "description": "⚠️ ADVANCED USERS ONLY - DO NOT USE UNLESS ABSOLUTELY NECESSARY ⚠️\n\nStructure-aware code search using Tree-sitter AST patterns (S-expressions).\n\n**PERFORMANCE WARNING:** AST queries bypass trigram optimization and scan the ENTIRE codebase (500ms-10s+).\n\n**WHEN TO USE (RARE):**\n- You need to match code structure, not just text (e.g., \"all async functions with try/catch blocks\")\n- --symbols search is insufficient (e.g., need to match specific AST node types)\n- You have a very specific structural pattern that cannot be expressed as text\n\n**IN 95% OF CASES, USE search_code with symbols=true INSTEAD** (10-100x faster).\n\n**REQUIRED:** You MUST use glob patterns to limit scope (e.g., glob=['src/**/*.rs']) to avoid scanning thousands of files.\n\n**Example AST patterns:**\n- Rust: '(function_item) @fn' (all functions)\n- Python: '(function_definition) @fn' (all functions)\n- TypeScript: '(class_declaration) @class' (all classes)\n\nRefer to Tree-sitter documentation for each language's grammar.",
+                "description": "⚠️ ADVANCED USERS ONLY - DO NOT USE UNLESS ABSOLUTELY NECESSARY ⚠️\n\nStructure-aware code search using Tree-sitter AST patterns (S-expressions).\n\n**PERFORMANCE WARNING:** AST queries bypass trigram optimization and scan the ENTIRE codebase (500ms-10s+).\n\n**WHEN TO USE (RARE):**\n- You need to match code structure, not just text (e.g., \"all async functions with try/catch blocks\")\n- --symbols search is insufficient (e.g., need to match specific AST node types)\n- You have a very specific structural pattern that cannot be expressed as text\n\n**IN 95% OF CASES, USE search_code with symbols=true INSTEAD** (10-100x faster).\n\n**REQUIRED:** You MUST use glob patterns to limit scope (e.g., glob=['src/**/*.rs']) to avoid scanning thousands of files.\n\n**Token efficiency:** Previews are auto-truncated to ~100 chars. Use limit parameter to control result count.\n\n**Example AST patterns:**\n- Rust: '(function_item) @fn' (all functions)\n- Python: '(function_definition) @fn' (all functions)\n- TypeScript: '(class_declaration) @class' (all classes)\n\nRefer to Tree-sitter documentation for each language's grammar.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -227,7 +235,11 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum number of results"
+                            "description": "Maximum number of results (use with offset for pagination)"
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Pagination offset (skip first N results after sorting)"
                         },
                         "paths": {
                             "type": "boolean",
@@ -297,12 +309,26 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let parsed_kind = parse_symbol_kind(kind);
             let symbols_mode = symbols.unwrap_or(false) || parsed_kind.is_some();
 
+            let offset = arguments["offset"].as_u64().map(|n| n as usize);
+
+            // Smart limit handling:
+            // 1. If --paths is set and user didn't specify limit: no limit (None)
+            // 2. If user specified limit: use that value
+            // 3. Otherwise: use default limit of 100
+            let final_limit = if paths_only && limit.is_none() {
+                None  // --paths without explicit limit means no limit
+            } else if let Some(user_limit) = limit {
+                Some(user_limit)  // Use user-specified limit
+            } else {
+                Some(100)  // Default: limit to 100 results for token efficiency
+            };
+
             let filter = QueryFilter {
                 language,
                 kind: parsed_kind,
                 use_ast: false,
                 use_regex: false,
-                limit,
+                limit: final_limit,
                 symbols_mode,
                 expand: expand.unwrap_or(false),
                 file_pattern: file,
@@ -312,16 +338,23 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 glob_patterns,
                 exclude_patterns,
                 paths_only,
+                offset,
             };
 
             let cache = CacheManager::new(".");
             let engine = QueryEngine::new(cache);
-            let response = engine.search_with_metadata(&pattern, filter)?;
+            let mut response = engine.search_with_metadata(&pattern, filter)?;
+
+            // Apply preview truncation for token efficiency (100 chars max)
+            const MAX_PREVIEW_LENGTH: usize = 100;
+            for result in &mut response.results {
+                result.preview = crate::cli::truncate_preview(&result.preview, MAX_PREVIEW_LENGTH);
+            }
 
             Ok(json!({
                 "content": [{
                     "type": "text",
-                    "text": serde_json::to_string_pretty(&response)?
+                    "text": serde_json::to_string(&response)?
                 }]
             }))
         }
@@ -345,13 +378,23 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let paths_only = arguments["paths"].as_bool().unwrap_or(false);
 
             let language = parse_language(lang);
+            let offset = arguments["offset"].as_u64().map(|n| n as usize);
+
+            // Smart limit handling (same as search_code)
+            let final_limit = if paths_only && limit.is_none() {
+                None  // --paths without explicit limit means no limit
+            } else if let Some(user_limit) = limit {
+                Some(user_limit)  // Use user-specified limit
+            } else {
+                Some(100)  // Default: limit to 100 results for token efficiency
+            };
 
             let filter = QueryFilter {
                 language,
                 kind: None,
                 use_ast: false,
                 use_regex: true,
-                limit,
+                limit: final_limit,
                 symbols_mode: false,
                 expand: false,
                 file_pattern: file,
@@ -361,16 +404,23 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 glob_patterns,
                 exclude_patterns,
                 paths_only,
+                offset,
             };
 
             let cache = CacheManager::new(".");
             let engine = QueryEngine::new(cache);
-            let response = engine.search_with_metadata(&pattern, filter)?;
+            let mut response = engine.search_with_metadata(&pattern, filter)?;
+
+            // Apply preview truncation for token efficiency (100 chars max)
+            const MAX_PREVIEW_LENGTH: usize = 100;
+            for result in &mut response.results {
+                result.preview = crate::cli::truncate_preview(&result.preview, MAX_PREVIEW_LENGTH);
+            }
 
             Ok(json!({
                 "content": [{
                     "type": "text",
-                    "text": serde_json::to_string_pretty(&response)?
+                    "text": serde_json::to_string(&response)?
                 }]
             }))
         }
@@ -407,12 +457,23 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 log::warn!("    Strongly recommend using glob patterns, e.g., glob=['src/**/*.rs']");
             }
 
+            let offset = arguments["offset"].as_u64().map(|n| n as usize);
+
+            // Smart limit handling (same as search_code)
+            let final_limit = if paths_only && limit.is_none() {
+                None  // --paths without explicit limit means no limit
+            } else if let Some(user_limit) = limit {
+                Some(user_limit)  // Use user-specified limit
+            } else {
+                Some(100)  // Default: limit to 100 results for token efficiency
+            };
+
             let filter = QueryFilter {
                 language: Some(language),
                 kind: None,
                 use_ast: true,
                 use_regex: false,
-                limit,
+                limit: final_limit,
                 symbols_mode: false,
                 expand: false,
                 file_pattern: file,
@@ -422,18 +483,25 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 glob_patterns,
                 exclude_patterns,
                 paths_only,
+                offset,
             };
 
             let cache = CacheManager::new(".");
             let engine = QueryEngine::new(cache);
 
             // Use the new search_ast_all_files method (no trigram filtering)
-            let results = engine.search_ast_all_files(&ast_pattern, filter)?;
+            let mut results = engine.search_ast_all_files(&ast_pattern, filter)?;
+
+            // Apply preview truncation for token efficiency (100 chars max)
+            const MAX_PREVIEW_LENGTH: usize = 100;
+            for result in &mut results {
+                result.preview = crate::cli::truncate_preview(&result.preview, MAX_PREVIEW_LENGTH);
+            }
 
             Ok(json!({
                 "content": [{
                     "type": "text",
-                    "text": serde_json::to_string_pretty(&results)?
+                    "text": serde_json::to_string(&results)?
                 }]
             }))
         }
@@ -472,7 +540,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             Ok(json!({
                 "content": [{
                     "type": "text",
-                    "text": serde_json::to_string_pretty(&stats)?
+                    "text": serde_json::to_string(&stats)?
                 }]
             }))
         }

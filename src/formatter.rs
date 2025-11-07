@@ -198,14 +198,6 @@ impl OutputFormatter {
             let highlighted = self.highlight_code(&result.preview, &result.lang, pattern);
             println!("        {}", highlighted);
 
-            // Print scope if available (indented)
-            if let Some(scope) = &result.scope {
-                println!(
-                    "        {}",
-                    format!("in {}", scope).dimmed().italic()
-                );
-            }
-
             // Add separator line between results (except for the very last one)
             if !is_last {
                 let separator_width = self.terminal_width.saturating_sub(2) as usize;
@@ -215,10 +207,6 @@ impl OutputFormatter {
             // Plain text output
             println!("    {} {}", line_no, symbol_badge);
             println!("        {}", result.preview);
-
-            if let Some(scope) = &result.scope {
-                println!("        in {}", scope);
-            }
 
             // Add separator line between results (except for the very last one)
             if !is_last {
@@ -372,10 +360,7 @@ mod tests {
                 span: Span {
                     start_line: 1,
                     end_line: 1,
-                    start_col: 0,
-                    end_col: 0,
                 },
-                scope: None,
                 preview: "fn foo() {}".to_string(),
             },
             SearchResult {
@@ -386,10 +371,7 @@ mod tests {
                 span: Span {
                     start_line: 2,
                     end_line: 2,
-                    start_col: 0,
-                    end_col: 0,
                 },
-                scope: None,
                 preview: "fn bar() {}".to_string(),
             },
             SearchResult {
@@ -400,10 +382,7 @@ mod tests {
                 span: Span {
                     start_line: 1,
                     end_line: 1,
-                    start_col: 0,
-                    end_col: 0,
                 },
-                scope: None,
                 preview: "fn baz() {}".to_string(),
             },
         ];

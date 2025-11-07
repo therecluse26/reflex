@@ -6,26 +6,22 @@
 use serde::{Deserialize, Serialize};
 use strum::{EnumString, Display};
 
-/// Represents a source code location span (line:col range)
+/// Represents a source code location span (line range only)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Span {
     /// Starting line number (1-indexed)
     pub start_line: usize,
-    /// Starting column number (0-indexed)
-    pub start_col: usize,
     /// Ending line number (1-indexed)
     pub end_line: usize,
-    /// Ending column number (0-indexed)
-    pub end_col: usize,
 }
 
 impl Span {
     pub fn new(start_line: usize, start_col: usize, end_line: usize, end_col: usize) -> Self {
+        // Ignore col parameters for backwards compatibility
+        let _ = (start_col, end_col);
         Self {
             start_line,
-            start_col,
             end_line,
-            end_col,
         }
     }
 }
@@ -60,9 +56,10 @@ pub enum SymbolKind {
 }
 
 /// Programming language identifier
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
+    #[default]
     Rust,
     Python,
     JavaScript,
@@ -132,14 +129,21 @@ impl Language {
     }
 }
 
+/// Helper function to skip serializing "Unknown" symbol kinds
+fn is_unknown_kind(kind: &SymbolKind) -> bool {
+    matches!(kind, SymbolKind::Unknown(_))
+}
+
 /// A search result representing a symbol or code location
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
     /// Absolute or relative path to the file
     pub path: String,
-    /// Detected programming language
+    /// Detected programming language (internal use only, not serialized to save tokens)
+    #[serde(skip)]
     pub lang: Language,
-    /// Type of symbol found
+    /// Type of symbol found (only included for symbol searches, not text matches)
+    #[serde(skip_serializing_if = "is_unknown_kind")]
     pub kind: SymbolKind,
     /// Symbol name (e.g., function name, class name)
     /// None for text/regex matches where symbol name cannot be accurately determined
@@ -147,8 +151,6 @@ pub struct SearchResult {
     pub symbol: Option<String>,
     /// Location span in the source file
     pub span: Span,
-    /// Scope context (e.g., "impl MyStruct", "class User")
-    pub scope: Option<String>,
     /// Code preview (few lines around the match)
     pub preview: String,
 }
@@ -163,13 +165,14 @@ impl SearchResult {
         scope: Option<String>,
         preview: String,
     ) -> Self {
+        // Ignore scope parameter for backwards compatibility
+        let _ = scope;
         Self {
             path,
             lang,
             kind,
             symbol,
             span,
-            scope,
             preview,
         }
     }
@@ -273,6 +276,22 @@ pub struct IndexWarningDetails {
     pub indexed_commit: Option<String>,
 }
 
+/// Pagination information for query results
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaginationInfo {
+    /// Total number of results (before offset/limit applied)
+    pub total: usize,
+    /// Number of results in this response (after offset/limit)
+    pub count: usize,
+    /// Offset used (starting position)
+    pub offset: usize,
+    /// Limit used (max results per page)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    /// Whether there are more results after this page
+    pub has_more: bool,
+}
+
 /// Query response with results and index status
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResponse {
@@ -283,6 +302,8 @@ pub struct QueryResponse {
     /// Warning information (only present if stale)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<IndexWarning>,
+    /// Pagination information
+    pub pagination: PaginationInfo,
     /// Search results
     pub results: Vec<SearchResult>,
 }
