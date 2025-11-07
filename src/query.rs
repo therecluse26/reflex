@@ -183,9 +183,6 @@ impl QueryEngine {
             self.get_trigram_candidates(pattern, &filter)?
         };
 
-        // Capture total count from Phase 1 (before any filtering or limiting)
-        // This is the total number of candidate matches from the trigram search
-        let total_count = results.len();
 
         // Check timeout after Phase 1
         if let Some(timeout_duration) = timeout {
@@ -386,6 +383,10 @@ impl QueryEngine {
             a.path.cmp(&b.path)
                 .then_with(|| a.span.start_line.cmp(&b.span.start_line))
         });
+
+        // Capture total count AFTER all filtering but BEFORE pagination (offset/limit)
+        // This is the total number of results the user can paginate through
+        let total_count = results.len();
 
         // Step 5.5: Apply offset (pagination)
         if let Some(offset) = filter.offset {
