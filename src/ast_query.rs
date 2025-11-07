@@ -162,13 +162,10 @@ pub fn execute_ast_query(
                     lang: detected_lang,
                     span: Span {
                         start_line: start_pos.row + 1, // Tree-sitter uses 0-indexed lines
-                        start_col: start_pos.column + 1,
                         end_line: end_pos.row + 1,
-                        end_col: end_pos.column + 1,
                     },
                     symbol: symbol_name,
                     kind: symbol_kind.unwrap_or_else(|| SymbolKind::Unknown("ast_match".to_string())),
-                    scope: None,
                     preview: matched_text.to_string(),
                 });
             }
@@ -309,13 +306,10 @@ fn sync_helper() {
             lang: Language::Rust,
             span: Span {
                 start_line: 1,
-                start_col: 1,
                 end_line: 1,
-                end_col: 1,
             },
             symbol: None,
             kind: SymbolKind::Unknown("text_match".to_string()),
-            scope: None,
             preview: String::new(),
         }];
 
@@ -351,13 +345,10 @@ struct Config {
             lang: Language::Rust,
             span: Span {
                 start_line: 1,
-                start_col: 1,
                 end_line: 1,
-                end_col: 1,
             },
             symbol: None,
             kind: SymbolKind::Unknown("text_match".to_string()),
-            scope: None,
             preview: String::new(),
         }];
 
@@ -382,13 +373,10 @@ struct Config {
             lang: Language::Rust,
             span: Span {
                 start_line: 1,
-                start_col: 1,
                 end_line: 1,
-                end_col: 1,
             },
             symbol: None,
             kind: SymbolKind::Unknown("text_match".to_string()),
-            scope: None,
             preview: String::new(),
         }];
 
@@ -410,13 +398,10 @@ struct Config {
             lang: Language::Vue,
             span: Span {
                 start_line: 1,
-                start_col: 1,
                 end_line: 1,
-                end_col: 1,
             },
             symbol: None,
             kind: SymbolKind::Unknown("text_match".to_string()),
-            scope: None,
             preview: String::new(),
         }];
 
@@ -449,13 +434,10 @@ def process(x):
             lang: Language::Python,
             span: Span {
                 start_line: 1,
-                start_col: 1,
                 end_line: 1,
-                end_col: 1,
             },
             symbol: None,
             kind: SymbolKind::Unknown("text_match".to_string()),
-            scope: None,
             preview: String::new(),
         }];
 
