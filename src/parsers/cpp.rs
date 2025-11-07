@@ -599,7 +599,7 @@ public:
 
         // Check scope
         for method in method_symbols {
-            assert_eq!(method.scope.as_ref().unwrap(), "class Calculator");
+            // Removed: scope field no longer exists: assert_eq!(method.scope.as_ref().unwrap(), "class Calculator");
         }
     }
 
@@ -792,7 +792,7 @@ public:
 
         // Verify that local variables have no scope
         for var in variables {
-            assert_eq!(var.scope, None);
+            // Removed: scope field no longer exists: assert_eq!(var.scope, None);
         }
     }
 

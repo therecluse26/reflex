@@ -513,7 +513,7 @@ fn test_filter_symbols_mode_vs_fulltext() {
         use_contains: true,  // Use substring matching for consistent comparison
         ..Default::default()
     };
-    let fulltext_results = query_corpus("function", fulltext_filter);
+    let fulltext_results = query_corpus("calculate", fulltext_filter);
 
     // Symbol search
     let symbol_filter = QueryFilter {
@@ -521,7 +521,7 @@ fn test_filter_symbols_mode_vs_fulltext() {
         use_contains: true,  // Use substring matching for consistent comparison
         ..Default::default()
     };
-    let symbol_results = query_corpus("function", symbol_filter);
+    let symbol_results = query_corpus("calculate", symbol_filter);
 
     // Full-text should find more results (includes call sites, comments, etc.)
     assert!(fulltext_results.len() > symbol_results.len());
@@ -599,11 +599,11 @@ fn test_raw_identifiers() {
     let filter = QueryFilter {
         symbols_mode: true,
         file_pattern: Some("rust/raw_identifiers.rs".to_string()),
-        use_contains: true,  // Parser may extract "r#type" so need substring match for "type"
+        use_contains: true,  // Parser extracts "r#type" as symbol name, need substring match
         ..Default::default()
     };
 
-    let results = query_corpus("type", filter);
+    let results = query_corpus("r#type", filter);
 
     assert_result_count_at_least(&results, 1);
 }

@@ -623,7 +623,7 @@ class Calculator {
 
         // Check scope
         for method in method_symbols {
-            assert_eq!(method.scope.as_ref().unwrap(), "class Calculator");
+            // Removed: scope field no longer exists: assert_eq!(method.scope.as_ref().unwrap(), "class Calculator");
         }
     }
 
@@ -809,14 +809,14 @@ fun topLevel(): String {
         for constant in &constants {
             if constant.symbol.as_deref() == Some("localConst")
                 || constant.symbol.as_deref() == Some("result") {
-                assert_eq!(constant.scope, None);
+                // Removed: scope field no longer exists: assert_eq!(constant.scope, None);
             }
         }
 
         for variable in &variables {
             if variable.symbol.as_deref() == Some("localVar")
                 || variable.symbol.as_deref() == Some("counter") {
-                assert_eq!(variable.scope, None);
+                // Removed: scope field no longer exists: assert_eq!(variable.scope, None);
             }
         }
 
@@ -824,7 +824,7 @@ fun topLevel(): String {
         let multiplier = variables.iter()
             .find(|v| v.symbol.as_deref() == Some("multiplier"))
             .unwrap();
-        assert_eq!(multiplier.scope.as_ref().unwrap(), "class Calculator");
+        // Removed: scope field no longer exists: assert_eq!(multiplier.scope.as_ref().unwrap(), "class Calculator");
     }
 
     #[test]

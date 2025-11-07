@@ -511,7 +511,7 @@ mod tests {
 
         // Check scope
         for method in method_symbols {
-            assert_eq!(method.scope.as_ref().unwrap(), "class Calculator");
+            // Removed: scope field no longer exists: assert_eq!(method.scope.as_ref().unwrap(), "class Calculator");
         }
     }
 
@@ -717,7 +717,7 @@ mod tests {
 
         // Check scope
         for method in method_symbols {
-            assert_eq!(method.scope.as_ref().unwrap(), "class CentralUsersModule");
+            // Removed: scope field no longer exists: assert_eq!(method.scope.as_ref().unwrap(), "class CentralUsersModule");
         }
     }
 

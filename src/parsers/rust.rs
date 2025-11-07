@@ -536,10 +536,8 @@ mod tests {
         assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("new")));
         assert!(method_symbols.iter().any(|s| s.symbol.as_deref() == Some("get_name")));
 
-        // Check scope
-        for method in method_symbols {
-            assert_eq!(method.scope.as_ref().unwrap(), "impl User");
-        }
+        // Note: scope field was removed from SearchResult for token optimization
+        // Methods are identified by SymbolKind::Method
     }
 
     #[test]
@@ -630,10 +628,7 @@ mod tests {
         assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("temp")));
         assert!(variables.iter().any(|v| v.symbol.as_deref() == Some("final_value")));
 
-        // Verify that local variables have no scope
-        for var in variables {
-            assert_eq!(var.scope, None);
-        }
+        // Note: scope field was removed from SearchResult for token optimization
     }
 
     #[test]
