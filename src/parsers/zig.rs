@@ -473,11 +473,11 @@ test "variable types" {
         // Verify that both global and local variables have no scope
         // (Zig doesn't have class-based scoping, all variables are treated equally)
         for constant in &constants {
-            assert_eq!(constant.scope, None);
+            // Removed: scope field no longer exists: assert_eq!(constant.scope, None);
         }
 
         for variable in &variables {
-            assert_eq!(variable.scope, None);
+            // Removed: scope field no longer exists: assert_eq!(variable.scope, None);
         }
     }
 }

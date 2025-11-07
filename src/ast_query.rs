@@ -28,10 +28,9 @@
 //! let candidates = vec![SearchResult {
 //!     path: "test.rs".to_string(),
 //!     lang: Language::Rust,
-//!     span: Span { start_line: 1, start_col: 1, end_line: 1, end_col: 1 },
+//!     span: Span { start_line: 1, end_line: 1 },
 //!     symbol: None,
 //!     kind: SymbolKind::Unknown("text_match".to_string()),
-//!     scope: None,
 //!     preview: String::new(),
 //! }];
 //!

@@ -64,7 +64,7 @@ jobs:
         with:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           formula: reflex
-          tap: reflex-search/homebrew-reflex
+          tap: reflex-search/homebrew-tap
           tag: ${{ github.event.release.tag_name || github.event.inputs.tag }}
 
   update-aur:

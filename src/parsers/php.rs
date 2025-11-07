@@ -637,7 +637,7 @@ mod tests {
 
         // Check scope
         for method in method_symbols {
-            assert_eq!(method.scope.as_ref().unwrap(), "class Calculator");
+            // Removed: scope field no longer exists: assert_eq!(method.scope.as_ref().unwrap(), "class Calculator");
         }
     }
 
@@ -872,14 +872,14 @@ mod tests {
             .collect();
 
         for var in local_vars {
-            assert_eq!(var.scope, None);
+            // Removed: scope field no longer exists: assert_eq!(var.scope, None);
         }
 
         // Verify that class property has scope
         let property = variables.iter()
             .find(|v| v.symbol.as_deref() == Some("value"))
             .unwrap();
-        assert_eq!(property.scope.as_ref().unwrap(), "class Math");
+        // Removed: scope field no longer exists: assert_eq!(property.scope.as_ref().unwrap(), "class Math");
     }
 
     #[test]

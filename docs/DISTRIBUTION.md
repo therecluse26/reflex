@@ -43,11 +43,11 @@ You need to create two new GitHub repositories:
 
 #### B. Homebrew Tap Repository
 
-1. Create new repo: `reflex-search/homebrew-reflex`
-2. Copy files from `distribution-templates/homebrew-reflex/` to the new repo:
+1. Create new repo: `reflex-search/homebrew-tap`
+2. Copy files from `distribution-templates/homebrew-tap/` to the new repo:
    ```bash
-   cp -r distribution-templates/homebrew-reflex/* /path/to/homebrew-reflex/
-   cd /path/to/homebrew-reflex
+   cp -r distribution-templates/homebrew-tap/* /path/to/homebrew-tap/
+   cd /path/to/homebrew-tap
    git add .
    git commit -m "Initial Homebrew tap"
    git push
@@ -74,7 +74,7 @@ Add these secrets to your **main reflex repository** (Settings → Secrets and v
 3. **HOMEBREW_TAP_TOKEN**
    - Create another GitHub PAT (or reuse previous)
    - Scopes needed: `repo`, `workflow`
-   - This is used to update the homebrew-reflex repository
+   - This is used to update the homebrew-tap repository
 
 4. **AUR_USERNAME**
    - Your AUR account username
@@ -239,7 +239,7 @@ After pushing a tag:
 2. Check crates.io: https://crates.io/crates/reflex
 3. Monitor WinGet PR: https://github.com/microsoft/winget-pkgs/pulls
 4. Verify Scoop bucket: https://github.com/reflex-search/scoop-reflex
-5. Verify Homebrew tap: https://github.com/reflex-search/homebrew-reflex
+5. Verify Homebrew tap: https://github.com/reflex-search/homebrew-tap
 6. Check AUR package: https://aur.archlinux.org/packages/reflex-bin
 
 ## Questions?

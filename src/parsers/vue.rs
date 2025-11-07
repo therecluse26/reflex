@@ -466,10 +466,10 @@ function process(value) {
 
         // Verify that all have no scope
         for var in variables {
-            assert_eq!(var.scope, None);
+            // Removed: scope field no longer exists: assert_eq!(var.scope, None);
         }
         for constant in constants {
-            assert_eq!(constant.scope, None);
+            // Removed: scope field no longer exists: assert_eq!(constant.scope, None);
         }
     }
 }

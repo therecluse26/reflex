@@ -174,8 +174,45 @@ impl QueryEngine {
             None
         };
 
+        // KEYWORD DETECTION (early): Check if this is a keyword query that should scan ALL files
+        // When a user searches for a language keyword (like "class", "function") with --symbols or --kind,
+        // we interpret it as "list all symbols of that type" and should scan ALL files,
+        // not just the first 100 candidates from trigram search.
+        //
+        // Requirements for keyword query mode:
+        // 1. Symbol mode active (--symbols or --kind)
+        // 2. Pattern matches a keyword in ANY supported language
+        //
+        // Note: --lang is optional. If specified, language filtering happens naturally in Phase 2/3.
+        let is_keyword_query = if filter.symbols_mode || filter.kind.is_some() {
+            ParserFactory::get_all_keywords().contains(&pattern)
+        } else {
+            false
+        };
+
+        // KEYWORD-TO-KIND MAPPING: If user searches for a keyword without --kind, infer the kind
+        // Example: "class" → SymbolKind::Class, "function" → SymbolKind::Function
+        // This ensures keyword queries return only the relevant symbol type
+        let mut filter = filter.clone();  // Clone so we can modify it
+        if is_keyword_query && filter.kind.is_none() {
+            if let Some(inferred_kind) = Self::keyword_to_kind(pattern) {
+                log::info!("Keyword '{}' mapped to kind {:?} (auto-inferred)", pattern, inferred_kind);
+                filter.kind = Some(inferred_kind);
+            }
+        }
+
         // PHASE 1: Get initial candidates (choose search strategy)
-        let mut results = if filter.use_regex {
+        let mut results = if is_keyword_query {
+            // KEYWORD QUERY MODE: Scan all files (or files of target language if --lang specified)
+            // This ensures we find ALL classes/functions/etc, not just those in the first 100 trigram matches
+            if let Some(lang) = filter.language {
+                log::info!("Keyword query detected for '{}' - scanning all {:?} files (bypassing trigram search)",
+                          pattern, lang);
+            } else {
+                log::info!("Keyword query detected for '{}' - scanning all files (bypassing trigram search)", pattern);
+            }
+            self.get_all_language_files(&filter)?
+        } else if filter.use_regex {
             // Regex pattern search with trigram optimization
             self.get_regex_candidates(pattern, timeout.as_ref(), &start_time)?
         } else {
@@ -203,10 +240,30 @@ impl QueryEngine {
             }
         }
 
+        // EARLY LANGUAGE FILTER: Apply language filtering BEFORE early limiting
+        // This ensures we only parse files matching the language filter in Phase 2
+        // Critical for non-keyword queries to work correctly
+        //
+        // Skip for keyword queries - those candidates are already pre-filtered by language
+        if !is_keyword_query {
+            if let Some(lang) = filter.language {
+                let before_count = results.len();
+                results.retain(|r| r.lang == lang);
+                log::debug!(
+                    "Language filter ({:?}): reduced {} candidates to {} candidates",
+                    lang,
+                    before_count,
+                    results.len()
+                );
+            }
+        }
+
         // EARLY LIMIT: Reduce candidates before expensive Phase 2 operations (PERFORMANCE OPTIMIZATION)
         // Only apply if we're doing symbol enrichment or AST matching (Phase 2 is expensive)
         // This dramatically reduces tree-sitter parsing workload for symbol queries
-        if filter.symbols_mode || filter.kind.is_some() || filter.use_ast {
+        //
+        // SKIP for keyword queries - we need to parse ALL files to find all symbols
+        if !is_keyword_query && (filter.symbols_mode || filter.kind.is_some() || filter.use_ast) {
             // Sort early to get deterministic top-N results before limiting
             results.sort_by(|a, b| {
                 a.path.cmp(&b.path)
@@ -274,7 +331,9 @@ impl QueryEngine {
             let include_matcher = if !filter.glob_patterns.is_empty() {
                 let mut builder = GlobSetBuilder::new();
                 for pattern in &filter.glob_patterns {
-                    match Glob::new(pattern) {
+                    // Normalize pattern to ensure LLM-generated patterns work correctly
+                    let normalized = Self::normalize_glob_pattern(pattern);
+                    match Glob::new(&normalized) {
                         Ok(glob) => {
                             builder.add(glob);
                         }
@@ -298,7 +357,9 @@ impl QueryEngine {
             let exclude_matcher = if !filter.exclude_patterns.is_empty() {
                 let mut builder = GlobSetBuilder::new();
                 for pattern in &filter.exclude_patterns {
-                    match Glob::new(pattern) {
+                    // Normalize pattern to ensure LLM-generated patterns work correctly
+                    let normalized = Self::normalize_glob_pattern(pattern);
+                    match Glob::new(&normalized) {
                         Ok(glob) => {
                             builder.add(glob);
                         }
@@ -479,7 +540,9 @@ impl QueryEngine {
         let include_matcher = if !filter.glob_patterns.is_empty() {
             let mut builder = GlobSetBuilder::new();
             for pattern in &filter.glob_patterns {
-                if let Ok(glob) = Glob::new(pattern) {
+                // Normalize pattern to ensure LLM-generated patterns work correctly
+                let normalized = Self::normalize_glob_pattern(pattern);
+                if let Ok(glob) = Glob::new(&normalized) {
                     builder.add(glob);
                 }
             }
@@ -491,7 +554,9 @@ impl QueryEngine {
         let exclude_matcher = if !filter.exclude_patterns.is_empty() {
             let mut builder = GlobSetBuilder::new();
             for pattern in &filter.exclude_patterns {
-                if let Ok(glob) = Glob::new(pattern) {
+                // Normalize pattern to ensure LLM-generated patterns work correctly
+                let normalized = Self::normalize_glob_pattern(pattern);
+                if let Ok(glob) = Glob::new(&normalized) {
                     builder.add(glob);
                 }
             }
@@ -703,7 +768,9 @@ impl QueryEngine {
             let include_matcher = if !filter.glob_patterns.is_empty() {
                 let mut builder = GlobSetBuilder::new();
                 for pattern in &filter.glob_patterns {
-                    if let Ok(glob) = Glob::new(pattern) {
+                    // Normalize pattern to ensure LLM-generated patterns work correctly
+                    let normalized = Self::normalize_glob_pattern(pattern);
+                    if let Ok(glob) = Glob::new(&normalized) {
                         builder.add(glob);
                     }
                 }
@@ -715,7 +782,9 @@ impl QueryEngine {
             let exclude_matcher = if !filter.exclude_patterns.is_empty() {
                 let mut builder = GlobSetBuilder::new();
                 for pattern in &filter.exclude_patterns {
-                    if let Ok(glob) = Glob::new(pattern) {
+                    // Normalize pattern to ensure LLM-generated patterns work correctly
+                    let normalized = Self::normalize_glob_pattern(pattern);
+                    if let Ok(glob) = Glob::new(&normalized) {
                         builder.add(glob);
                     }
                 }
@@ -999,8 +1068,43 @@ impl QueryEngine {
             .collect()
         });
 
-        // Filter symbols by pattern
-        let filtered: Vec<SearchResult> = if filter.use_regex {
+        // KEYWORD DETECTION: Check if pattern is a language keyword (e.g., "class", "function")
+        // If it matches a keyword AND symbols_mode is true, interpret as "list all symbols of that type"
+        // rather than looking for a symbol literally named "class" or "function"
+        //
+        // IMPORTANT: Only check keywords for languages that will pass Phase 3 filtering.
+        // If a language filter is specified, only check that language's keywords.
+        // Otherwise, check all languages present in the symbol results.
+        let is_keyword_query = {
+            // Determine which language to check keywords for
+            let lang_to_check = if let Some(lang) = filter.language {
+                // Language filter specified - check that language only
+                // This ensures keyword detection aligns with Phase 3 language filtering
+                vec![lang]
+            } else {
+                // No language filter - check all languages that appear in the actual symbols
+                // (not candidates, but the parsed symbols that made it through)
+                // This handles mixed-language codebases correctly
+                let mut langs: Vec<Language> = all_symbols.iter()
+                    .map(|s| s.lang)
+                    .collect::<Vec<_>>();
+                langs.sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b))); // Deterministic ordering
+                langs.dedup(); // Remove duplicates after sorting
+                langs
+            };
+
+            // Check if pattern matches a keyword in any of the relevant languages
+            lang_to_check.iter().any(|lang| {
+                ParserFactory::get_keywords(*lang).contains(&pattern)
+            })
+        };
+
+        // If pattern is a keyword (like "class" or "function"), skip name-based filtering
+        // and return all symbols (kind filtering happens in Phase 3)
+        let filtered: Vec<SearchResult> = if is_keyword_query {
+            log::info!("Pattern '{}' is a language keyword - listing all symbols (kind filtering will be applied in Phase 3)", pattern);
+            all_symbols
+        } else if filter.use_regex {
             // Compile regex for symbol name matching
             let regex = Regex::new(pattern)
                 .with_context(|| format!("Invalid regex pattern: {}", pattern))?;
@@ -1132,6 +1236,148 @@ impl QueryEngine {
         }
 
         None
+    }
+
+    /// Map keyword patterns to SymbolKind for auto-inference
+    ///
+    /// When users search for keywords like "class" or "function" with --symbols,
+    /// automatically infer the kind filter to return only symbols of that type.
+    ///
+    /// This makes keyword queries more intuitive: searching for "class" returns
+    /// only classes, not all symbols.
+    fn keyword_to_kind(keyword: &str) -> Option<SymbolKind> {
+        match keyword {
+            // Classes and types
+            "class" => Some(SymbolKind::Class),
+            "struct" => Some(SymbolKind::Struct),
+            "enum" => Some(SymbolKind::Enum),
+            "interface" => Some(SymbolKind::Interface),
+            "trait" => Some(SymbolKind::Trait),
+            "type" => Some(SymbolKind::Type),
+            "record" => Some(SymbolKind::Struct),  // C# record types
+
+            // Functions and methods
+            "function" | "fn" | "def" | "func" => Some(SymbolKind::Function),
+
+            // Variables and constants
+            "const" | "static" => Some(SymbolKind::Constant),
+            "var" | "let" => Some(SymbolKind::Variable),
+
+            // Modules and namespaces
+            "mod" | "module" | "namespace" => Some(SymbolKind::Module),
+
+            // Other constructs
+            "impl" => None,  // impl blocks don't have a direct SymbolKind
+            "async" => None, // async is a modifier, not a symbol type
+
+            // Default: no mapping (return all symbols)
+            _ => None,
+        }
+    }
+
+    /// Get all files matching the language filter (for keyword queries)
+    ///
+    /// This method bypasses trigram search and returns ALL files of the specified language.
+    /// Used for keyword queries like "list all classes" where we need complete coverage,
+    /// not just the first 100 candidates from a trigram search.
+    ///
+    /// Similar to `search_ast_all_files()` but works for symbol queries instead of AST queries.
+    fn get_all_language_files(&self, filter: &QueryFilter) -> Result<Vec<SearchResult>> {
+        // Language filter is optional - if not specified, scan all files
+        // If specified, only scan files of that language
+
+        // Load content store
+        let content_path = self.cache.path().join("content.bin");
+        let content_reader = ContentReader::open(&content_path)
+            .context("Failed to open content store")?;
+
+        // Build glob matchers if specified (for filtering)
+        use globset::{Glob, GlobSetBuilder};
+
+        let include_matcher = if !filter.glob_patterns.is_empty() {
+            let mut builder = GlobSetBuilder::new();
+            for pattern in &filter.glob_patterns {
+                let normalized = Self::normalize_glob_pattern(pattern);
+                if let Ok(glob) = Glob::new(&normalized) {
+                    builder.add(glob);
+                }
+            }
+            builder.build().ok()
+        } else {
+            None
+        };
+
+        let exclude_matcher = if !filter.exclude_patterns.is_empty() {
+            let mut builder = GlobSetBuilder::new();
+            for pattern in &filter.exclude_patterns {
+                let normalized = Self::normalize_glob_pattern(pattern);
+                if let Ok(glob) = Glob::new(&normalized) {
+                    builder.add(glob);
+                }
+            }
+            builder.build().ok()
+        } else {
+            None
+        };
+
+        // Scan all files and filter by language + glob patterns
+        let mut candidates: Vec<SearchResult> = Vec::new();
+
+        for file_id in 0..content_reader.file_count() {
+            let file_path = match content_reader.get_file_path(file_id as u32) {
+                Some(p) => p,
+                None => continue,
+            };
+
+            // Detect language from file extension
+            let ext = file_path.extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            let detected_lang = Language::from_extension(ext);
+
+            // Filter by language (if specified)
+            if let Some(lang) = filter.language {
+                if detected_lang != lang {
+                    continue;
+                }
+            }
+
+            let file_path_str = file_path.to_string_lossy().to_string();
+
+            // Apply glob/exclude filters
+            let included = include_matcher.as_ref().map_or(true, |m| m.is_match(&file_path_str));
+            let excluded = exclude_matcher.as_ref().map_or(false, |m| m.is_match(&file_path_str));
+
+            if !included || excluded {
+                continue;
+            }
+
+            // Apply file path filter if specified
+            if let Some(ref file_pattern) = filter.file_pattern {
+                if !file_path_str.contains(file_pattern) {
+                    continue;
+                }
+            }
+
+            // Create a dummy candidate for this file
+            // Phase 2 (symbol enrichment) will parse it and extract actual symbols
+            candidates.push(SearchResult {
+                path: file_path_str,
+                lang: detected_lang,
+                span: Span { start_line: 1, end_line: 1 },
+                symbol: None,
+                kind: SymbolKind::Unknown("keyword_query".to_string()),
+                preview: String::new(),
+            });
+        }
+
+        if let Some(lang) = filter.language {
+            log::info!("Keyword query will scan {} {:?} files for symbol extraction", candidates.len(), lang);
+        } else {
+            log::info!("Keyword query will scan {} files (all languages) for symbol extraction", candidates.len());
+        }
+
+        Ok(candidates)
     }
 
     /// Get candidate results using trigram-based full-text search
@@ -1476,6 +1722,27 @@ impl QueryEngine {
         log::debug!("Trigram index rebuilt with {} trigrams", trigram_index.trigram_count());
 
         Ok(trigram_index)
+    }
+
+    /// Normalize glob patterns for consistent matching
+    ///
+    /// Ensures glob patterns work correctly by auto-prepending "./" to relative paths
+    /// that don't already start with ".", "/", or "*". This fixes LLM-generated patterns
+    /// that omit the explicit relative path prefix.
+    ///
+    /// # Examples
+    /// - "services/**/*.php" → "./services/**/*.php"
+    /// - "./services/**/*.php" → "./services/**/*.php" (unchanged)
+    /// - "**/services/**/*.php" → "**/services/**/*.php" (unchanged)
+    /// - "/absolute/path/**" → "/absolute/path/**" (unchanged)
+    fn normalize_glob_pattern(pattern: &str) -> String {
+        if pattern.starts_with('.') || pattern.starts_with('/') || pattern.starts_with('*') {
+            // Already has a prefix that works - don't modify
+            pattern.to_string()
+        } else {
+            // Relative path without explicit prefix - add "./"
+            format!("./{}", pattern)
+        }
     }
 
     /// Check if pattern appears at word boundaries in a line

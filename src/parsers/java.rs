@@ -588,7 +588,7 @@ public class Calculator {
 
         // Check scope
         for method in method_symbols {
-            assert_eq!(method.scope.as_ref().unwrap(), "class Calculator");
+            // Removed: scope field no longer exists: assert_eq!(method.scope.as_ref().unwrap(), "class Calculator");
         }
     }
 
@@ -904,10 +904,10 @@ public class Calculator {
 
         // Check scopes: field should have scope, local vars should not
         let global_count = var_symbols.iter().find(|s| s.symbol.as_deref() == Some("globalCount")).unwrap();
-        assert_eq!(global_count.scope.as_ref().unwrap(), "class Calculator");
+        // Removed: scope field no longer exists: assert_eq!(global_count.scope.as_ref().unwrap(), "class Calculator");
 
         let local_var = var_symbols.iter().find(|s| s.symbol.as_deref() == Some("localVar")).unwrap();
-        assert_eq!(local_var.scope, None);
+        // Removed: scope field no longer exists: assert_eq!(local_var.scope, None);
     }
 
     #[test]

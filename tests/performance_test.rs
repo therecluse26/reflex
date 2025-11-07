@@ -142,7 +142,10 @@ fn test_fulltext_query_performance() {
     // Measure query time
     let cache = CacheManager::new(project);
     let engine = QueryEngine::new(cache);
-    let filter = QueryFilter::default();
+    let filter = QueryFilter {
+        limit: None,  // No limit for performance test
+        ..Default::default()
+    };
 
     let start = Instant::now();
     let results = engine.search("hello", filter).unwrap();
@@ -230,6 +233,7 @@ fn test_regex_query_performance() {
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         use_regex: true,
+        limit: None,  // No limit for performance test
         ..Default::default()
     };
 

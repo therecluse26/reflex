@@ -357,9 +357,6 @@ jobs:
             fi
           done
 
-          # Remove archive files (we only want raw binaries + installers)
-          rm -f *.tar.xz *.tar.gz *.zip
-
           echo "=== Files to be uploaded to release ==="
           ls -lh
 
@@ -378,7 +375,7 @@ jobs:
           # Write and read notes from a file to avoid quoting breaking things
           echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
 
-          # Explicitly upload only binaries and installers (not archives)
+          # Upload binaries, installers, and archives (archives needed for npm/homebrew)
           cd artifacts
           gh release create "${{ needs.plan.outputs.tag }}" \
             --target "$RELEASE_COMMIT" \
@@ -386,7 +383,9 @@ jobs:
             --title "$ANNOUNCEMENT_TITLE" \
             --notes-file "$RUNNER_TEMP/notes.txt" \
             rfx-* \
-            *installer*
+            *installer* \
+            *.tar.xz \
+            *.zip
 
   announce:
     needs:

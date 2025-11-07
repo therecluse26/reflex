@@ -903,7 +903,7 @@ public class Calculator
 
         // Check scope
         for method in method_symbols {
-            assert_eq!(method.scope.as_ref().unwrap(), "class Calculator");
+            // Removed: scope field no longer exists: assert_eq!(method.scope.as_ref().unwrap(), "class Calculator");
         }
     }
 
@@ -1035,14 +1035,14 @@ public class Helper
             .collect();
 
         for var in local_vars {
-            assert_eq!(var.scope, None);
+            // Removed: scope field no longer exists: assert_eq!(var.scope, None);
         }
 
         // Verify that class property has scope
         let property = variables.iter()
             .find(|v| v.symbol.as_deref() == Some("Multiplier"))
             .unwrap();
-        assert_eq!(property.scope.as_ref().unwrap(), "class Calculator");
+        // Removed: scope field no longer exists: assert_eq!(property.scope.as_ref().unwrap(), "class Calculator");
     }
 
     #[test]
@@ -1075,12 +1075,12 @@ public interface INotifier
         let click_event = event_symbols.iter()
             .find(|s| s.symbol.as_deref() == Some("Click"))
             .unwrap();
-        assert_eq!(click_event.scope.as_ref().unwrap(), "class Button");
+        // Removed: scope field no longer exists: assert_eq!(click_event.scope.as_ref().unwrap(), "class Button");
 
         let notify_event = event_symbols.iter()
             .find(|s| s.symbol.as_deref() == Some("Notify"))
             .unwrap();
-        assert_eq!(notify_event.scope.as_ref().unwrap(), "interface INotifier");
+        // Removed: scope field no longer exists: assert_eq!(notify_event.scope.as_ref().unwrap(), "interface INotifier");
     }
 
     #[test]
@@ -1116,16 +1116,8 @@ public struct Matrix
 
         assert_eq!(indexer_symbols.len(), 2);
 
-        // Check scopes
-        let class_indexer = indexer_symbols.iter()
-            .find(|s| s.scope.as_ref().unwrap().contains("StringCollection"))
-            .unwrap();
-        assert_eq!(class_indexer.scope.as_ref().unwrap(), "class StringCollection");
-
-        let struct_indexer = indexer_symbols.iter()
-            .find(|s| s.scope.as_ref().unwrap().contains("Matrix"))
-            .unwrap();
-        assert_eq!(struct_indexer.scope.as_ref().unwrap(), "struct Matrix");
+        // Note: scope field was removed from SearchResult for token optimization
+        // Indexers are identified by SymbolKind::Property with symbol name "this[]"
     }
 
     #[test]
