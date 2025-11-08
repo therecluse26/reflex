@@ -519,19 +519,32 @@ fn extract_symbols(
             }
         }
 
-        if let (Some(name), Some(node)) = (name, full_node) {
-            let span = node_to_span(&node);
-            let preview = extract_preview(source, &span);
+        match (name, full_node) {
+            (Some(name), Some(node)) => {
+                let span = node_to_span(&node);
+                let preview = extract_preview(source, &span);
 
-            symbols.push(SearchResult::new(
-                String::new(),
-                Language::PHP,
-                kind.clone(),
-                Some(name),
-                span,
-                scope.clone(),
-                preview,
-            ));
+                symbols.push(SearchResult::new(
+                    String::new(),
+                    Language::PHP,
+                    kind.clone(),
+                    Some(name),
+                    span,
+                    scope.clone(),
+                    preview,
+                ));
+            }
+            (None, Some(node)) => {
+                log::warn!("PHP parser: Failed to extract name from {:?} capture at line {}",
+                          kind,
+                          node.start_position().row + 1);
+            }
+            (Some(_), None) => {
+                log::warn!("PHP parser: Failed to extract node for {:?} symbol", kind);
+            }
+            (None, None) => {
+                log::warn!("PHP parser: Failed to extract both name and node for {:?} symbol", kind);
+            }
         }
     }
 
@@ -972,5 +985,79 @@ mod tests {
 
         // Should find Deprecated at least 2 times (1 definition + 1 use)
         assert!(deprecated_count >= 2);
+    }
+
+    #[test]
+    fn test_parse_class_implementing_multiple_interfaces() {
+        let source = r#"
+            <?php
+            interface Interface1 {
+                public function method1();
+            }
+
+            interface Interface2 {
+                public function method2();
+            }
+
+            class SimpleClass {
+                public $value;
+            }
+
+            // Class implementing multiple interfaces
+            class MultiInterfaceClass implements Interface1, Interface2 {
+                public function method1() {
+                    return true;
+                }
+
+                public function method2() {
+                    return false;
+                }
+            }
+
+            /**
+             * Complex edge case: Class with large docblock, extends base class, implements multiple interfaces
+             *
+             * @property string $name
+             * @property string $email
+             * @property-read int $id
+             * @property-read string $created_at
+             * @property-read Collection|Role[] $roles
+             * @property-read Collection|Permission[] $permissions
+             * @property-read Workflow $workflow
+             * @property-read Collection|NotificationSetting[] $notificationSettings
+             * @property-read Collection|Watch[] $watches
+             *
+             **/
+            class ComplexClass extends SimpleClass implements Interface1, Interface2 {
+                private $data;
+
+                public function method1() {
+                    return $this->data;
+                }
+
+                public function method2() {
+                    return !$this->data;
+                }
+            }
+        "#;
+
+        let symbols = parse("test.php", source).unwrap();
+
+        let class_symbols: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Class))
+            .collect();
+
+        // Should find all 3 classes:
+        // 1. SimpleClass
+        // 2. MultiInterfaceClass (implements 2 interfaces)
+        // 3. ComplexClass (extends + implements 2 interfaces + large docblock)
+        assert_eq!(class_symbols.len(), 3, "Should find exactly 3 classes");
+
+        assert!(class_symbols.iter().any(|c| c.symbol.as_deref() == Some("SimpleClass")),
+                "Should find SimpleClass");
+        assert!(class_symbols.iter().any(|c| c.symbol.as_deref() == Some("MultiInterfaceClass")),
+                "Should find MultiInterfaceClass implementing multiple interfaces");
+        assert!(class_symbols.iter().any(|c| c.symbol.as_deref() == Some("ComplexClass")),
+                "Should find ComplexClass with large docblock, extends, and implements multiple interfaces");
     }
 }

@@ -258,36 +258,24 @@ impl QueryEngine {
             }
         }
 
-        // EARLY LIMIT: Reduce candidates before expensive Phase 2 operations (PERFORMANCE OPTIMIZATION)
-        // Only apply if we're doing symbol enrichment or AST matching (Phase 2 is expensive)
-        // This dramatically reduces tree-sitter parsing workload for symbol queries
-        //
-        // SKIP for keyword queries - we need to parse ALL files to find all symbols
-        if !is_keyword_query && (filter.symbols_mode || filter.kind.is_some() || filter.use_ast) {
-            // Sort early to get deterministic top-N results before limiting
+        // DETERMINISTIC SORTING: Sort candidates early for deterministic results
+        // This ensures results are always returned in the same order
+        if filter.symbols_mode || filter.kind.is_some() || filter.use_ast {
             results.sort_by(|a, b| {
                 a.path.cmp(&b.path)
                     .then_with(|| a.span.start_line.cmp(&b.span.start_line))
             });
 
-            // Apply early limit to reduce tree-sitter parse load
-            // Add offset to limit to ensure we have enough results after filtering
-            if let Some(limit) = filter.limit {
-                let offset = filter.offset.unwrap_or(0);
-                // Request slightly more than needed to account for potential filtering in Phase 2/3
-                // Cap at 500 to prevent excessive file parsing even with large limits
-                let early_limit = (limit + offset).min(500);
-
-                if results.len() > early_limit {
-                    log::debug!(
-                        "Early limiting: truncating {} candidates to {} before Phase 2 (limit={}, offset={})",
-                        results.len(),
-                        early_limit,
-                        limit,
-                        offset
-                    );
-                    results.truncate(early_limit);
-                }
+            // Warn if many candidates need parsing (helps users refine queries)
+            let candidate_count = results.len();
+            if candidate_count > 1000 {
+                log::warn!(
+                    "Pattern '{}' matched {} files - parsing may take some time. Consider using --file, --glob, or a more specific pattern to narrow the search.",
+                    pattern,
+                    candidate_count
+                );
+            } else if candidate_count > 100 {
+                log::info!("Parsing {} candidate files for symbol extraction", candidate_count);
             }
         }
 
