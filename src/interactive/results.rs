@@ -11,6 +11,8 @@ pub struct ResultList {
     scroll_offset: usize,
     /// Maximum number of results to display
     max_results: usize,
+    /// Last visible height (for automatic scroll updates)
+    last_visible_height: usize,
 }
 
 impl ResultList {
@@ -20,6 +22,7 @@ impl ResultList {
             selected_index: 0,
             scroll_offset: 0,
             max_results,
+            last_visible_height: 20, // Default estimate
         }
     }
 
@@ -69,6 +72,7 @@ impl ResultList {
 
         if self.selected_index < self.results.len() - 1 {
             self.selected_index += 1;
+            self.update_scroll(self.last_visible_height);
         }
     }
 
@@ -76,6 +80,7 @@ impl ResultList {
     pub fn prev(&mut self) {
         if self.selected_index > 0 {
             self.selected_index -= 1;
+            self.update_scroll(self.last_visible_height);
         }
     }
 
@@ -86,22 +91,26 @@ impl ResultList {
         }
 
         self.selected_index = (self.selected_index + n).min(self.results.len() - 1);
+        self.update_scroll(self.last_visible_height);
     }
 
     /// Jump up by n results
     pub fn jump_up(&mut self, n: usize) {
         self.selected_index = self.selected_index.saturating_sub(n);
+        self.update_scroll(self.last_visible_height);
     }
 
     /// Move to first result
     pub fn first(&mut self) {
         self.selected_index = 0;
+        self.update_scroll(self.last_visible_height);
     }
 
     /// Move to last result
     pub fn last(&mut self) {
         if !self.results.is_empty() {
             self.selected_index = self.results.len() - 1;
+            self.update_scroll(self.last_visible_height);
         }
     }
 
@@ -109,6 +118,7 @@ impl ResultList {
     pub fn select(&mut self, index: usize) {
         if index < self.results.len() {
             self.selected_index = index;
+            self.update_scroll(self.last_visible_height);
         }
     }
 
@@ -132,6 +142,11 @@ impl ResultList {
         }
 
         old_offset != self.scroll_offset
+    }
+
+    /// Set the visible height (called during rendering)
+    pub fn set_visible_height(&mut self, height: usize) {
+        self.last_visible_height = height;
     }
 
     /// Get the visible results for rendering

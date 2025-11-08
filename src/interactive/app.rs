@@ -3,6 +3,7 @@ use crossterm::event::{self, Event, KeyEvent, MouseEvent};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::cache::CacheManager;
@@ -63,6 +64,14 @@ pub struct InteractiveApp {
     info_message: Option<String>,
     /// File preview content (when a result is expanded)
     preview_content: Option<FilePreview>,
+    /// Whether a search is currently executing
+    searching: bool,
+    /// Channel receiver for async search results
+    search_rx: Option<mpsc::Receiver<Result<crate::models::QueryResponse>>>,
+    /// Whether indexing is currently in progress
+    indexing: bool,
+    /// Channel receiver for async indexing results
+    index_rx: Option<mpsc::Receiver<Result<crate::models::IndexStats>>>,
 }
 
 /// File preview state
@@ -130,10 +139,13 @@ impl InteractiveApp {
 
         // Check index status
         let index_status = if cache.exists() {
-            // TODO: Implement staleness detection
-            IndexStatusState::Ready {
-                file_count: 0,
-                last_updated: "unknown".to_string(),
+            // Get actual file count from cache stats
+            match cache.stats() {
+                Ok(stats) => IndexStatusState::Ready {
+                    file_count: stats.total_files,
+                    last_updated: stats.last_updated,
+                },
+                Err(_) => IndexStatusState::Missing,
             }
         } else {
             IndexStatusState::Missing
@@ -161,26 +173,28 @@ impl InteractiveApp {
             error_message: None,
             info_message: None,
             preview_content: None,
+            searching: false,
+            search_rx: None,
+            indexing: false,
+            index_rx: None,
         })
     }
 
     /// Run the interactive event loop
     pub fn run(&mut self) -> Result<()> {
-        // Auto-index if needed
-        if matches!(self.index_status, IndexStatusState::Missing) {
-            self.trigger_index()?;
-        }
-
         // Show help on first launch (if history is empty)
         if self.history.is_empty() {
             self.mode = AppMode::Help;
         }
 
-        // Setup terminal
+        // Setup terminal FIRST
         let mut terminal = Self::setup_terminal()?;
 
-        // Main event loop
-        let result = self.event_loop(&mut terminal);
+        // Check if we need to trigger indexing (will show modal in event loop)
+        let needs_index = matches!(self.index_status, IndexStatusState::Missing);
+
+        // Main event loop (will handle deferred indexing with modal)
+        let result = self.event_loop(&mut terminal, needs_index);
 
         // Restore terminal
         Self::restore_terminal(terminal)?;
@@ -193,18 +207,40 @@ impl InteractiveApp {
         result
     }
 
-    fn event_loop(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
+    fn event_loop(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, needs_index: bool) -> Result<()> {
         let mut last_frame = Instant::now();
         let frame_duration = Duration::from_millis(16); // ~60 FPS
+        let mut need_editor_open: Option<SearchResult> = None;
+        let mut first_frame = true;
 
         while !self.should_quit {
+            // Trigger indexing on first frame if needed (UI loads first, then shows modal)
+            if first_frame && needs_index {
+                self.trigger_index()?;
+                first_frame = false;
+            }
+
+            // Update visible height for scroll calculations
+            let terminal_height = terminal.size()?.height;
+            let visible_height = terminal_height.saturating_sub(9) as usize; // header(3) + filters(3) + footer(1) + result_borders(2)
+            self.results.set_visible_height(visible_height);
+
             // Render UI
             terminal.draw(|f| ui::render(f, self))?;
+
+            // Handle deferred editor opening (after rendering)
+            if let Some(result) = need_editor_open.take() {
+                self.open_in_editor_suspended(terminal, &result)?;
+            }
 
             // Handle events (with timeout for smooth rendering)
             if event::poll(Duration::from_millis(50))? {
                 match event::read()? {
-                    Event::Key(key) => self.handle_key_event(key)?,
+                    Event::Key(key) => {
+                        if let Some(result) = self.handle_key_event_with_editor(key)? {
+                            need_editor_open = Some(result);
+                        }
+                    }
                     Event::Mouse(mouse) => self.handle_mouse_event(mouse),
                     Event::Resize(_, _) => {
                         // Terminal resized, will redraw on next frame
@@ -216,6 +252,59 @@ impl InteractiveApp {
             // Check if we need to execute a search
             if self.should_execute_search() {
                 self.execute_search()?;
+            }
+
+            // Check for search results
+            if let Some(ref rx) = self.search_rx {
+                if let Ok(result) = rx.try_recv() {
+                    // Search completed
+                    match result {
+                        Ok(response) => {
+                            self.results.set_results(response.results);
+                            self.error_message = None;
+
+                            // Add to history
+                            let pattern = self.input.value().to_string();
+                            self.history.add(pattern, self.filters.clone());
+
+                            // Auto-move to results after search
+                            if !self.results.is_empty() {
+                                self.focus_state = FocusState::Results;
+                            }
+                        }
+                        Err(e) => {
+                            self.error_message = Some(format!("Search error: {}", e));
+                            self.results.clear();
+                        }
+                    }
+                    self.searching = false;
+                    self.search_rx = None;
+                }
+            }
+
+            // Check for indexing results
+            if let Some(ref rx) = self.index_rx {
+                if let Ok(result) = rx.try_recv() {
+                    // Indexing completed
+                    match result {
+                        Ok(stats) => {
+                            self.index_status = IndexStatusState::Ready {
+                                file_count: stats.total_files,
+                                last_updated: "just now".to_string(),
+                            };
+
+                            // Re-run search if there was a query
+                            if !self.input.value().trim().is_empty() {
+                                self.trigger_search();
+                            }
+                        }
+                        Err(e) => {
+                            self.error_message = Some(format!("Index error: {}", e));
+                        }
+                    }
+                    self.indexing = false;
+                    self.index_rx = None;
+                }
             }
 
             // Update effects
@@ -230,7 +319,7 @@ impl InteractiveApp {
         Ok(())
     }
 
-    fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
+    fn handle_key_event_with_editor(&mut self, key: KeyEvent) -> Result<Option<SearchResult>> {
         // Handle Tab/Shift+Tab for focus cycling
         if key.code == crossterm::event::KeyCode::Tab {
             if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) {
@@ -238,7 +327,7 @@ impl InteractiveApp {
             } else {
                 self.focus_next();
             }
-            return Ok(());
+            return Ok(None);
         }
 
         // Handle Escape - close preview or unfocus
@@ -246,10 +335,10 @@ impl InteractiveApp {
             if self.mode == AppMode::FilePreview {
                 self.mode = AppMode::Normal;
                 self.preview_content = None;
-                return Ok(());
+                return Ok(None);
             }
             self.focus_state = FocusState::Results;
-            return Ok(());
+            return Ok(None);
         }
 
         // Handle Enter - different behavior based on focus
@@ -270,13 +359,16 @@ impl InteractiveApp {
                 }
                 _ => {}
             }
-            return Ok(());
+            return Ok(None);
         }
 
         let command = KeyCommand::from_key(key, self.focus_state == FocusState::Input);
 
         match command {
-            KeyCommand::Quit => self.should_quit = true,
+            KeyCommand::Quit => {
+                self.should_quit = true;
+                Ok(None)
+            }
 
             KeyCommand::ShowHelp => {
                 self.mode = if self.mode == AppMode::Help {
@@ -284,14 +376,17 @@ impl InteractiveApp {
                 } else {
                     AppMode::Help
                 };
+                Ok(None)
             }
 
             KeyCommand::FocusInput => {
                 self.focus_state = FocusState::Input;
+                Ok(None)
             }
 
             KeyCommand::UnfocusInput => {
                 self.focus_state = FocusState::Results;
+                Ok(None)
             }
 
             KeyCommand::NextResult => {
@@ -300,37 +395,58 @@ impl InteractiveApp {
                 } else {
                     self.results.next();
                 }
+                Ok(None)
             }
+
             KeyCommand::PrevResult => {
                 if self.mode == AppMode::FilePreview {
                     self.scroll_preview_up();
                 } else {
                     self.results.prev();
                 }
+                Ok(None)
             }
-            KeyCommand::PageDown => self.results.jump_down(10),
-            KeyCommand::PageUp => self.results.jump_up(10),
-            KeyCommand::First => self.results.first(),
-            KeyCommand::Last => self.results.last(),
+
+            KeyCommand::PageDown => {
+                self.results.jump_down(10);
+                Ok(None)
+            }
+
+            KeyCommand::PageUp => {
+                self.results.jump_up(10);
+                Ok(None)
+            }
+
+            KeyCommand::First => {
+                self.results.first();
+                Ok(None)
+            }
+
+            KeyCommand::Last => {
+                self.results.last();
+                Ok(None)
+            }
 
             KeyCommand::ToggleSymbols => {
                 self.filters.symbols_mode = !self.filters.symbols_mode;
                 self.trigger_search();
+                Ok(None)
             }
 
             KeyCommand::ToggleRegex => {
                 self.filters.regex_mode = !self.filters.regex_mode;
                 self.trigger_search();
+                Ok(None)
             }
 
             KeyCommand::OpenInEditor => {
-                if let Some(result) = self.results.selected().cloned() {
-                    self.open_in_editor(&result)?;
-                }
+                // Return the result to open in editor
+                Ok(self.results.selected().cloned())
             }
 
             KeyCommand::Reindex => {
                 self.trigger_index()?;
+                Ok(None)
             }
 
             KeyCommand::HistoryPrev => {
@@ -339,6 +455,7 @@ impl InteractiveApp {
                     self.filters = query.filters.clone();
                     self.trigger_search();
                 }
+                Ok(None)
             }
 
             KeyCommand::HistoryNext => {
@@ -351,6 +468,7 @@ impl InteractiveApp {
                     self.input.clear();
                     self.results.clear();
                 }
+                Ok(None)
             }
 
             KeyCommand::None => {
@@ -361,12 +479,11 @@ impl InteractiveApp {
                         self.trigger_search();
                     }
                 }
+                Ok(None)
             }
 
-            _ => {}
+            _ => Ok(None),
         }
-
-        Ok(())
     }
 
     fn focus_next(&mut self) {
@@ -416,7 +533,25 @@ impl InteractiveApp {
     }
 
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
-        // Get result area (we'll need this from UI, for now use placeholder)
+        // In preview mode, handle scroll events for file content
+        if self.mode == AppMode::FilePreview {
+            match mouse.kind {
+                crossterm::event::MouseEventKind::ScrollDown => {
+                    for _ in 0..3 {
+                        self.scroll_preview_down();
+                    }
+                }
+                crossterm::event::MouseEventKind::ScrollUp => {
+                    for _ in 0..3 {
+                        self.scroll_preview_up();
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // In normal mode, handle result selection and scrolling
         let result_area = ratatui::layout::Rect::new(0, 3, 80, 20);
         let action = self.mouse.handle_event(mouse, result_area);
 
@@ -462,6 +597,7 @@ impl InteractiveApp {
         let pattern = self.input.value();
         if pattern.trim().is_empty() {
             self.results.clear();
+            self.searching = false;
             return Ok(());
         }
 
@@ -484,69 +620,54 @@ impl InteractiveApp {
             offset: None,
         };
 
-        // Execute search
-        match self.engine.search_with_metadata(pattern, filter) {
-            Ok(response) => {
-                self.results.set_results(response.results);
-                self.error_message = None;
+        // Spawn background thread for search
+        let (tx, rx) = mpsc::channel();
+        let pattern_owned = pattern.to_string();
+        let cache = CacheManager::new(&self.cwd);
+        let engine = QueryEngine::new(cache);
 
-                // Add to history
-                self.history.add(pattern.to_string(), self.filters.clone());
+        std::thread::spawn(move || {
+            let result = engine.search_with_metadata(&pattern_owned, filter);
+            tx.send(result).ok();
+        });
 
-                // Auto-move to results after search
-                if !self.results.is_empty() {
-                    self.focus_state = FocusState::Results;
-                }
-            }
-            Err(e) => {
-                self.error_message = Some(format!("Search error: {}", e));
-                self.results.clear();
-            }
-        }
+        self.searching = true;
+        self.search_rx = Some(rx);
 
         Ok(())
     }
 
     fn trigger_index(&mut self) -> Result<()> {
-        self.mode = AppMode::Indexing;
         self.index_status = IndexStatusState::Indexing {
             current: 0,
             total: 0,
             current_file: String::new(),
         };
 
-        // TODO: Run indexing in background with progress updates
-        // For now, we'll do a simple synchronous index
-        let config = IndexConfig::default();
-        let cache = CacheManager::new(&self.cwd);
-        let indexer = Indexer::new(cache, config);
+        // Spawn background thread for indexing
+        let (tx, rx) = mpsc::channel();
+        let cwd = self.cwd.clone();
 
-        match indexer.index(&self.cwd, false) {
-            Ok(stats) => {
-                self.index_status = IndexStatusState::Ready {
-                    file_count: stats.total_files,
-                    last_updated: "just now".to_string(),
-                };
-                self.info_message = Some(format!("Indexed {} files", stats.total_files));
-                self.mode = AppMode::Normal;
+        std::thread::spawn(move || {
+            let config = IndexConfig::default();
+            let cache = CacheManager::new(&cwd);
+            let indexer = Indexer::new(cache, config);
+            let result = indexer.index(&cwd, false);
+            tx.send(result).ok();
+        });
 
-                // Re-run search if there was a query
-                if !self.input.value().is_empty() {
-                    self.trigger_search();
-                }
-            }
-            Err(e) => {
-                self.error_message = Some(format!("Index error: {}", e));
-                self.mode = AppMode::Normal;
-            }
-        }
+        self.indexing = true;
+        self.index_rx = Some(rx);
 
         Ok(())
     }
 
-    fn open_in_editor(&mut self, result: &SearchResult) -> Result<()> {
+    fn open_in_editor_suspended(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        result: &SearchResult,
+    ) -> Result<()> {
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
-
         let line = result.span.start_line;
 
         // Build command with line number
@@ -557,26 +678,29 @@ impl InteractiveApp {
             _ => vec![result.path.clone()],
         };
 
-        // Disable raw mode and restore terminal BEFORE opening editor
+        // Suspend terminal properly
         crossterm::terminal::disable_raw_mode()?;
         crossterm::execute!(
-            std::io::stdout(),
+            terminal.backend_mut(),
             crossterm::terminal::LeaveAlternateScreen,
-            crossterm::event::DisableMouseCapture
+            crossterm::event::DisableMouseCapture,
+            crossterm::cursor::Show
         )?;
+        terminal.show_cursor()?;
 
         // Open editor
         let status = std::process::Command::new(&editor)
             .args(&args)
             .status()?;
 
-        // Re-enable raw mode and alternate screen
+        // Resume terminal
         crossterm::terminal::enable_raw_mode()?;
         crossterm::execute!(
-            std::io::stdout(),
+            terminal.backend_mut(),
             crossterm::terminal::EnterAlternateScreen,
             crossterm::event::EnableMouseCapture
         )?;
+        terminal.clear()?;
 
         if !status.success() {
             self.error_message = Some(format!("Editor exited with error code: {:?}", status.code()));
@@ -656,6 +780,14 @@ impl InteractiveApp {
 
     pub fn preview_content(&self) -> Option<&FilePreview> {
         self.preview_content.as_ref()
+    }
+
+    pub fn searching(&self) -> bool {
+        self.searching
+    }
+
+    pub fn indexing(&self) -> bool {
+        self.indexing
     }
 }
 

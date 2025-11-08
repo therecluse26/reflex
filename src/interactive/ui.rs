@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
     Frame,
 };
 
@@ -26,7 +26,7 @@ pub fn render(f: &mut Frame, app: &InteractiveApp) {
     match app.mode() {
         AppMode::Help => render_help_screen(f, chunks[2], app),
         AppMode::FilePreview => render_file_preview(f, chunks[2], app),
-        _ => render_results_area(f, chunks[2], app),
+        AppMode::Indexing | AppMode::Normal => render_results_area(f, chunks[2], app),
     }
 
     render_footer(f, chunks[3], app);
@@ -36,16 +36,49 @@ fn render_header(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     let palette = &app.theme().palette;
     let input_focused = matches!(app.focus_state(), FocusState::Input);
 
-    // Render query input with prominent focus indicator
-    let title = if input_focused {
+    // Build title line with status on the right
+    let title_left = if input_focused {
         " Search [TYPING - Press Tab/Enter to navigate] "
     } else {
         " Search [Press Tab to focus, / to type] "
     };
 
+    // Build status indicator for title right
+    let status_indicator = match app.index_status() {
+        IndexStatusState::Ready { file_count, .. } => {
+            format!("✓ {} files ", file_count)
+        }
+        IndexStatusState::Missing => {
+            "⚠ No index ".to_string()
+        }
+        IndexStatusState::Stale { files_changed } => {
+            format!("⚠ {} changed ", files_changed)
+        }
+        IndexStatusState::Indexing { current, total, .. } => {
+            format!("⏳ {}/{} ", current, total)
+        }
+    };
+
+    // Calculate spacing to push status to the right
+    let available_width = area.width.saturating_sub(2) as usize; // Subtract borders
+    let title_len = title_left.chars().count();
+    let status_len = status_indicator.chars().count();
+    let spaces_needed = available_width.saturating_sub(title_len + status_len);
+    let spacing = " ".repeat(spaces_needed);
+
+    // Build complete title line
+    let mut title_spans = vec![
+        Span::raw(title_left),
+        Span::raw(spacing),
+        Span::styled(
+            status_indicator,
+            Style::default().fg(palette.muted)
+        ),
+    ];
+
     let input_block = Block::default()
         .borders(Borders::ALL)
-        .title(title)
+        .title_top(Line::from(title_spans))
         .border_style(if input_focused {
             Style::default()
                 .fg(palette.accent)
@@ -167,6 +200,176 @@ fn render_filters(f: &mut Frame, area: Rect, app: &InteractiveApp) {
 fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     let palette = &app.theme().palette;
 
+    // Show animated indexing modal (takes priority over search)
+    if app.indexing() {
+        // Create a centered modal for the indexing animation
+        let modal_width = 50.min(area.width.saturating_sub(4));
+        let modal_height = 9;
+        let modal_x = (area.width.saturating_sub(modal_width)) / 2;
+        let modal_y = (area.height.saturating_sub(modal_height)) / 2;
+        let modal_area = Rect::new(
+            area.x + modal_x,
+            area.y + modal_y,
+            modal_width,
+            modal_height,
+        );
+
+        // Render background (dimmed results area)
+        let background = Block::default()
+            .borders(Borders::ALL)
+            .title(" Results ")
+            .border_style(Style::default().fg(palette.muted));
+        f.render_widget(background, area);
+
+        // Animate the spinner character based on frame count
+        let spinner_frames = ['◐', '◓', '◑', '◒'];
+        let frame_idx = (app.effects().frame() / 3) as usize % spinner_frames.len();
+        let spinner = spinner_frames[frame_idx];
+
+        // Create animated loading text with multiple lines
+        let loading_lines = vec![
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    spinner.to_string(),
+                    Style::default()
+                        .fg(Color::Rgb(255, 150, 0))
+                        .add_modifier(Modifier::BOLD)
+                ),
+                Span::raw("  "),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    "Building index",
+                    Style::default()
+                        .fg(palette.accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("━━━━━━━━━━━━━━━━", Style::default().fg(palette.warning)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    "This may take a moment...",
+                    Style::default().fg(palette.muted),
+                ),
+            ]),
+        ];
+
+        // Render modal with animated border
+        let modal = Paragraph::new(loading_lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(
+                        Style::default()
+                            .fg(Color::Rgb(255, 150, 0))
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .title(Line::from(vec![
+                        Span::raw(" "),
+                        Span::styled("📦", Style::default().fg(Color::Rgb(255, 200, 0))),
+                        Span::raw(" Indexing "),
+                        Span::styled("📦", Style::default().fg(Color::Rgb(255, 200, 0))),
+                        Span::raw(" "),
+                    ]))
+                    .style(Style::default().bg(Color::Rgb(25, 20, 30))),
+            )
+            .alignment(Alignment::Center);
+
+        f.render_widget(modal, modal_area);
+        return;
+    }
+
+    // Show animated loading modal if query is executing
+    if app.searching() {
+        // Create a centered modal for the loading animation
+        let modal_width = 50.min(area.width.saturating_sub(4));
+        let modal_height = 9;
+        let modal_x = (area.width.saturating_sub(modal_width)) / 2;
+        let modal_y = (area.height.saturating_sub(modal_height)) / 2;
+        let modal_area = Rect::new(
+            area.x + modal_x,
+            area.y + modal_y,
+            modal_width,
+            modal_height,
+        );
+
+        // Render background (dimmed results area)
+        let background = Block::default()
+            .borders(Borders::ALL)
+            .title(" Results ")
+            .border_style(Style::default().fg(palette.muted));
+        f.render_widget(background, area);
+
+        // Animate the spinner character based on frame count
+        let spinner_frames = ['◐', '◓', '◑', '◒'];
+        let frame_idx = (app.effects().frame() / 3) as usize % spinner_frames.len();
+        let spinner = spinner_frames[frame_idx];
+
+        // Create animated loading text with multiple lines
+        let loading_lines = vec![
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    spinner.to_string(),
+                    Style::default()
+                        .fg(Color::Rgb(0, 200, 255))
+                        .add_modifier(Modifier::BOLD)
+                ),
+                Span::raw("  "),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    "Searching codebase",
+                    Style::default()
+                        .fg(palette.accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("━━━━━━━━━━━━━━━━", Style::default().fg(palette.info)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    "Hang tight...",
+                    Style::default().fg(palette.muted),
+                ),
+            ]),
+        ];
+
+        // Render modal with animated border
+        let modal = Paragraph::new(loading_lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(
+                        Style::default()
+                            .fg(Color::Rgb(0, 200, 255))
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .title(Line::from(vec![
+                        Span::raw(" "),
+                        Span::styled("⚡", Style::default().fg(Color::Rgb(255, 200, 0))),
+                        Span::raw(" Loading "),
+                        Span::styled("⚡", Style::default().fg(Color::Rgb(255, 200, 0))),
+                        Span::raw(" "),
+                    ]))
+                    .style(Style::default().bg(Color::Rgb(20, 20, 30))),
+            )
+            .alignment(Alignment::Center);
+
+        f.render_widget(modal, modal_area);
+        return;
+    }
+
     // Show error message if present
     if let Some(error) = app.error_message() {
         let error_text = Paragraph::new(error)
@@ -263,6 +466,26 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     );
 
     f.render_widget(list, area);
+
+    // Render scrollbar if there are more results than visible
+    let visible_height = area.height.saturating_sub(2) as usize;
+    if result_count > visible_height {
+        let mut scrollbar_state = ScrollbarState::new(result_count)
+            .position(results.selected_index());
+
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"))
+            .track_symbol(Some("│"))
+            .thumb_symbol("█")
+            .style(Style::default().fg(palette.accent));
+
+        f.render_stateful_widget(
+            scrollbar,
+            area.inner(ratatui::layout::Margin { horizontal: 0, vertical: 1 }),
+            &mut scrollbar_state,
+        );
+    }
 }
 
 fn render_help_screen(f: &mut Frame, area: Rect, app: &InteractiveApp) {
@@ -389,10 +612,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &InteractiveApp) {
             Span::styled("o", Style::default().fg(palette.accent).add_modifier(Modifier::BOLD)),
             Span::styled(" open in editor", Style::default().fg(palette.muted)),
         ],
-        AppMode::Indexing => vec![
-            Span::styled("⏳ Indexing... ", Style::default().fg(palette.info)),
-        ],
-        _ => {
+        AppMode::Indexing | AppMode::Normal => {
             let mut spans = vec![];
 
             // Show mode indicator based on focus state
@@ -426,36 +646,6 @@ fn render_footer(f: &mut Frame, area: Rect, app: &InteractiveApp) {
             // Show appropriate hint based on terminal capabilities
             let hint = app.capabilities().open_hint();
             spans.push(Span::styled(hint, Style::default().fg(palette.muted)));
-            spans.push(Span::raw("  "));
-
-            // Show index status
-            match app.index_status() {
-                IndexStatusState::Ready { file_count, .. } => {
-                    spans.push(Span::styled(
-                        format!("✓ {} files", file_count),
-                        Style::default().fg(palette.success),
-                    ));
-                }
-                IndexStatusState::Missing => {
-                    spans.push(Span::styled(
-                        "⚠ No index (press 'i')",
-                        Style::default().fg(palette.warning),
-                    ));
-                }
-                IndexStatusState::Stale { files_changed } => {
-                    spans.push(Span::styled(
-                        format!("⚠ Stale ({} changed)", files_changed),
-                        Style::default().fg(palette.warning),
-                    ));
-                }
-                IndexStatusState::Indexing { current, total, .. } => {
-                    spans.push(Span::styled(
-                        format!("⏳ {}/{}", current, total),
-                        Style::default().fg(palette.info),
-                    ));
-                }
-            }
-
             spans.push(Span::raw("  "));
             spans.push(Span::styled(
                 "? help",
