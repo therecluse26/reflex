@@ -18,7 +18,8 @@ use crate::query::{QueryEngine, QueryFilter};
     about = "A fast, deterministic code search engine built for AI",
     long_about = "Reflex is a local-first, structure-aware code search engine that returns \
                   structured results (symbols, spans, scopes) with sub-100ms latency. \
-                  Designed for AI coding agents and automation."
+                  Designed for AI coding agents and automation.\n\n\
+                  Run 'rfx' with no arguments to launch interactive mode."
 )]
 pub struct Cli {
     /// Enable verbose logging (can be repeated for more verbosity)
@@ -26,7 +27,7 @@ pub struct Cli {
     pub verbose: u8,
 
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -277,30 +278,34 @@ impl Cli {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level))
             .init();
 
-        // Execute the subcommand
+        // Execute the subcommand, or launch interactive mode if no command provided
         match self.command {
-            Command::Index { path, force, languages, quiet } => {
+            None => {
+                // No subcommand: launch interactive mode
+                handle_interactive()
+            }
+            Some(Command::Index { path, force, languages, quiet }) => {
                 handle_index(path, force, languages, quiet)
             }
-            Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all } => {
+            Some(Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all }) => {
                 handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all)
             }
-            Command::Serve { port, host } => {
+            Some(Command::Serve { port, host }) => {
                 handle_serve(port, host)
             }
-            Command::Stats { json, pretty } => {
+            Some(Command::Stats { json, pretty }) => {
                 handle_stats(json, pretty)
             }
-            Command::Clear { yes } => {
+            Some(Command::Clear { yes }) => {
                 handle_clear(yes)
             }
-            Command::ListFiles { json, pretty } => {
+            Some(Command::ListFiles { json, pretty }) => {
                 handle_list_files(json, pretty)
             }
-            Command::Watch { path, debounce, quiet } => {
+            Some(Command::Watch { path, debounce, quiet }) => {
                 handle_watch(path, debounce, quiet)
             }
-            Command::Mcp => {
+            Some(Command::Mcp) => {
                 handle_mcp()
             }
         }
@@ -1197,6 +1202,12 @@ fn handle_watch(path: PathBuf, debounce_ms: u64, quiet: bool) -> Result<()> {
     crate::watcher::watch(&path, indexer, watch_config)?;
 
     Ok(())
+}
+
+/// Handle interactive mode (default when no command is given)
+fn handle_interactive() -> Result<()> {
+    log::info!("Launching interactive mode");
+    crate::interactive::run_interactive()
 }
 
 /// Handle the `mcp` subcommand

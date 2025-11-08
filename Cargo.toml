@@ -78,12 +78,14 @@ globset = "0.4"
 
 # Date/time utilities
 chrono = "0.4"
+dirs = "5.0"
 
 # Progress bar
 indicatif = "0.17"
 
 # Terminal UI and formatting
 ratatui = "0.29"
+tachyonfx = "0.8"
 crossterm = "0.28"
 syntect = "5.2"
 unicode-width = "0.2"

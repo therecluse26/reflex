@@ -32,6 +32,7 @@ pub mod content_store;
 pub mod formatter;
 pub mod git;
 pub mod indexer;
+pub mod interactive;
 pub mod line_filter;
 pub mod mcp;
 pub mod models;
