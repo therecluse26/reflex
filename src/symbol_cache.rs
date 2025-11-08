@@ -292,8 +292,11 @@ impl SymbolCache {
             .map(|(id, _, _)| Box::new(*id) as Box<dyn rusqlite::ToSql>)
             .collect();
 
-        // Add kind filter parameter if needed
+        // Capture kind filter for Rust-side filtering
         let has_kind_filter = kind_filter.is_some();
+        let kind_for_filtering = kind_filter.clone();
+
+        // Add kind filter parameter if needed
         if let Some(kind) = kind_filter {
             params.push(Box::new(format!("{:?}", kind)));
         }
@@ -330,6 +333,13 @@ impl SymbolCache {
                         for symbol in &mut symbols {
                             symbol.path = file_path.clone();
                         }
+
+                        // Filter symbols by kind if needed (Rust-side filtering)
+                        // SQL query already filtered to files WITH this kind, now filter the actual symbols
+                        if let Some(ref filter_kind) = kind_for_filtering {
+                            symbols.retain(|s| &s.kind == filter_kind);
+                        }
+
                         cache_map.insert(file_id, symbols);
                         hits += 1;
                     }
