@@ -3,7 +3,7 @@ use crossterm::event::{self, Event, KeyEvent, MouseEvent};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use crate::cache::CacheManager;
@@ -72,6 +72,10 @@ pub struct InteractiveApp {
     indexing: bool,
     /// Channel receiver for async indexing results
     index_rx: Option<mpsc::Receiver<Result<crate::models::IndexStats>>>,
+    /// Channel receiver for indexing progress updates (current, total, status)
+    index_progress_rx: Option<mpsc::Receiver<(usize, usize, String)>>,
+    /// Indexing start time (for elapsed time display)
+    indexing_start_time: Option<Instant>,
 }
 
 /// File preview state
@@ -122,7 +126,7 @@ pub enum IndexStatusState {
     Indexing {
         current: usize,
         total: usize,
-        current_file: String,
+        status: String,
     },
 }
 
@@ -165,7 +169,7 @@ impl InteractiveApp {
             mouse: MouseState::new(),
             search_pending: false,
             last_input_time: None,
-            debounce_ms: 300,
+            debounce_ms: 600, // 2x longer debounce for smoother typing
             index_status,
             should_quit: false,
             focus_state: FocusState::Input, // Start with input focused
@@ -177,6 +181,8 @@ impl InteractiveApp {
             search_rx: None,
             indexing: false,
             index_rx: None,
+            index_progress_rx: None,
+            indexing_start_time: None,
         })
     }
 
@@ -282,6 +288,18 @@ impl InteractiveApp {
                 }
             }
 
+            // Check for indexing progress updates
+            if let Some(ref rx) = self.index_progress_rx {
+                if let Ok((current, total, status)) = rx.try_recv() {
+                    // Update progress state
+                    self.index_status = IndexStatusState::Indexing {
+                        current,
+                        total,
+                        status,
+                    };
+                }
+            }
+
             // Check for indexing results
             if let Some(ref rx) = self.index_rx {
                 if let Ok(result) = rx.try_recv() {
@@ -292,18 +310,16 @@ impl InteractiveApp {
                                 file_count: stats.total_files,
                                 last_updated: "just now".to_string(),
                             };
-
-                            // Re-run search if there was a query
-                            if !self.input.value().trim().is_empty() {
-                                self.trigger_search();
-                            }
+                            // Don't re-trigger search - keep current results
                         }
                         Err(e) => {
                             self.error_message = Some(format!("Index error: {}", e));
                         }
                     }
                     self.indexing = false;
+                    self.indexing_start_time = None;
                     self.index_rx = None;
+                    self.index_progress_rx = None;
                 }
             }
 
@@ -641,23 +657,33 @@ impl InteractiveApp {
         self.index_status = IndexStatusState::Indexing {
             current: 0,
             total: 0,
-            current_file: String::new(),
+            status: "Starting...".to_string(),
         };
 
-        // Spawn background thread for indexing
-        let (tx, rx) = mpsc::channel();
+        // Create channels for results and progress
+        let (result_tx, result_rx) = mpsc::channel();
+        let (progress_tx, progress_rx) = mpsc::channel();
         let cwd = self.cwd.clone();
 
+        // Spawn background thread for indexing with progress callback
         std::thread::spawn(move || {
             let config = IndexConfig::default();
             let cache = CacheManager::new(&cwd);
             let indexer = Indexer::new(cache, config);
-            let result = indexer.index(&cwd, false);
-            tx.send(result).ok();
+
+            // Create progress callback that sends updates through channel
+            let callback = Arc::new(move |current: usize, total: usize, status: String| {
+                let _ = progress_tx.send((current, total, status));
+            });
+
+            let result = indexer.index_with_callback(&cwd, false, Some(callback));
+            result_tx.send(result).ok();
         });
 
         self.indexing = true;
-        self.index_rx = Some(rx);
+        self.indexing_start_time = Some(Instant::now());
+        self.index_rx = Some(result_rx);
+        self.index_progress_rx = Some(progress_rx);
 
         Ok(())
     }
@@ -788,6 +814,10 @@ impl InteractiveApp {
 
     pub fn indexing(&self) -> bool {
         self.indexing
+    }
+
+    pub fn indexing_elapsed_secs(&self) -> Option<u64> {
+        self.indexing_start_time.map(|start| start.elapsed().as_secs())
     }
 }
 

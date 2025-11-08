@@ -204,7 +204,7 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     if app.indexing() {
         // Create a centered modal for the indexing animation
         let modal_width = 50.min(area.width.saturating_sub(4));
-        let modal_height = 9;
+        let modal_height = 11; // Increased to fit status message
         let modal_x = (area.width.saturating_sub(modal_width)) / 2;
         let modal_y = (area.height.saturating_sub(modal_height)) / 2;
         let modal_area = Rect::new(
@@ -225,6 +225,59 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
         let spinner_frames = ['◐', '◓', '◑', '◒'];
         let frame_idx = (app.effects().frame() / 3) as usize % spinner_frames.len();
         let spinner = spinner_frames[frame_idx];
+
+        // Get elapsed time
+        let elapsed_secs = app.indexing_elapsed_secs().unwrap_or(0);
+        let elapsed_text = if elapsed_secs < 60 {
+            format!("{}s", elapsed_secs)
+        } else {
+            format!("{}m {}s", elapsed_secs / 60, elapsed_secs % 60)
+        };
+
+        // Get progress info from index status
+        let (current, total, percent, status_msg) = match app.index_status() {
+            crate::interactive::app::IndexStatusState::Indexing { current, total, status } => {
+                let pct = if *total > 0 {
+                    (*current as f64 / *total as f64 * 100.0) as u32
+                } else {
+                    0
+                };
+                (*current, *total, pct, status.clone())
+            }
+            _ => (0, 0, 0, "Indexing...".to_string()),
+        };
+
+        // Create animated progress bar
+        let bar_width = 32;
+        let filled = if total > 0 {
+            ((current as f64 / total as f64) * bar_width as f64) as usize
+        } else {
+            // Indeterminate progress - animated
+            let pos = (app.effects().frame() / 2) as usize % bar_width;
+            pos.min(bar_width - 4)
+        };
+
+        let progress_bar = if total > 0 {
+            // Determinate progress bar
+            let filled_chars = "█".repeat(filled);
+            let empty_chars = "░".repeat(bar_width.saturating_sub(filled));
+            format!("{}{}", filled_chars, empty_chars)
+        } else {
+            // Indeterminate animated progress bar
+            let mut chars = vec!['░'; bar_width];
+            for i in 0..4 {
+                let pos = (filled + i) % bar_width;
+                chars[pos] = '█';
+            }
+            chars.iter().collect()
+        };
+
+        // Create status line
+        let status_line = if total > 0 {
+            format!("{}/{} files ({}%) • {}", current, total, percent, elapsed_text)
+        } else {
+            format!("Indexing... • {}", elapsed_text)
+        };
 
         // Create animated loading text with multiple lines
         let loading_lines = vec![
@@ -249,13 +302,20 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("━━━━━━━━━━━━━━━━", Style::default().fg(palette.warning)),
+                Span::styled(progress_bar, Style::default().fg(palette.info)),
             ]),
             Line::from(""),
             Line::from(vec![
                 Span::styled(
-                    "This may take a moment...",
+                    status_line,
                     Style::default().fg(palette.muted),
+                ),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    status_msg,
+                    Style::default().fg(Color::Rgb(150, 150, 150)),
                 ),
             ]),
         ];
