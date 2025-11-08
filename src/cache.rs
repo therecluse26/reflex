@@ -785,6 +785,64 @@ compression_level = 3  # zstd level
 
         Ok(result)
     }
+
+    /// Get file ID by path
+    ///
+    /// Returns the integer ID for a file path, or None if not found.
+    pub fn get_file_id(&self, path: &str) -> Result<Option<i64>> {
+        let db_path = self.cache_path.join(META_DB);
+
+        if !db_path.exists() {
+            return Ok(None);
+        }
+
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db")?;
+
+        let result = conn
+            .query_row(
+                "SELECT id FROM files WHERE path = ?",
+                [path],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        Ok(result)
+    }
+
+    /// Batch get file IDs for multiple paths
+    ///
+    /// Returns a HashMap of path → file_id for all found paths.
+    /// Paths not in the database are omitted from the result.
+    pub fn batch_get_file_ids(&self, paths: &[String]) -> Result<HashMap<String, i64>> {
+        let db_path = self.cache_path.join(META_DB);
+
+        if !db_path.exists() {
+            return Ok(HashMap::new());
+        }
+
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db")?;
+
+        // Build IN clause
+        let placeholders = paths.iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let query = format!("SELECT path, id FROM files WHERE path IN ({})", placeholders);
+
+        let params: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+        let mut stmt = conn.prepare(&query)?;
+
+        let results = stmt.query_map(rusqlite::params_from_iter(params), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<Result<HashMap<_, _>, _>>()?;
+
+        log::debug!("Batch loaded {} file IDs (out of {} requested)", results.len(), paths.len());
+        Ok(results)
+    }
 }
 
 /// Branch metadata information

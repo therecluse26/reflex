@@ -80,6 +80,9 @@ globset = "0.4"
 # Date/time utilities
 chrono = "0.4"
 
+# Lock and cleanup utilities
+scopeguard = "1.2"
+
 # Progress bar
 indicatif = "0.17"
 

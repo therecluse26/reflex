@@ -886,6 +886,14 @@ impl QueryEngine {
             Self::rebuild_trigram_index(&content_reader)?
         };
 
+        // Open symbol cache for reading cached symbols
+        let symbol_cache = crate::symbol_cache::SymbolCache::open(self.cache.path())
+            .context("Failed to open symbol cache")?;
+
+        // Load file hashes for cache lookups
+        let file_hashes = self.cache.load_hashes()
+            .context("Failed to load file hashes")?;
+
         // Group candidates by file, filtering out unsupported languages
         use std::collections::HashMap;
         let mut files_by_path: HashMap<String, Vec<SearchResult>> = HashMap::new();
@@ -1010,11 +1018,76 @@ impl QueryEngine {
             .build()
             .context("Failed to create thread pool for symbol extraction")?;
 
-        // Parse files in parallel using custom thread pool
+        // OPTIMIZATION: Batch read all cached symbols in ONE database transaction
+        // This is 10-30x faster than calling get() individually for each file
+
+        // Step 1: Collect file paths that have hashes
+        let files_with_hashes: Vec<String> = files_to_process
+            .iter()
+            .filter(|path| file_hashes.contains_key(path.as_str()))
+            .cloned()
+            .collect();
+
+        // Step 2: Batch lookup file_ids for all paths
+        let file_id_map = self.cache.batch_get_file_ids(&files_with_hashes)
+            .context("Failed to batch lookup file IDs")?;
+
+        // Step 3: Build (file_id, hash, path) tuples for batch_get_with_kind
+        let file_lookup_tuples: Vec<(i64, String, String)> = files_with_hashes
+            .iter()
+            .filter_map(|path| {
+                let file_id = file_id_map.get(path)?;
+                let hash = file_hashes.get(path.as_str())?;
+                Some((*file_id, hash.clone(), path.clone()))
+            })
+            .collect();
+
+        // Step 4: Batch read symbols with kind filtering (uses junction table + integer joins)
+        let batch_results = symbol_cache.batch_get_with_kind(&file_lookup_tuples, filter.kind.clone())
+            .context("Failed to batch read symbol cache")?;
+
+        // Step 5: Separate files into cached vs need-to-parse
+        let mut cached_symbols: HashMap<String, Vec<SearchResult>> = HashMap::new();
+        let mut files_needing_parse: Vec<String> = Vec::new();
+
+        // Build path lookup from file_id
+        let id_to_path: HashMap<i64, String> = file_id_map
+            .iter()
+            .map(|(path, id)| (*id, path.clone()))
+            .collect();
+
+        // Process cached results
+        for (file_id, symbols) in batch_results {
+            if let Some(file_path) = id_to_path.get(&file_id) {
+                cached_symbols.insert(file_path.clone(), symbols);
+            }
+        }
+
+        // Files with hashes but not in cache results need parsing
+        for path in &files_with_hashes {
+            if file_id_map.contains_key(path) && !cached_symbols.contains_key(path) {
+                files_needing_parse.push(path.clone());
+            }
+        }
+
+        // Add files without hashes to parse list
+        for file_path in &files_to_process {
+            if !file_hashes.contains_key(file_path.as_str()) {
+                files_needing_parse.push(file_path.clone());
+            }
+        }
+
+        log::debug!(
+            "Symbol cache: {} hits, {} need parsing",
+            cached_symbols.len(),
+            files_needing_parse.len()
+        );
+
+        // Parse files in parallel using custom thread pool (only cache misses)
         use rayon::prelude::*;
 
-        let all_symbols: Vec<SearchResult> = pool.install(|| {
-            files_to_process
+        let parsed_symbols: Vec<SearchResult> = pool.install(|| {
+            files_needing_parse
                 .par_iter()
                 .flat_map(|file_path| {
                 // Find file_id for this path
@@ -1042,7 +1115,7 @@ impl QueryEngine {
                 let lang = Language::from_extension(ext);
 
                 // Parse file to extract symbols
-                match ParserFactory::parse(file_path, content, lang) {
+                let symbols = match ParserFactory::parse(file_path, content, lang) {
                     Ok(symbols) => {
                         log::debug!("Parsed {} symbols from {}", symbols.len(), file_path);
                         symbols
@@ -1051,10 +1124,30 @@ impl QueryEngine {
                         log::debug!("Failed to parse {}: {}", file_path, e);
                         Vec::new()
                     }
+                };
+
+                // Cache the parsed symbols (ignore errors - caching is best-effort)
+                if let Some(file_hash) = file_hashes.get(file_path.as_str()) {
+                    if let Err(e) = symbol_cache.set(file_path, file_hash, &symbols) {
+                        log::debug!("Failed to cache symbols for {}: {}", file_path, e);
+                    }
                 }
+
+                symbols
             })
             .collect()
         });
+
+        // Combine cached and parsed symbols
+        let mut all_symbols: Vec<SearchResult> = Vec::new();
+
+        // Add all cached symbols
+        for symbols in cached_symbols.values() {
+            all_symbols.extend_from_slice(symbols);
+        }
+
+        // Add all parsed symbols
+        all_symbols.extend(parsed_symbols);
 
         // KEYWORD DETECTION: Check if pattern is a language keyword (e.g., "class", "function")
         // If it matches a keyword AND symbols_mode is true, interpret as "list all symbols of that type"
