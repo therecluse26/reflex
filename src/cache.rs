@@ -122,18 +122,19 @@ impl CacheManager {
         // Create branch tracking tables for git-aware indexing
         conn.execute(
             "CREATE TABLE IF NOT EXISTS file_branches (
-                path TEXT NOT NULL,
+                file_id INTEGER NOT NULL,
                 branch TEXT NOT NULL,
                 hash TEXT NOT NULL,
                 commit_sha TEXT,
                 last_indexed INTEGER NOT NULL,
-                PRIMARY KEY (path, branch)
+                PRIMARY KEY (file_id, branch),
+                FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
             )",
             [],
         )?;
 
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_branch_lookup ON file_branches(branch, path)",
+            "CREATE INDEX IF NOT EXISTS idx_branch_lookup ON file_branches(branch, file_id)",
             [],
         )?;
 
@@ -600,13 +601,20 @@ compression_level = 3  # zstd level
         let conn = Connection::open(&db_path)
             .context("Failed to open meta.db for branch file recording")?;
 
+        // Lookup file_id from path
+        let file_id: i64 = conn.query_row(
+            "SELECT id FROM files WHERE path = ?",
+            [path],
+            |row| row.get(0)
+        ).context(format!("File not found in index: {}", path))?;
+
         let now = chrono::Utc::now().timestamp();
 
         conn.execute(
-            "INSERT OR REPLACE INTO file_branches (path, branch, hash, commit_sha, last_indexed)
+            "INSERT OR REPLACE INTO file_branches (file_id, branch, hash, commit_sha, last_indexed)
              VALUES (?, ?, ?, ?, ?)",
             [
-                path,
+                &file_id.to_string(),
                 branch,
                 hash,
                 commit_sha.unwrap_or(""),
@@ -636,10 +644,17 @@ compression_level = 3  # zstd level
         let tx = conn.transaction()?;
 
         for (path, hash) in files {
+            // Lookup file_id from path
+            let file_id: i64 = tx.query_row(
+                "SELECT id FROM files WHERE path = ?",
+                [path.as_str()],
+                |row| row.get(0)
+            ).context(format!("File not found in index: {}", path))?;
+
             tx.execute(
-                "INSERT OR REPLACE INTO file_branches (path, branch, hash, commit_sha, last_indexed)
+                "INSERT OR REPLACE INTO file_branches (file_id, branch, hash, commit_sha, last_indexed)
                  VALUES (?, ?, ?, ?, ?)",
-                [path.as_str(), branch, hash.as_str(), commit, &now_str],
+                [&file_id.to_string(), branch, hash.as_str(), commit, &now_str],
             )?;
         }
 
@@ -660,7 +675,12 @@ compression_level = 3  # zstd level
         let conn = Connection::open(&db_path)
             .context("Failed to open meta.db")?;
 
-        let mut stmt = conn.prepare("SELECT path, hash FROM file_branches WHERE branch = ?")?;
+        let mut stmt = conn.prepare(
+            "SELECT f.path, fb.hash
+             FROM file_branches fb
+             JOIN files f ON fb.file_id = f.id
+             WHERE fb.branch = ?"
+        )?;
         let files: HashMap<String, String> = stmt
             .query_map([branch], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<HashMap<_, _>, _>>()?;
@@ -777,7 +797,11 @@ compression_level = 3  # zstd level
 
         let result = conn
             .query_row(
-                "SELECT path, branch FROM file_branches WHERE hash = ? LIMIT 1",
+                "SELECT f.path, fb.branch
+                 FROM file_branches fb
+                 JOIN files f ON fb.file_id = f.id
+                 WHERE fb.hash = ?
+                 LIMIT 1",
                 [hash],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )

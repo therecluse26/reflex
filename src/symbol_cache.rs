@@ -61,7 +61,6 @@ impl SymbolCache {
             if table_exists {
                 log::warn!("Symbol cache schema outdated - migrating to file_id-based schema");
                 conn.execute("DROP TABLE IF EXISTS symbols", [])?;
-                conn.execute("DROP TABLE IF EXISTS symbol_kinds", [])?;
             }
         }
 
@@ -88,39 +87,8 @@ impl SymbolCache {
             [],
         )?;
 
-        // Create symbol_kinds junction table for fast kind filtering
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS symbol_kinds (
-                file_id INTEGER NOT NULL,
-                kind TEXT NOT NULL,
-                PRIMARY KEY (file_id, kind),
-                FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
-            )",
-            [],
-        )?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_symbol_kinds_kind ON symbol_kinds(kind)",
-            [],
-        )?;
-
         log::debug!("Symbol cache schema initialized (file_id-based)");
         Ok(())
-    }
-
-    /// Extract unique symbol kinds from a list of symbols
-    ///
-    /// Returns a Vec of unique symbol kind strings (e.g., ["Function", "Struct", "Enum"])
-    /// This is used for populating the symbol_kinds junction table.
-    fn extract_symbol_kinds(symbols: &[SearchResult]) -> Vec<String> {
-        use std::collections::HashSet;
-
-        let kinds: HashSet<String> = symbols
-            .iter()
-            .map(|s| format!("{:?}", s.kind))  // "Function", "Struct", etc.
-            .collect();
-
-        kinds.into_iter().collect()
     }
 
     /// Get cached symbols for a file (returns None if not cached or hash mismatch)
@@ -240,13 +208,14 @@ impl SymbolCache {
         Ok(results)
     }
 
-    /// Get cached symbols for multiple files with optional kind filtering (OPTIMIZED)
+    /// Get cached symbols for multiple files with optional kind filtering
     ///
-    /// Uses junction table and integer file_ids for 30-50x faster kind filtering.
+    /// Uses integer file_ids for fast batch retrieval, then filters by kind in Rust.
+    /// This avoids the cache miss detection bug that occurs with SQL-level filtering.
     ///
     /// Parameters:
     /// - file_ids: Vec of (file_id, file_hash, file_path) tuples
-    /// - kind_filter: Optional symbol kind to filter by
+    /// - kind_filter: Optional symbol kind to filter by (applied in Rust after retrieval)
     ///
     /// Returns HashMap of file_id → symbols for cache hits.
     pub fn batch_get_with_kind(
@@ -268,38 +237,21 @@ impl SymbolCache {
             .collect::<Vec<_>>()
             .join(", ");
 
-        // Build query with optional kind filtering via junction table
-        let query = if kind_filter.is_some() {
-            format!(
-                "SELECT s.file_id, s.symbols_json
-                 FROM symbols s
-                 JOIN symbol_kinds sk ON s.file_id = sk.file_id
-                 WHERE s.file_id IN ({})
-                   AND sk.kind = ?",
-                id_placeholders
-            )
-        } else {
-            format!(
-                "SELECT file_id, symbols_json
-                 FROM symbols
-                 WHERE file_id IN ({})",
-                id_placeholders
-            )
-        };
+        // Always use simple query - filter by kind in Rust to avoid cache miss detection bug
+        let query = format!(
+            "SELECT file_id, symbols_json
+             FROM symbols
+             WHERE file_id IN ({})",
+            id_placeholders
+        );
 
         // Prepare parameters
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = file_ids.iter()
+        let params: Vec<Box<dyn rusqlite::ToSql>> = file_ids.iter()
             .map(|(id, _, _)| Box::new(*id) as Box<dyn rusqlite::ToSql>)
             .collect();
 
         // Capture kind filter for Rust-side filtering
-        let has_kind_filter = kind_filter.is_some();
         let kind_for_filtering = kind_filter.clone();
-
-        // Add kind filter parameter if needed
-        if let Some(kind) = kind_filter {
-            params.push(Box::new(format!("{:?}", kind)));
-        }
 
         // Execute query
         let mut stmt = conn.prepare(&query)?;
@@ -335,7 +287,8 @@ impl SymbolCache {
                         }
 
                         // Filter symbols by kind if needed (Rust-side filtering)
-                        // SQL query already filtered to files WITH this kind, now filter the actual symbols
+                        // Note: We do this in Rust rather than SQL to avoid cache miss detection bugs
+                        // SQL filtering would exclude files without the kind, making QueryEngine think they're uncached
                         if let Some(ref filter_kind) = kind_for_filtering {
                             symbols.retain(|s| &s.kind == filter_kind);
                         }
@@ -352,14 +305,14 @@ impl SymbolCache {
 
         let misses = file_ids.len() - hits;
 
-        if has_kind_filter {
+        if kind_for_filtering.is_some() {
             log::debug!(
-                "Batch symbol cache with kind filter (junction table): {} hits, {} misses ({} total)",
+                "Batch symbol cache with Rust-side kind filter: {} hits, {} misses ({} total)",
                 hits, misses, file_ids.len()
             );
         } else {
             log::debug!(
-                "Batch symbol cache (file_id): {} hits, {} misses ({} total)",
+                "Batch symbol cache: {} hits, {} misses ({} total)",
                 hits, misses, file_ids.len()
             );
         }
@@ -369,7 +322,7 @@ impl SymbolCache {
 
     /// Store symbols for a file using file_id
     pub fn set(&self, file_path: &str, file_hash: &str, symbols: &[SearchResult]) -> Result<()> {
-        let mut conn = Connection::open(&self.db_path)?;
+        let conn = Connection::open(&self.db_path)?;
 
         // Lookup file_id from file_path
         let file_id: i64 = conn.query_row(
@@ -391,31 +344,15 @@ impl SymbolCache {
         let symbols_json = serde_json::to_string(&symbols_without_path)
             .context("Failed to serialize symbols")?;
 
-        let symbol_kinds = Self::extract_symbol_kinds(symbols);
         let now = chrono::Utc::now().timestamp();
 
-        let tx = conn.transaction()?;
-
-        // Insert into symbols table
-        tx.execute(
+        conn.execute(
             "INSERT OR REPLACE INTO symbols (file_id, file_hash, symbols_json, last_cached)
              VALUES (?, ?, ?, ?)",
             [&file_id.to_string(), file_hash, &symbols_json, &now.to_string()],
         )?;
 
-        // Delete old kinds and insert new ones
-        tx.execute("DELETE FROM symbol_kinds WHERE file_id = ?", [&file_id.to_string()])?;
-
-        for kind in &symbol_kinds {
-            tx.execute(
-                "INSERT OR IGNORE INTO symbol_kinds (file_id, kind) VALUES (?, ?)",
-                [&file_id.to_string(), kind],
-            )?;
-        }
-
-        tx.commit()?;
-
-        log::debug!("Cached {} symbols for {} (kinds: {:?})", symbols.len(), file_path, symbol_kinds);
+        log::debug!("Cached {} symbols for {}", symbols.len(), file_path);
         Ok(())
     }
 
@@ -448,24 +385,12 @@ impl SymbolCache {
             let symbols_json = serde_json::to_string(&symbols_without_path)
                 .context("Failed to serialize symbols")?;
 
-            let symbol_kinds = Self::extract_symbol_kinds(symbols);
-
             // Insert into symbols table
             tx.execute(
                 "INSERT OR REPLACE INTO symbols (file_id, file_hash, symbols_json, last_cached)
                  VALUES (?, ?, ?, ?)",
                 [&file_id.to_string(), file_hash.as_str(), &symbols_json, &now_str],
             )?;
-
-            // Delete old kinds and insert new ones
-            tx.execute("DELETE FROM symbol_kinds WHERE file_id = ?", [&file_id.to_string()])?;
-
-            for kind in &symbol_kinds {
-                tx.execute(
-                    "INSERT OR IGNORE INTO symbol_kinds (file_id, kind) VALUES (?, ?)",
-                    [&file_id.to_string(), kind],
-                )?;
-            }
         }
 
         tx.commit()?;
