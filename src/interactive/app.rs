@@ -227,7 +227,8 @@ impl InteractiveApp {
             }
 
             // Update visible height for scroll calculations
-            let terminal_height = terminal.size()?.height;
+            let terminal_size = terminal.size()?;
+            let terminal_height = terminal_size.height;
             let visible_height = terminal_height.saturating_sub(9) as usize; // header(3) + filters(3) + footer(1) + result_borders(2)
             self.results.set_visible_height(visible_height);
 
@@ -247,7 +248,7 @@ impl InteractiveApp {
                             need_editor_open = Some(result);
                         }
                     }
-                    Event::Mouse(mouse) => self.handle_mouse_event(mouse),
+                    Event::Mouse(mouse) => self.handle_mouse_event(mouse, (terminal_size.width, terminal_size.height)),
                     Event::Resize(_, _) => {
                         // Terminal resized, will redraw on next frame
                     }
@@ -548,7 +549,7 @@ impl InteractiveApp {
         }
     }
 
-    fn handle_mouse_event(&mut self, mouse: MouseEvent) {
+    fn handle_mouse_event(&mut self, mouse: MouseEvent, terminal_size: (u16, u16)) {
         // In preview mode, handle scroll events for file content
         if self.mode == AppMode::FilePreview {
             match mouse.kind {
@@ -568,12 +569,26 @@ impl InteractiveApp {
         }
 
         // In normal mode, handle result selection and scrolling
-        let result_area = ratatui::layout::Rect::new(0, 3, 80, 20);
+        // Calculate the actual result area based on terminal size
+        // header(3) + filters(3) = 6 rows from top
+        // footer(1) from bottom
+        let result_y = 6;
+        let result_height = terminal_size.1.saturating_sub(7); // 6 from top + 1 from bottom
+        let result_area = ratatui::layout::Rect::new(0, result_y, terminal_size.0, result_height);
+
         let action = self.mouse.handle_event(mouse, result_area);
 
         match action {
             MouseAction::SelectResult(index) => {
                 self.results.select(index + self.results.scroll_offset());
+            }
+            MouseAction::DoubleClick(index) => {
+                // Double-click opens preview
+                let global_index = index + self.results.scroll_offset();
+                self.results.select(global_index);
+                if let Some(result) = self.results.selected().cloned() {
+                    let _ = self.show_file_preview(&result);
+                }
             }
             MouseAction::ScrollDown => {
                 for _ in 0..3 {

@@ -1,5 +1,6 @@
 use crossterm::event::{MouseEvent, MouseEventKind, MouseButton};
 use ratatui::layout::Rect;
+use std::time::Instant;
 
 /// Mouse interaction state and event handling
 #[derive(Debug, Clone)]
@@ -10,8 +11,8 @@ pub struct MouseState {
     pub hovering: bool,
     /// Index of the item being hovered over (if any)
     pub hover_index: Option<usize>,
-    /// Last click position and button
-    pub last_click: Option<(u16, u16, MouseButton)>,
+    /// Last click position, button, and time
+    pub last_click: Option<(u16, u16, MouseButton, Instant)>,
 }
 
 impl MouseState {
@@ -53,12 +54,33 @@ impl MouseState {
 
         match event.kind {
             MouseEventKind::Down(button) => {
-                self.last_click = Some((event.column, event.row, button));
+                let now = Instant::now();
+                let current_pos = (event.column, event.row);
+
+                // Check for double-click (within 300ms at same position)
+                let is_double_click = if let Some((last_col, last_row, last_button, last_time)) = self.last_click {
+                    button == MouseButton::Left
+                        && last_button == MouseButton::Left
+                        && last_col == current_pos.0
+                        && last_row == current_pos.1
+                        && now.duration_since(last_time).as_millis() < 300
+                } else {
+                    false
+                };
+
+                // Update last click
+                self.last_click = Some((event.column, event.row, button, now));
 
                 if self.is_in_area(result_area) {
                     if let Some(row) = self.row_in_area(result_area) {
                         return match button {
-                            MouseButton::Left => MouseAction::SelectResult(row),
+                            MouseButton::Left => {
+                                if is_double_click {
+                                    MouseAction::DoubleClick(row)
+                                } else {
+                                    MouseAction::SelectResult(row)
+                                }
+                            }
                             _ => MouseAction::None,
                         };
                     }
@@ -103,6 +125,8 @@ pub enum MouseAction {
     None,
     /// Select a result at the given index
     SelectResult(usize),
+    /// Double-click on a result at the given index
+    DoubleClick(usize),
     /// Hover over a result at the given index
     Hover(usize),
     /// Scroll down
