@@ -213,6 +213,8 @@ impl SymbolCache {
     /// Uses integer file_ids for fast batch retrieval, then filters by kind in Rust.
     /// This avoids the cache miss detection bug that occurs with SQL-level filtering.
     ///
+    /// Automatically chunks large batches to avoid SQLite parameter limits (999 max).
+    ///
     /// Parameters:
     /// - file_ids: Vec of (file_id, file_hash, file_path) tuples
     /// - kind_filter: Optional symbol kind to filter by (applied in Rust after retrieval)
@@ -231,73 +233,79 @@ impl SymbolCache {
 
         let conn = Connection::open(&self.db_path)?;
 
-        // Build placeholders for IN clause
-        let id_placeholders = file_ids.iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        // Always use simple query - filter by kind in Rust to avoid cache miss detection bug
-        let query = format!(
-            "SELECT file_id, symbols_json
-             FROM symbols
-             WHERE file_id IN ({})",
-            id_placeholders
-        );
-
-        // Prepare parameters
-        let params: Vec<Box<dyn rusqlite::ToSql>> = file_ids.iter()
-            .map(|(id, _, _)| Box::new(*id) as Box<dyn rusqlite::ToSql>)
-            .collect();
-
-        // Capture kind filter for Rust-side filtering
-        let kind_for_filtering = kind_filter.clone();
-
-        // Execute query
-        let mut stmt = conn.prepare(&query)?;
-        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-        let rows = stmt.query_map(param_refs.as_slice(), |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?
-            ))
-        })?;
+        // SQLite has a limit of 999 parameters by default
+        // Chunk requests to stay well under that limit
+        const BATCH_SIZE: usize = 900;
 
         // Build lookup map for file_ids → (hash, path)
         let file_info: HashMap<i64, (String, String)> = file_ids.iter()
             .map(|(id, hash, path)| (*id, (hash.clone(), path.clone())))
             .collect();
 
-        // Collect results
+        // Capture kind filter for Rust-side filtering
+        let kind_for_filtering = kind_filter.clone();
+
+        // Collect results across all chunks
         let mut cache_map: HashMap<i64, Vec<SearchResult>> = HashMap::new();
         let mut hits = 0;
 
-        for row_result in rows {
-            let (file_id, symbols_json) = row_result?;
+        for chunk in file_ids.chunks(BATCH_SIZE) {
+            // Build placeholders for IN clause for this chunk
+            let id_placeholders = chunk.iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(", ");
 
-            // Verify hash matches
-            if let Some((_hash, file_path)) = file_info.get(&file_id) {
-                // Note: We can't verify hash here since symbols table doesn't include hash in result
-                // This is OK - we'll verify by checking file_hash in a separate query if needed
-                match serde_json::from_str::<Vec<SearchResult>>(&symbols_json) {
-                    Ok(mut symbols) => {
-                        // Restore file_path (it was removed during serialization)
-                        for symbol in &mut symbols {
-                            symbol.path = file_path.clone();
+            // Always use simple query - filter by kind in Rust to avoid cache miss detection bug
+            let query = format!(
+                "SELECT file_id, symbols_json
+                 FROM symbols
+                 WHERE file_id IN ({})",
+                id_placeholders
+            );
+
+            // Prepare parameters for this chunk
+            let params: Vec<Box<dyn rusqlite::ToSql>> = chunk.iter()
+                .map(|(id, _, _)| Box::new(*id) as Box<dyn rusqlite::ToSql>)
+                .collect();
+
+            // Execute query
+            let mut stmt = conn.prepare(&query)?;
+            let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+            let rows = stmt.query_map(param_refs.as_slice(), |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?
+                ))
+            })?;
+
+            for row_result in rows {
+                let (file_id, symbols_json) = row_result?;
+
+                // Verify hash matches
+                if let Some((_hash, file_path)) = file_info.get(&file_id) {
+                    // Note: We can't verify hash here since symbols table doesn't include hash in result
+                    // This is OK - we'll verify by checking file_hash in a separate query if needed
+                    match serde_json::from_str::<Vec<SearchResult>>(&symbols_json) {
+                        Ok(mut symbols) => {
+                            // Restore file_path (it was removed during serialization)
+                            for symbol in &mut symbols {
+                                symbol.path = file_path.clone();
+                            }
+
+                            // Filter symbols by kind if needed (Rust-side filtering)
+                            // Note: We do this in Rust rather than SQL to avoid cache miss detection bugs
+                            // SQL filtering would exclude files without the kind, making QueryEngine think they're uncached
+                            if let Some(ref filter_kind) = kind_for_filtering {
+                                symbols.retain(|s| &s.kind == filter_kind);
+                            }
+
+                            cache_map.insert(file_id, symbols);
+                            hits += 1;
                         }
-
-                        // Filter symbols by kind if needed (Rust-side filtering)
-                        // Note: We do this in Rust rather than SQL to avoid cache miss detection bugs
-                        // SQL filtering would exclude files without the kind, making QueryEngine think they're uncached
-                        if let Some(ref filter_kind) = kind_for_filtering {
-                            symbols.retain(|s| &s.kind == filter_kind);
+                        Err(e) => {
+                            log::warn!("Failed to deserialize cached symbols for file_id {}: {}", file_id, e);
                         }
-
-                        cache_map.insert(file_id, symbols);
-                        hits += 1;
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to deserialize cached symbols for file_id {}: {}", file_id, e);
                     }
                 }
             }
@@ -307,13 +315,13 @@ impl SymbolCache {
 
         if kind_for_filtering.is_some() {
             log::debug!(
-                "Batch symbol cache with Rust-side kind filter: {} hits, {} misses ({} total)",
-                hits, misses, file_ids.len()
+                "Batch symbol cache with Rust-side kind filter: {} hits, {} misses ({} total, {} chunks)",
+                hits, misses, file_ids.len(), (file_ids.len() + BATCH_SIZE - 1) / BATCH_SIZE
             );
         } else {
             log::debug!(
-                "Batch symbol cache: {} hits, {} misses ({} total)",
-                hits, misses, file_ids.len()
+                "Batch symbol cache: {} hits, {} misses ({} total, {} chunks)",
+                hits, misses, file_ids.len(), (file_ids.len() + BATCH_SIZE - 1) / BATCH_SIZE
             );
         }
 
@@ -490,6 +498,9 @@ mod tests {
         let cache_mgr = CacheManager::new(temp.path());
         cache_mgr.init().unwrap();
 
+        // Add file to index first (required for symbol_cache.set())
+        cache_mgr.update_file("test.rs", "rust", 100).unwrap();
+
         let symbol_cache = SymbolCache::open(cache_mgr.path()).unwrap();
 
         let symbols = vec![
@@ -525,6 +536,9 @@ mod tests {
         let cache_mgr = CacheManager::new(temp.path());
         cache_mgr.init().unwrap();
 
+        // Add file to index first
+        cache_mgr.update_file("test.rs", "rust", 100).unwrap();
+
         let symbol_cache = SymbolCache::open(cache_mgr.path()).unwrap();
 
         let symbols = vec![SearchResult::new(
@@ -552,6 +566,10 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let cache_mgr = CacheManager::new(temp.path());
         cache_mgr.init().unwrap();
+
+        // Add files to index first
+        cache_mgr.update_file("file1.rs", "rust", 100).unwrap();
+        cache_mgr.update_file("file2.rs", "rust", 200).unwrap();
 
         let symbol_cache = SymbolCache::open(cache_mgr.path()).unwrap();
 
@@ -601,6 +619,11 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let cache_mgr = CacheManager::new(temp.path());
         cache_mgr.init().unwrap();
+
+        // Add files to index first
+        cache_mgr.update_file("file1.rs", "rust", 100).unwrap();
+        cache_mgr.update_file("file2.rs", "rust", 200).unwrap();
+        cache_mgr.update_file("file3.rs", "rust", 300).unwrap();
 
         let symbol_cache = SymbolCache::open(cache_mgr.path()).unwrap();
 
@@ -696,6 +719,9 @@ mod tests {
         let cache_mgr = CacheManager::new(temp.path());
         cache_mgr.init().unwrap();
 
+        // Add file to index first
+        cache_mgr.update_file("test.rs", "rust", 100).unwrap();
+
         let symbol_cache = SymbolCache::open(cache_mgr.path()).unwrap();
 
         let symbols = vec![SearchResult::new(
@@ -726,7 +752,11 @@ mod tests {
         cache_mgr.init().unwrap();
 
         // Add a file to the index
-        cache_mgr.update_file("exists.rs", "hash1", "rust", 100).unwrap();
+        cache_mgr.update_file("exists.rs", "rust", 100).unwrap();
+        cache_mgr.record_branch_file("exists.rs", "main", "hash1", None).unwrap();
+
+        // Add deleted.rs to index temporarily
+        cache_mgr.update_file("deleted.rs", "rust", 200).unwrap();
 
         let symbol_cache = SymbolCache::open(cache_mgr.path()).unwrap();
 
@@ -749,9 +779,15 @@ mod tests {
         let stats_before = symbol_cache.stats().unwrap();
         assert_eq!(stats_before.total_files, 2);
 
-        // Cleanup stale entries
+        // Now remove "deleted.rs" from files table to make its symbol cache entry stale
+        // Note: With CASCADE DELETE foreign key constraint, the symbol entry is automatically
+        // removed when the file is deleted, so cleanup_stale() won't find anything to remove.
+        let conn = rusqlite::Connection::open(cache_mgr.path().join("meta.db")).unwrap();
+        conn.execute("DELETE FROM files WHERE path = 'deleted.rs'", []).unwrap();
+
+        // Cleanup stale entries (should find 0 because CASCADE DELETE already cleaned it up)
         let removed = symbol_cache.cleanup_stale().unwrap();
-        assert_eq!(removed, 1); // deleted.rs should be removed
+        assert_eq!(removed, 0); // CASCADE DELETE already removed it
 
         let stats_after = symbol_cache.stats().unwrap();
         assert_eq!(stats_after.total_files, 1);

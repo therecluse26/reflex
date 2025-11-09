@@ -31,15 +31,19 @@ fn main() -> anyhow::Result<()> {
     assert!(cache_path.join("config.toml").exists(), "config.toml not created");
     println!("   ✅ All 5 cache files created\n");
 
-    // Test 2: Hash persistence
-    println!("2️⃣  Testing hash persistence...");
-    let mut hashes = HashMap::new();
-    hashes.insert("src/main.rs".to_string(), "abc123def456".to_string());
-    hashes.insert("src/lib.rs".to_string(), "789ghi012jkl".to_string());
-    cache.save_hashes(&hashes)?;
-    println!("   ✅ Saved {} hashes", hashes.len());
+    // Test 2: Hash persistence (branch-aware)
+    println!("2️⃣  Testing branch-aware hash persistence...");
 
-    let loaded = cache.load_hashes()?;
+    // First add files to the files table
+    cache.update_file("src/main.rs", "rust", 100)?;
+    cache.update_file("src/lib.rs", "rust", 200)?;
+
+    // Then record hashes for a specific branch
+    cache.record_branch_file("src/main.rs", "main", "abc123def456", Some("commit123"))?;
+    cache.record_branch_file("src/lib.rs", "main", "789ghi012jkl", Some("commit123"))?;
+    println!("   ✅ Saved 2 hashes for branch 'main'");
+
+    let loaded = cache.load_hashes_for_branch("main")?;
     assert_eq!(loaded.len(), 2);
     assert_eq!(loaded.get("src/main.rs"), Some(&"abc123def456".to_string()));
     println!("   ✅ Loaded {} hashes successfully\n", loaded.len());

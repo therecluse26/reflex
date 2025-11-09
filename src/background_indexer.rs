@@ -229,8 +229,8 @@ impl BackgroundIndexer {
         let files = cache_mgr.list_files()
             .context("Failed to list indexed files")?;
 
-        // Get file hashes (path -> hash)
-        let file_hashes = cache_mgr.load_hashes()
+        // Get file hashes across all branches (background indexer processes all files)
+        let file_hashes = cache_mgr.load_all_hashes()
             .context("Failed to load file hashes")?;
 
         self.status.total_files = files.len();
@@ -349,7 +349,7 @@ mod tests {
 
         assert!(!BackgroundIndexer::is_running(cache_mgr.path()));
 
-        let mut indexer = BackgroundIndexer::new(cache_mgr.path()).unwrap();
+        let mut indexer = BackgroundIndexer::new(temp.path()).unwrap();
         let _lock = indexer.acquire_lock().unwrap();
 
         assert!(BackgroundIndexer::is_running(cache_mgr.path()));
@@ -364,10 +364,10 @@ mod tests {
         let cache_mgr = CacheManager::new(temp.path());
         cache_mgr.init().unwrap();
 
-        let mut indexer1 = BackgroundIndexer::new(cache_mgr.path()).unwrap();
+        let mut indexer1 = BackgroundIndexer::new(temp.path()).unwrap();
         let _lock1 = indexer1.acquire_lock().unwrap();
 
-        let mut indexer2 = BackgroundIndexer::new(cache_mgr.path()).unwrap();
+        let mut indexer2 = BackgroundIndexer::new(temp.path()).unwrap();
         let result = indexer2.acquire_lock();
 
         assert!(result.is_err());
@@ -380,7 +380,7 @@ mod tests {
         let cache_mgr = CacheManager::new(temp.path());
         cache_mgr.init().unwrap();
 
-        let mut indexer = BackgroundIndexer::new(cache_mgr.path()).unwrap();
+        let mut indexer = BackgroundIndexer::new(temp.path()).unwrap();
         indexer.status.total_files = 100;
         indexer.status.processed_files = 50;
 
@@ -411,7 +411,7 @@ mod tests {
         let cache_mgr = CacheManager::new(temp.path());
         cache_mgr.init().unwrap();
 
-        let mut indexer = BackgroundIndexer::new(cache_mgr.path()).unwrap();
+        let mut indexer = BackgroundIndexer::new(temp.path()).unwrap();
         let result = indexer.run();
 
         assert!(result.is_ok());

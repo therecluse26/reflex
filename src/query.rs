@@ -890,9 +890,13 @@ impl QueryEngine {
         let symbol_cache = crate::symbol_cache::SymbolCache::open(self.cache.path())
             .context("Failed to open symbol cache")?;
 
-        // Load file hashes for cache lookups
-        let file_hashes = self.cache.load_hashes()
+        // Load file hashes for current branch for cache lookups
+        let root = self.cache.workspace_root();
+        let branch = crate::git::get_current_branch(&root)
+            .unwrap_or_else(|_| "_default".to_string());
+        let file_hashes = self.cache.load_hashes_for_branch(&branch)
             .context("Failed to load file hashes")?;
+        log::debug!("Loaded {} file hashes for branch '{}' for symbol cache lookups", file_hashes.len(), branch);
 
         // Group candidates by file, filtering out unsupported languages
         use std::collections::HashMap;
