@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::indexer::Indexer;
 use crate::models::Language;
+use crate::output;
 
 /// Configuration for file watching
 #[derive(Debug, Clone)]
@@ -133,7 +134,7 @@ pub fn watch(path: &Path, indexer: Indexer, config: WatchConfig) -> Result<()> {
                                 );
                             }
                             Err(e) => {
-                                eprintln!("✗ Reindex failed: {}\n", e);
+                                output::error(&format!("✗ Reindex failed: {}", e));
                                 log::error!("Reindex failed: {}", e);
                             }
                         }

@@ -8,6 +8,7 @@ use std::time::Instant;
 use crate::cache::CacheManager;
 use crate::indexer::Indexer;
 use crate::models::{IndexConfig, Language};
+use crate::output;
 use crate::query::{QueryEngine, QueryFilter};
 
 /// Reflex: Local-first, structure-aware code search for AI agents
@@ -397,7 +398,7 @@ fn handle_index(path: PathBuf, force: bool, languages: Vec<String>, quiet: bool,
             "c" => Some(Language::C),
             "cpp" | "c++" => Some(Language::Cpp),
             _ => {
-                log::warn!("Unknown language: {}", s);
+                output::warn(&format!("Unknown language: {}", s));
                 None
             }
         })
@@ -696,6 +697,7 @@ fn handle_query(
         paths_only,
         offset,
         force,
+        suppress_output: as_json,  // Suppress warnings in JSON mode
     };
 
     // Measure query time
@@ -1034,6 +1036,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             paths_only: params.paths,
             offset: params.offset,
             force: params.force,
+            suppress_output: true,  // HTTP API always returns JSON, suppress warnings
         };
 
         match engine.search_with_metadata(&params.q, filter) {

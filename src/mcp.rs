@@ -412,6 +412,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 paths_only: true,  // KEY: Enable paths-only mode
                 offset: None,
                 force,
+                suppress_output: true,  // MCP always returns JSON
             };
 
             let cache = CacheManager::new(".");
@@ -479,6 +480,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 paths_only: false,  // Need to count all occurrences
                 offset: None,
                 force,
+                suppress_output: true,  // MCP always returns JSON
             };
 
             let cache = CacheManager::new(".");
@@ -565,6 +567,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 paths_only,
                 offset,
                 force,
+                suppress_output: true,  // MCP always returns JSON
             };
 
             let cache = CacheManager::new(".");
@@ -633,6 +636,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 paths_only,
                 offset,
                 force,
+                suppress_output: true,  // MCP always returns JSON
             };
 
             let cache = CacheManager::new(".");
@@ -714,6 +718,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 paths_only,
                 offset,
                 force,
+                suppress_output: true,  // MCP always returns JSON
             };
 
             let cache = CacheManager::new(".");
