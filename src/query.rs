@@ -49,6 +49,8 @@ pub struct QueryFilter {
     pub paths_only: bool,
     /// Pagination offset (skip first N results after sorting)
     pub offset: Option<usize>,
+    /// Force execution of potentially expensive queries (bypass broad query detection)
+    pub force: bool,
 }
 
 impl Default for QueryFilter {
@@ -69,6 +71,7 @@ impl Default for QueryFilter {
             exclude_patterns: Vec::new(),
             paths_only: false,
             offset: None,
+            force: false,  // Default: enable broad query detection
         }
     }
 }
@@ -236,6 +239,90 @@ impl QueryEngine {
                      Example: rfx query \"{}\" --lang rust --timeout 60",
                     filter.timeout_secs,
                     pattern
+                );
+            }
+        }
+
+        // BROAD QUERY DETECTION: Check if query is too expensive BEFORE parsing
+        // This protects LLM users from accidentally running expensive queries that flood context windows
+        if !filter.force {
+            let candidate_count = results.len();
+            let pattern_len = pattern.chars().count();
+
+            // Condition 1: Pattern too short (< 3 chars can't use trigram optimization efficiently)
+            let is_short_pattern = pattern_len < 3 && !filter.use_regex;
+
+            // Condition 2: Too many candidates for symbol/AST parsing (> 5,000 files)
+            let has_many_candidates = candidate_count > 5000 && (filter.symbols_mode || filter.kind.is_some() || filter.use_ast);
+
+            // Condition 3: AST query without glob restriction
+            let is_broad_ast = filter.use_ast && filter.glob_patterns.is_empty();
+
+            if is_short_pattern || has_many_candidates || is_broad_ast {
+                let reason = if is_short_pattern {
+                    format!("Pattern '{}' is too short ({} characters). Short patterns bypass trigram optimization and require scanning many files.", pattern, pattern_len)
+                } else if is_broad_ast {
+                    format!("AST query without --glob restriction will scan the entire codebase ({} files). AST queries are SLOW (500ms-10s+).", candidate_count)
+                } else {
+                    format!("Query matched {} files. Parsing this many files with --symbols or --kind will take significant time and produce excessive results.", candidate_count)
+                };
+
+                let suggestions = if is_short_pattern {
+                    vec![
+                        "• Use a longer, more specific pattern (3+ characters recommended)",
+                        "• Add a language filter: --lang <language>",
+                        "• Add a file path filter: --file <path> or --glob <pattern>",
+                        "• Use --force to bypass this check if you really need all results"
+                    ]
+                } else if is_broad_ast {
+                    vec![
+                        "• Add --glob to restrict AST query to specific files: --glob 'src/**/*.rs'",
+                        "• Use --symbols instead (10-100x faster in 95% of cases)",
+                        "• Use --force to bypass this check if you need a full codebase scan"
+                    ]
+                } else {
+                    vec![
+                        "• Add a language filter to reduce candidate set: --lang <language>",
+                        "• Add glob patterns to search specific directories: --glob 'src/**/*.rs'",
+                        "• Use a more specific search pattern",
+                        "• Use --force to bypass this check if you need all results"
+                    ]
+                };
+
+                // Build the command snippet showing current flags
+                let mut cmd_flags = String::new();
+                if filter.symbols_mode {
+                    cmd_flags.push_str("--symbols ");
+                }
+                if let Some(ref lang) = filter.language {
+                    cmd_flags.push_str(&format!("--lang {:?} ", lang));
+                }
+                if let Some(ref kind) = filter.kind {
+                    cmd_flags.push_str(&format!("--kind {:?} ", kind));
+                }
+                if filter.use_ast {
+                    cmd_flags.push_str("--ast ");
+                }
+
+                anyhow::bail!(
+                    "Query too broad - would be expensive to execute\n\
+                     \n\
+                     {}\n\
+                     \n\
+                     This query could:\n\
+                     • Take 10-30+ seconds to complete\n\
+                     • Return thousands of results\n\
+                     • Flood LLM context windows with excessive data\n\
+                     \n\
+                     Suggestions to narrow the query:\n\
+                     {}\n\
+                     \n\
+                     To force execution anyway:\n\
+                     rfx query \"{}\" --force {}",
+                    reason,
+                    suggestions.join("\n             "),
+                    pattern,
+                    cmd_flags
                 );
             }
         }
@@ -506,6 +593,30 @@ impl QueryEngine {
              \n\
              Example: rfx query \"(function_definition) @fn\" --ast --lang python"
         ))?;
+
+        // BROAD QUERY DETECTION: AST queries without glob patterns are very expensive
+        if !filter.force && filter.glob_patterns.is_empty() {
+            anyhow::bail!(
+                "Query too broad - would be expensive to execute\n\
+                 \n\
+                 AST query without --glob restriction will scan the ENTIRE codebase. AST queries are SLOW (500ms-10s+).\n\
+                 \n\
+                 This query could:\n\
+                 • Take 10-30+ seconds to complete\n\
+                 • Return thousands of results\n\
+                 • Flood LLM context windows with excessive data\n\
+                 \n\
+                 Suggestions to narrow the query:\n\
+                 • Add --glob to restrict AST query to specific files: --glob 'src/**/*.rs'\n\
+                 • Use --symbols instead (10-100x faster in 95% of cases)\n\
+                 • Use --force to bypass this check if you need a full codebase scan\n\
+                 \n\
+                 To force execution anyway:\n\
+                 rfx query \"{}\" --force --ast --lang {:?}",
+                ast_pattern,
+                lang
+            );
+        }
 
         // Ensure cache exists
         if !self.cache.exists() {
@@ -2416,6 +2527,7 @@ mod tests {
         let engine = QueryEngine::new(cache);
         let filter = QueryFilter {
             use_contains: true,  // Unicode word boundaries may not work as expected
+            force: true,  // Bypass broad query detection for 2-char Unicode pattern
             ..Default::default()
         };
 

@@ -183,6 +183,14 @@ pub enum Command {
         /// Equivalent to --limit 0, convenience flag for getting unlimited results
         #[arg(short = 'a', long)]
         all: bool,
+
+        /// Force execution of potentially expensive queries
+        /// Bypasses broad query detection that prevents queries with:
+        /// • Short patterns (< 3 characters)
+        /// • High candidate counts (> 5,000 files for symbol/AST queries)
+        /// • AST queries without --glob restrictions
+        #[arg(long)]
+        force: bool,
     },
 
     /// Start a local HTTP API server
@@ -293,8 +301,8 @@ impl Cli {
             Command::Index { path, force, languages, quiet, status } => {
                 handle_index(path, force, languages, quiet, status)
             }
-            Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all } => {
-                handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all)
+            Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force } => {
+                handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force)
             }
             Command::Serve { port, host } => {
                 handle_serve(port, host)
@@ -552,6 +560,7 @@ fn handle_query(
     paths_only: bool,
     no_truncate: bool,
     all: bool,
+    force: bool,
 ) -> Result<()> {
     log::info!("Starting query command");
 
@@ -686,24 +695,53 @@ fn handle_query(
         exclude_patterns,
         paths_only,
         offset,
+        force,
     };
 
     // Measure query time
     let start = Instant::now();
 
     // Execute query and get pagination metadata
-    // We always use search_with_metadata to get total count for pagination info
-    let (mut results, total_results, has_more) = if use_ast {
+    // Handle errors specially for JSON output mode
+    let query_result = if use_ast {
         // AST query: pattern is the S-expression, scan all files
-        let ast_results = engine.search_ast_all_files(&pattern, filter.clone())?;
-        let count = ast_results.len();
-        (ast_results, count, false)
+        engine.search_ast_all_files(&pattern, filter.clone())
+            .map(|ast_results| {
+                let count = ast_results.len();
+                (ast_results, count, false)
+            })
     } else {
         // Use metadata-aware search for all queries (to get pagination info)
-        let response = engine.search_with_metadata(&pattern, filter.clone())?;
-        let total = response.pagination.total;
-        let has_more = response.pagination.has_more;
-        (response.results, total, has_more)
+        engine.search_with_metadata(&pattern, filter.clone())
+            .map(|response| {
+                let total = response.pagination.total;
+                let has_more = response.pagination.has_more;
+                (response.results, total, has_more)
+            })
+    };
+
+    // Handle errors with JSON formatting when --json is set
+    let (mut results, total_results, has_more) = match query_result {
+        Ok(data) => data,
+        Err(e) => {
+            if as_json {
+                // Output error as JSON
+                let error_response = serde_json::json!({
+                    "error": e.to_string(),
+                    "query_too_broad": e.to_string().contains("Query too broad")
+                });
+                let json_output = if pretty_json {
+                    serde_json::to_string_pretty(&error_response)?
+                } else {
+                    serde_json::to_string(&error_response)?
+                };
+                println!("{}", json_output);
+                std::process::exit(1);
+            } else {
+                // Plain text error (default behavior)
+                return Err(e);
+            }
+        }
     };
 
     // Apply preview truncation unless --no-truncate is set
@@ -884,6 +922,8 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         exclude: Vec<String>,
         #[serde(default)]
         paths: bool,
+        #[serde(default)]
+        force: bool,
     }
 
     // Default timeout for HTTP queries (30 seconds)
@@ -981,6 +1021,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             exclude_patterns: params.exclude,
             paths_only: params.paths,
             offset: params.offset,
+            force: params.force,
         };
 
         match engine.search_with_metadata(&params.q, filter) {
