@@ -8,6 +8,7 @@ use std::time::Instant;
 use crate::cache::CacheManager;
 use crate::indexer::Indexer;
 use crate::models::{IndexConfig, Language};
+use crate::output;
 use crate::query::{QueryEngine, QueryFilter};
 
 /// Reflex: Local-first, structure-aware code search for AI agents
@@ -397,7 +398,7 @@ fn handle_index(path: PathBuf, force: bool, languages: Vec<String>, quiet: bool,
             "c" => Some(Language::C),
             "cpp" | "c++" => Some(Language::Cpp),
             _ => {
-                log::warn!("Unknown language: {}", s);
+                output::warn(&format!("Unknown language: {}", s));
                 None
             }
         })
@@ -696,6 +697,7 @@ fn handle_query(
         paths_only,
         offset,
         force,
+        suppress_output: as_json,  // Suppress warnings in JSON mode
     };
 
     // Measure query time
@@ -762,7 +764,19 @@ fn handle_query(
     };
 
     if as_json {
-        if paths_only {
+        if count_only {
+            // Count-only JSON mode: output simple count object
+            let count_response = serde_json::json!({
+                "count": total_results,
+                "timing_ms": elapsed.as_millis()
+            });
+            let json_output = if pretty_json {
+                serde_json::to_string_pretty(&count_response)?
+            } else {
+                serde_json::to_string(&count_response)?
+            };
+            println!("{}", json_output);
+        } else if paths_only {
             // Paths-only JSON mode: output array of unique file paths
             let paths: Vec<String> = results.iter()
                 .map(|r| r.path.clone())
@@ -1022,6 +1036,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             paths_only: params.paths,
             offset: params.offset,
             force: params.force,
+            suppress_output: true,  // HTTP API always returns JSON, suppress warnings
         };
 
         match engine.search_with_metadata(&params.q, filter) {
@@ -1181,7 +1196,7 @@ fn handle_stats(as_json: bool, pretty_json: bool) -> Result<()> {
         println!("Reflex Index Statistics");
         println!("=======================");
 
-        // Show git branch info if in git repo
+        // Show git branch info if in git repo, or (None) if not
         let root = std::env::current_dir()?;
         if crate::git::is_git_repo(&root) {
             match crate::git::get_git_state(&root) {
@@ -1212,6 +1227,9 @@ fn handle_stats(as_json: bool, pretty_json: bool) -> Result<()> {
                     log::warn!("Failed to get git state: {}", e);
                 }
             }
+        } else {
+            // Not a git repository - show (None)
+            println!("Branch:         (None)");
         }
 
         println!("Files indexed:  {}", stats.total_files);

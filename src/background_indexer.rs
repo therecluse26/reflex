@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::cache::CacheManager;
+use crate::content_store::ContentReader;
 use crate::parsers::ParserFactory;
 use crate::symbol_cache::SymbolCache;
 
@@ -243,16 +244,28 @@ impl BackgroundIndexer {
         let symbol_cache = SymbolCache::open(&self.cache_path)
             .context("Failed to open symbol cache")?;
 
-        // Get all indexed files
-        let files = cache_mgr.list_files()
-            .context("Failed to list indexed files")?;
+        // Load content reader to iterate through all indexed files
+        let content_path = self.cache_path.join("content.bin");
+
+        // If content.bin doesn't exist, index is empty - nothing to do
+        if !content_path.exists() {
+            log::info!("No content.bin found - index is empty, nothing to process");
+            self.status.total_files = 0;
+            self.status.processed_files = 0;
+            self.write_status()?;
+            return Ok(());
+        }
+
+        let content_reader = ContentReader::open(&content_path)
+            .context("Failed to open content.bin")?;
 
         // Get file hashes across all branches (background indexer processes all files)
         let file_hashes = cache_mgr.load_all_hashes()
             .context("Failed to load file hashes")?;
 
-        self.status.total_files = files.len();
-        log::info!("Found {} indexed files to process", files.len());
+        let total_files = content_reader.file_count();
+        self.status.total_files = total_files;
+        log::info!("Found {} indexed files to process", total_files);
 
         // Write initial status
         self.write_status()?;
@@ -264,22 +277,26 @@ impl BackgroundIndexer {
         let batch_size = self.batch_size;
         let mut processed = 0;
 
-        for chunk in files.chunks(batch_size) {
-            // Filter out cached files (sequential check is fast)
+        // Iterate through all files in content.bin
+        let file_ids: Vec<u32> = (0..total_files as u32).collect();
+
+        for chunk in file_ids.chunks(batch_size) {
+            // Build list of files to parse (with cache check)
             let files_to_parse: Vec<_> = chunk
                 .iter()
-                .filter_map(|file| {
-                    let path = &file.path;
-                    let file_hash = file_hashes.get(path)?;
+                .filter_map(|&file_id| {
+                    let path = content_reader.get_file_path(file_id)?;
+                    let path_str = path.to_string_lossy().to_string();
+                    let file_hash = file_hashes.get(&path_str)?;
 
                     // Check if already cached
-                    if symbol_cache.get(path, file_hash).ok().flatten().is_some() {
+                    if symbol_cache.get(&path_str, file_hash).ok().flatten().is_some() {
                         // Update cached count
                         let mut status = status_mutex.lock().unwrap();
                         status.0 += 1;
                         None
                     } else {
-                        Some((path.clone(), file_hash.clone(), file.language.clone()))
+                        Some((file_id, path_str, file_hash.clone()))
                     }
                 })
                 .collect();
@@ -288,16 +305,16 @@ impl BackgroundIndexer {
             let parsed_results: Vec<_> = thread_pool.install(|| {
                 files_to_parse
                     .par_iter()
-                    .map(|(path, file_hash, _language)| {
-                        match self.parse_symbols(path, _language) {
+                    .map(|(file_id, path_str, file_hash)| {
+                        match self.parse_symbols(&content_reader, *file_id, path_str) {
                             Ok(symbols) => {
                                 // Update parsed count
                                 let mut status = status_mutex.lock().unwrap();
                                 status.1 += 1;
-                                Some((path.clone(), file_hash.clone(), symbols))
+                                Some((path_str.clone(), file_hash.clone(), symbols))
                             }
                             Err(e) => {
-                                log::warn!("Failed to parse symbols from {}: {}", path, e);
+                                log::warn!("Failed to parse symbols from {}: {}", path_str, e);
                                 // Update failed count
                                 let mut status = status_mutex.lock().unwrap();
                                 status.2 += 1;
@@ -337,7 +354,7 @@ impl BackgroundIndexer {
         }
 
         // Final status update
-        self.status.processed_files = files.len();
+        self.status.processed_files = total_files;
         self.write_status()?;
 
         // Cleanup stale entries
@@ -351,11 +368,16 @@ impl BackgroundIndexer {
         Ok(())
     }
 
-    /// Parse symbols from a file
-    fn parse_symbols(&self, path: &str, _language: &str) -> Result<Vec<crate::models::SearchResult>> {
-        // Read file contents
-        let source = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read file: {}", path))?;
+    /// Parse symbols from a file using content.bin
+    fn parse_symbols(
+        &self,
+        content_reader: &ContentReader,
+        file_id: u32,
+        path: &str,
+    ) -> Result<Vec<crate::models::SearchResult>> {
+        // Read file contents from content.bin (memory-mapped, zero-copy)
+        let source = content_reader.get_file_content(file_id)
+            .with_context(|| format!("Failed to read file from content.bin: {}", path))?;
 
         // Detect language from file extension
         let extension = std::path::Path::new(path)
@@ -366,7 +388,7 @@ impl BackgroundIndexer {
         let language = crate::models::Language::from_extension(extension);
 
         // Parse with appropriate parser
-        let symbols = ParserFactory::parse(path, &source, language)
+        let symbols = ParserFactory::parse(path, source, language)
             .with_context(|| format!("Failed to parse symbols from: {}", path))?;
 
         Ok(symbols)

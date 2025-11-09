@@ -12,6 +12,7 @@ use crate::models::{
     IndexStatus, IndexWarning, IndexWarningDetails, Language, QueryResponse, SearchResult, Span,
     SymbolKind,
 };
+use crate::output;
 use crate::parsers::ParserFactory;
 use crate::regex_trigrams::extract_trigrams_from_regex;
 use crate::trigram::TrigramIndex;
@@ -51,6 +52,8 @@ pub struct QueryFilter {
     pub offset: Option<usize>,
     /// Force execution of potentially expensive queries (bypass broad query detection)
     pub force: bool,
+    /// Suppress warning/info output (for --json mode to ensure pure JSON output)
+    pub suppress_output: bool,
 }
 
 impl Default for QueryFilter {
@@ -72,6 +75,7 @@ impl Default for QueryFilter {
             paths_only: false,
             offset: None,
             force: false,  // Default: enable broad query detection
+            suppress_output: false,  // Default: show warnings/info
         }
     }
 }
@@ -157,7 +161,7 @@ impl QueryEngine {
         }
 
         // Show non-blocking warnings about branch state and staleness
-        self.check_index_freshness()?;
+        self.check_index_freshness(&filter)?;
 
         // Execute the search (discard total count - legacy method doesn't use it)
         let (results, _total_count) = self.search_internal(pattern, filter)?;
@@ -237,6 +241,7 @@ impl QueryEngine {
                      • Hang for an extended period before returning results\n\
                      • Return thousands of results\n\
                      • Flood LLM context windows with excessive data\n\
+                     • Fail entirely\n\
                      \n\
                      Suggestions to narrow the query:\n\
                      • Use a longer, more specific pattern (4+ characters recommended for large indexes)\n\
@@ -267,7 +272,7 @@ impl QueryEngine {
             self.get_all_language_files(&filter)?
         } else if filter.use_regex {
             // Regex pattern search with trigram optimization
-            self.get_regex_candidates(pattern, timeout.as_ref(), &start_time)?
+            self.get_regex_candidates(pattern, timeout.as_ref(), &start_time, filter.suppress_output)?
         } else {
             // Standard trigram-based full-text search
             self.get_trigram_candidates(pattern, &filter)?
@@ -489,9 +494,10 @@ impl QueryEngine {
                      {}\n\
                      \n\
                      This query could:\n\
-                     • Take 10-30+ seconds to complete\n\
+                     • Hang for an extended period before returning results\n\
                      • Return thousands of results\n\
                      • Flood LLM context windows with excessive data\n\
+                     • Fail entirely\n\
                      \n\
                      Suggestions to narrow the query:\n\
                      {}\n\
@@ -516,12 +522,12 @@ impl QueryEngine {
 
             // Warn if many candidates need parsing (helps users refine queries)
             let candidate_count = results.len();
-            if candidate_count > 1000 {
-                log::warn!(
+            if candidate_count > 1000 && !filter.suppress_output {
+                output::warn(&format!(
                     "Pattern '{}' matched {} files - parsing may take some time. Consider using --file, --glob, or a more specific pattern to narrow the search.",
                     pattern,
                     candidate_count
-                );
+                ));
             } else if candidate_count > 100 {
                 log::info!("Parsing {} candidate files for symbol extraction", candidate_count);
             }
@@ -686,7 +692,7 @@ impl QueryEngine {
         }
 
         // Show non-blocking warnings about branch state and staleness
-        self.check_index_freshness()?;
+        self.check_index_freshness(&filter)?;
 
         // Load content store
         let content_path = self.cache.path().join("content.bin");
@@ -776,9 +782,10 @@ impl QueryEngine {
                  AST query without --glob restriction will scan the ENTIRE codebase ({} files). AST queries are SLOW (500ms-10s+).\n\
                  \n\
                  This query could:\n\
-                 • Take 10-30+ seconds to complete\n\
+                 • Hang for an extended period before returning results\n\
                  • Return thousands of results\n\
                  • Flood LLM context windows with excessive data\n\
+                 • Fail entirely\n\
                  \n\
                  Suggestions to narrow the query:\n\
                  • Add --glob to restrict AST query to specific files: --glob 'src/**/*.rs'\n\
@@ -794,7 +801,9 @@ impl QueryEngine {
         }
 
         if candidates.is_empty() {
-            log::warn!("No files found for language {:?}. Check your language filter or glob patterns.", lang);
+            if !filter.suppress_output {
+                output::warn(&format!("No files found for language {:?}. Check your language filter or glob patterns.", lang));
+            }
             return Ok(Vec::new());
         }
 
@@ -902,7 +911,7 @@ impl QueryEngine {
         }
 
         // Show non-blocking warnings about branch state and staleness
-        self.check_index_freshness()?;
+        self.check_index_freshness(&filter)?;
 
         // Start timeout timer if configured
         use std::time::{Duration, Instant};
@@ -915,7 +924,7 @@ impl QueryEngine {
 
         // PHASE 1: Get initial candidates using text pattern (trigram search)
         let candidates = if filter.use_regex {
-            self.get_regex_candidates(text_pattern, timeout.as_ref(), &start_time)?
+            self.get_regex_candidates(text_pattern, timeout.as_ref(), &start_time, filter.suppress_output)?
         } else {
             self.get_trigram_candidates(text_pattern, &filter)?
         };
@@ -1118,13 +1127,12 @@ impl QueryEngine {
                    total_files, skipped_unsupported);
 
         // Warn if pattern is very broad (may take time to parse all files)
-        if total_files > 1000 {
-            log::warn!(
-                "Pattern '{}' matched {} files. This may take some time to parse.",
+        if total_files > 1000 && !filter.suppress_output {
+            output::warn(&format!(
+                "Pattern '{}' matched {} files. This may take some time to parse. Consider using a more specific pattern or adding --lang/--file filters to narrow the search.",
                 pattern,
                 total_files
-            );
-            log::warn!("Consider using a more specific pattern or adding --lang/--file filters to narrow the search.");
+            ));
         }
 
         // Convert to vec for parallel processing
@@ -1818,7 +1826,7 @@ impl QueryEngine {
     /// - Best case (pattern with literals): <20ms (trigram optimization)
     /// - Typical case (alternation/sequential): 5-15ms on small codebases (<100 files)
     /// - Worst case (no literals like `.*`): ~100ms (full scan)
-    fn get_regex_candidates(&self, pattern: &str, timeout: Option<&std::time::Duration>, start_time: &std::time::Instant) -> Result<Vec<SearchResult>> {
+    fn get_regex_candidates(&self, pattern: &str, timeout: Option<&std::time::Duration>, start_time: &std::time::Instant, suppress_output: bool) -> Result<Vec<SearchResult>> {
         // Step 1: Compile the regex
         let regex = Regex::new(pattern)
             .with_context(|| format!("Invalid regex pattern: {}", pattern))?;
@@ -1845,8 +1853,12 @@ impl QueryEngine {
 
         if trigrams.is_empty() {
             // No trigrams - fall back to full scan
-            log::warn!("Regex pattern '{}' has no literals (≥3 chars), falling back to full content scan", pattern);
-            log::warn!("This may be slow on large codebases. Consider using patterns with literal text.");
+            if !suppress_output {
+                output::warn(&format!(
+                    "Regex pattern '{}' has no literals (≥3 chars), falling back to full content scan. This may be slow on large codebases. Consider using patterns with literal text.",
+                    pattern
+                ));
+            }
 
             // Scan all files
             for file_id in 0..content_reader.file_count() {
@@ -2155,7 +2167,7 @@ impl QueryEngine {
     /// 1. Branch mismatch: indexed different branch
     /// 2. Commit changed: HEAD moved since indexing
     /// 3. File changes: quick mtime check on sample of files (if available)
-    fn check_index_freshness(&self) -> Result<()> {
+    fn check_index_freshness(&self, filter: &QueryFilter) -> Result<()> {
         let root = std::env::current_dir()?;
 
         // Check git state if in a git repo
@@ -2163,7 +2175,9 @@ impl QueryEngine {
             if let Ok(current_branch) = crate::git::get_current_branch(&root) {
                 // Check if we're on a different branch than what was indexed
                 if !self.cache.branch_exists(&current_branch).unwrap_or(false) {
-                    eprintln!("⚠️  WARNING: Index not found for branch '{}'. Run 'rfx index' to index this branch.", current_branch);
+                    if !filter.suppress_output {
+                        output::warn(&format!("⚠️  WARNING: Index not found for branch '{}'. Run 'rfx index' to index this branch.", current_branch));
+                    }
                     return Ok(());
                 }
 
@@ -2172,8 +2186,10 @@ impl QueryEngine {
                     (crate::git::get_current_commit(&root), self.cache.get_branch_info(&current_branch)) {
 
                     if branch_info.commit_sha != current_commit {
-                        eprintln!("⚠️  WARNING: Index may be stale (commit changed: {} → {}). Consider running 'rfx index'.",
-                                 &branch_info.commit_sha[..7], &current_commit[..7]);
+                        if !filter.suppress_output {
+                            output::warn(&format!("⚠️  WARNING: Index may be stale (commit changed: {} → {}). Consider running 'rfx index'.",
+                                     &branch_info.commit_sha[..7], &current_commit[..7]));
+                        }
                         return Ok(());
                     }
 
@@ -2208,8 +2224,8 @@ impl QueryEngine {
                             }
                         }
 
-                        if changed > 0 {
-                            eprintln!("⚠️  WARNING: {} of {} sampled files changed since indexing. Consider running 'rfx index'.", changed, checked);
+                        if changed > 0 && !filter.suppress_output {
+                            output::warn(&format!("⚠️  WARNING: {} of {} sampled files changed since indexing. Consider running 'rfx index'.", changed, checked));
                         }
                     }
                 }

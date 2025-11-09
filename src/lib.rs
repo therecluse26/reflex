@@ -36,6 +36,7 @@ pub mod indexer;
 pub mod line_filter;
 pub mod mcp;
 pub mod models;
+pub mod output;
 pub mod parsers;
 pub mod query;
 pub mod regex_trigrams;

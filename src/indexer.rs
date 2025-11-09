@@ -16,6 +16,7 @@ use std::time::Instant;
 use crate::cache::CacheManager;
 use crate::content_store::ContentWriter;
 use crate::models::{IndexConfig, IndexStats, Language};
+use crate::output;
 use crate::trigram::TrigramIndex;
 
 /// Result of processing a single file (used for parallel processing)
@@ -504,7 +505,7 @@ impl Indexer {
                                         // Warn if less than 100MB available
                                         if available_mb < 100 {
                                             log::warn!("Low disk space: only {}MB available. Indexing may fail.", available_mb);
-                                            eprintln!("Warning: Low disk space ({}MB available). Consider freeing up space.", available_mb);
+                                            output::warn(&format!("Low disk space ({}MB available). Consider freeing up space.", available_mb));
                                         } else {
                                             log::debug!("Available disk space: {}MB", available_mb);
                                         }
