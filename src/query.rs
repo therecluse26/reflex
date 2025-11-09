@@ -273,6 +273,23 @@ impl QueryEngine {
             self.get_trigram_candidates(pattern, &filter)?
         };
 
+        // EARLY LANGUAGE FILTER: Apply language filtering BEFORE broad query check
+        // This ensures we only parse files matching the language filter in Phase 2
+        // Critical for non-keyword queries to work correctly with accurate candidate counts
+        //
+        // Skip for keyword queries - those candidates are already pre-filtered by language
+        if !is_keyword_query {
+            if let Some(lang) = filter.language {
+                let before_count = results.len();
+                results.retain(|r| r.lang == lang);
+                log::debug!(
+                    "Language filter ({:?}): reduced {} candidates to {} candidates",
+                    lang,
+                    before_count,
+                    results.len()
+                );
+            }
+        }
 
         // Check timeout after Phase 1
         if let Some(timeout_duration) = timeout {
@@ -401,24 +418,6 @@ impl QueryEngine {
                     suggestions.join("\n             "),
                     pattern,
                     cmd_flags
-                );
-            }
-        }
-
-        // EARLY LANGUAGE FILTER: Apply language filtering BEFORE early limiting
-        // This ensures we only parse files matching the language filter in Phase 2
-        // Critical for non-keyword queries to work correctly
-        //
-        // Skip for keyword queries - those candidates are already pre-filtered by language
-        if !is_keyword_query {
-            if let Some(lang) = filter.language {
-                let before_count = results.len();
-                results.retain(|r| r.lang == lang);
-                log::debug!(
-                    "Language filter ({:?}): reduced {} candidates to {} candidates",
-                    lang,
-                    before_count,
-                    results.len()
                 );
             }
         }

@@ -1410,8 +1410,8 @@ fn test_keyword_php_class() {
     };
     let results = engine.search("class", filter).unwrap();
 
-    // Should find 7 classes (per corpus file documentation)
-    assert_eq!(results.len(), 7);
+    // Should find 9 classes (Point, Person, Employee, Shape, Rectangle, Utils, Counter, AdminUser, ComplexUser)
+    assert_eq!(results.len(), 9);
     assert!(results.iter().all(|r| r.kind == SymbolKind::Class));
 }
 
@@ -2421,4 +2421,61 @@ fn test_broad_query_small_index_short_pattern_allowed() {
     assert!(result.is_ok());
     let results = result.unwrap();
     assert!(results.len() >= 1);
+}
+
+#[test]
+fn test_broad_query_language_filter_applied_before_check() {
+    // Regression test for: Language filter should be applied BEFORE broad query check
+    // Previously, the broad query check used the unfiltered candidate count,
+    // causing queries like `rfx query "index" --lang rust --symbols` to fail
+    // even when the language-filtered result set was small.
+
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create many C files containing "index" (simulate Linux kernel scenario)
+    // 60,000+ files would trigger broad query check (threshold is 50,000)
+    for i in 0..60_100 {
+        fs::write(
+            project.join(format!("kernel{}.c", i)),
+            "int index_lookup(void) { return 0; }"
+        ).unwrap();
+    }
+
+    // Create a small number of Rust files containing "index"
+    // This should be well below the threshold (< 50,000)
+    for i in 0..300 {
+        fs::write(
+            project.join(format!("rust{}.rs", i)),
+            "fn index_lookup() -> usize { 0 }"
+        ).unwrap();
+    }
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Query with --lang rust --symbols
+    // The language filter should reduce 60,400 candidates to 300 Rust files
+    // BEFORE the broad query check, so this should succeed
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        language: Some(reflex::Language::Rust),
+        use_contains: true,  // Match "index" within "index_lookup"
+        force: false,  // Should succeed WITHOUT force
+        ..Default::default()
+    };
+    let result = engine.search("index", filter);
+
+    // Should succeed - language filter is applied BEFORE broad query check
+    assert!(result.is_ok(), "Query should succeed when language filter reduces candidate set below threshold");
+    let results = result.unwrap();
+
+    // The key assertion is that the query SUCCEEDED without --force
+    // This proves language filter was applied BEFORE broad query check
+    // (Without the fix, this would error with "Query too broad - 60,400 files")
+    assert!(results.len() > 0, "Should find at least one symbol matching 'index' in Rust files");
 }
