@@ -291,6 +291,90 @@ impl QueryEngine {
             }
         }
 
+        // EARLY GLOB PATTERN FILTER: Apply glob/exclude filtering BEFORE broad query check
+        // This ensures candidate count reflects actual files that will be parsed
+        // Critical for queries like: rfx query "index" --symbols --glob "src/**/*.rs"
+        if !filter.glob_patterns.is_empty() || !filter.exclude_patterns.is_empty() {
+            use globset::{Glob, GlobSetBuilder};
+
+            // Build include matcher (if patterns specified)
+            let include_matcher = if !filter.glob_patterns.is_empty() {
+                let mut builder = GlobSetBuilder::new();
+                for pattern in &filter.glob_patterns {
+                    // Normalize pattern to ensure LLM-generated patterns work correctly
+                    let normalized = Self::normalize_glob_pattern(pattern);
+                    match Glob::new(&normalized) {
+                        Ok(glob) => {
+                            builder.add(glob);
+                        }
+                        Err(e) => {
+                            log::warn!("Invalid glob pattern '{}': {}", pattern, e);
+                        }
+                    }
+                }
+                match builder.build() {
+                    Ok(matcher) => Some(matcher),
+                    Err(e) => {
+                        log::warn!("Failed to build glob matcher: {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            // Build exclude matcher (if patterns specified)
+            let exclude_matcher = if !filter.exclude_patterns.is_empty() {
+                let mut builder = GlobSetBuilder::new();
+                for pattern in &filter.exclude_patterns {
+                    // Normalize pattern to ensure LLM-generated patterns work correctly
+                    let normalized = Self::normalize_glob_pattern(pattern);
+                    match Glob::new(&normalized) {
+                        Ok(glob) => {
+                            builder.add(glob);
+                        }
+                        Err(e) => {
+                            log::warn!("Invalid exclude pattern '{}': {}", pattern, e);
+                        }
+                    }
+                }
+                match builder.build() {
+                    Ok(matcher) => Some(matcher),
+                    Err(e) => {
+                        log::warn!("Failed to build exclude matcher: {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            // Apply filters
+            let before_count = results.len();
+            results.retain(|r| {
+                // If include patterns specified, path must match at least one
+                let included = if let Some(ref matcher) = include_matcher {
+                    matcher.is_match(&r.path)
+                } else {
+                    true // No include patterns = include all
+                };
+
+                // If exclude patterns specified, path must NOT match any
+                let excluded = if let Some(ref matcher) = exclude_matcher {
+                    matcher.is_match(&r.path)
+                } else {
+                    false // No exclude patterns = exclude none
+                };
+
+                included && !excluded
+            });
+            log::debug!(
+                "Glob filter: reduced {} candidates to {} candidates",
+                before_count,
+                results.len()
+            );
+        }
+
         // Check timeout after Phase 1
         if let Some(timeout_duration) = timeout {
             if start_time.elapsed() > timeout_duration {
@@ -452,10 +536,9 @@ impl QueryEngine {
             results = self.enrich_with_symbols(results, pattern, &filter)?;
         }
 
-        // PHASE 3: Apply filters
-        if let Some(lang) = filter.language {
-            results.retain(|r| r.lang == lang);
-        }
+        // PHASE 3: Apply post-enrichment filters
+        // Note: Language and glob filters are applied in Phase 1 (before broad query check)
+        // Only kind, file_pattern, and exact filters are applied here
 
         // Apply kind filter (only relevant for symbol searches)
         // Special case: --kind function also includes methods (methods are functions in classes)
@@ -473,82 +556,6 @@ impl QueryEngine {
         // Apply file path filter (substring match)
         if let Some(ref file_pattern) = filter.file_pattern {
             results.retain(|r| r.path.contains(file_pattern));
-        }
-
-        // Apply glob pattern filters
-        if !filter.glob_patterns.is_empty() || !filter.exclude_patterns.is_empty() {
-            use globset::{Glob, GlobSetBuilder};
-
-            // Build include matcher (if patterns specified)
-            let include_matcher = if !filter.glob_patterns.is_empty() {
-                let mut builder = GlobSetBuilder::new();
-                for pattern in &filter.glob_patterns {
-                    // Normalize pattern to ensure LLM-generated patterns work correctly
-                    let normalized = Self::normalize_glob_pattern(pattern);
-                    match Glob::new(&normalized) {
-                        Ok(glob) => {
-                            builder.add(glob);
-                        }
-                        Err(e) => {
-                            log::warn!("Invalid glob pattern '{}': {}", pattern, e);
-                        }
-                    }
-                }
-                match builder.build() {
-                    Ok(matcher) => Some(matcher),
-                    Err(e) => {
-                        log::warn!("Failed to build glob matcher: {}", e);
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-
-            // Build exclude matcher (if patterns specified)
-            let exclude_matcher = if !filter.exclude_patterns.is_empty() {
-                let mut builder = GlobSetBuilder::new();
-                for pattern in &filter.exclude_patterns {
-                    // Normalize pattern to ensure LLM-generated patterns work correctly
-                    let normalized = Self::normalize_glob_pattern(pattern);
-                    match Glob::new(&normalized) {
-                        Ok(glob) => {
-                            builder.add(glob);
-                        }
-                        Err(e) => {
-                            log::warn!("Invalid exclude pattern '{}': {}", pattern, e);
-                        }
-                    }
-                }
-                match builder.build() {
-                    Ok(matcher) => Some(matcher),
-                    Err(e) => {
-                        log::warn!("Failed to build exclude matcher: {}", e);
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-
-            // Apply filters
-            results.retain(|r| {
-                // If include patterns specified, path must match at least one
-                let included = if let Some(ref matcher) = include_matcher {
-                    matcher.is_match(&r.path)
-                } else {
-                    true // No include patterns = include all
-                };
-
-                // If exclude patterns specified, path must NOT match any
-                let excluded = if let Some(ref matcher) = exclude_matcher {
-                    matcher.is_match(&r.path)
-                } else {
-                    false // No exclude patterns = exclude none
-                };
-
-                included && !excluded
-            });
         }
 
         // Apply exact name filter (only for symbol searches)

@@ -2479,3 +2479,60 @@ fn test_broad_query_language_filter_applied_before_check() {
     // (Without the fix, this would error with "Query too broad - 60,400 files")
     assert!(results.len() > 0, "Should find at least one symbol matching 'index' in Rust files");
 }
+
+#[test]
+fn test_broad_query_glob_filter_applied_before_check() {
+    // Regression test for: Glob filter should be applied BEFORE broad query check
+    // Previously, the broad query check used the unfiltered candidate count,
+    // causing queries like `rfx query "index" --symbols --glob "src/**/*.rs"` to fail
+    // even when the glob-filtered result set was small.
+
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create many files in different directories containing "index"
+    // 60,000+ files would trigger broad query check (threshold is 50,000)
+
+    // Create files in build/ directory (should be excluded by glob)
+    fs::create_dir(project.join("build")).unwrap();
+    for i in 0..60_000 {
+        fs::write(
+            project.join(format!("build/file{}.rs", i)),
+            "fn index_lookup() -> usize { 0 }"
+        ).unwrap();
+    }
+
+    // Create a small number of files in src/ directory (should be included by glob)
+    fs::create_dir(project.join("src")).unwrap();
+    for i in 0..200 {
+        fs::write(
+            project.join(format!("src/file{}.rs", i)),
+            "fn index_lookup() -> usize { 0 }"
+        ).unwrap();
+    }
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Query with --glob "src/**/*.rs" --symbols
+    // The glob filter should reduce 60,200 candidates to 200 src files
+    // BEFORE the broad query check, so this should succeed
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        glob_patterns: vec!["src/**/*.rs".to_string()],
+        use_contains: true,  // Match "index" within "index_lookup"
+        force: false,  // Should succeed WITHOUT force
+        ..Default::default()
+    };
+    let result = engine.search("index", filter);
+
+    // The key assertion is that the query SUCCEEDED without --force
+    // This proves glob filter was applied BEFORE broad query check
+    // (Without the fix, this would error with "Query too broad - 60,200 files")
+    assert!(result.is_ok(), "Query should succeed when glob filter reduces candidate set below threshold. \
+                             Without the fix, this would error: 'Query too broad - would be expensive to execute'");
+}
