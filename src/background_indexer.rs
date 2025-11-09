@@ -5,10 +5,12 @@
 //! `rfx index`, allowing users to continue working while symbols are being indexed.
 
 use anyhow::{Context, Result};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::cache::CacheManager;
@@ -93,7 +95,7 @@ impl BackgroundIndexer {
                 completed_at: None,
                 error: None,
             },
-            batch_size: 100, // Batch symbol writes for performance
+            batch_size: 500, // Batch symbol writes for performance (increased for better throughput)
         })
     }
 
@@ -216,9 +218,25 @@ impl BackgroundIndexer {
         result
     }
 
-    /// Internal indexing implementation
+    /// Internal indexing implementation with parallel processing
     fn run_internal(&mut self) -> Result<()> {
         log::info!("Starting background symbol indexing");
+
+        // Calculate thread pool size (25-30% of available CPUs)
+        let num_cpus = num_cpus::get();
+        let num_threads = ((num_cpus as f32 * 0.275).ceil() as usize).max(1);
+
+        log::info!(
+            "Using {} threads for background indexing ({} CPUs available, ~27.5% utilization)",
+            num_threads,
+            num_cpus
+        );
+
+        // Create custom thread pool with limited threads
+        let thread_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build()
+            .context("Failed to create thread pool")?;
 
         // Open cache manager and symbol cache
         let cache_mgr = CacheManager::new(&self.workspace_path);
@@ -239,68 +257,88 @@ impl BackgroundIndexer {
         // Write initial status
         self.write_status()?;
 
-        // Process files in batches for efficient cache writes
-        let mut batch = Vec::new();
-        let mut update_counter = 0;
+        // Shared state for status tracking
+        let status_mutex = Arc::new(Mutex::new((0usize, 0usize, 0usize))); // (cached, parsed, failed)
 
-        for file in &files {
-            let path = &file.path;
+        // Process files in batches
+        let batch_size = self.batch_size;
+        let mut processed = 0;
 
-            // Get file hash for cache key
-            let file_hash = match file_hashes.get(path) {
-                Some(hash) => hash,
-                None => {
-                    log::warn!("No hash found for file: {}", path);
-                    self.status.failed_files += 1;
-                    self.status.processed_files += 1;
-                    continue;
-                }
-            };
+        for chunk in files.chunks(batch_size) {
+            // Filter out cached files (sequential check is fast)
+            let files_to_parse: Vec<_> = chunk
+                .iter()
+                .filter_map(|file| {
+                    let path = &file.path;
+                    let file_hash = file_hashes.get(path)?;
 
-            // Check if symbols are already cached
-            if let Ok(Some(_)) = symbol_cache.get(path, file_hash) {
-                self.status.cached_files += 1;
-                self.status.processed_files += 1;
-                continue;
-            }
-
-            // Parse symbols from file
-            match self.parse_symbols(path, &file.language) {
-                Ok(symbols) => {
-                    batch.push((path.clone(), file_hash.clone(), symbols));
-                    self.status.parsed_files += 1;
-
-                    // Write batch when it reaches batch_size
-                    if batch.len() >= self.batch_size {
-                        if let Err(e) = symbol_cache.batch_set(&batch) {
-                            log::error!("Failed to write symbol batch: {}", e);
-                            self.status.failed_files += batch.len();
-                        }
-                        batch.clear();
+                    // Check if already cached
+                    if symbol_cache.get(path, file_hash).ok().flatten().is_some() {
+                        // Update cached count
+                        let mut status = status_mutex.lock().unwrap();
+                        status.0 += 1;
+                        None
+                    } else {
+                        Some((path.clone(), file_hash.clone(), file.language.clone()))
                     }
-                }
-                Err(e) => {
-                    log::warn!("Failed to parse symbols from {}: {}", path, e);
-                    self.status.failed_files += 1;
+                })
+                .collect();
+
+            // Parse files in parallel using custom thread pool
+            let parsed_results: Vec<_> = thread_pool.install(|| {
+                files_to_parse
+                    .par_iter()
+                    .map(|(path, file_hash, _language)| {
+                        match self.parse_symbols(path, _language) {
+                            Ok(symbols) => {
+                                // Update parsed count
+                                let mut status = status_mutex.lock().unwrap();
+                                status.1 += 1;
+                                Some((path.clone(), file_hash.clone(), symbols))
+                            }
+                            Err(e) => {
+                                log::warn!("Failed to parse symbols from {}: {}", path, e);
+                                // Update failed count
+                                let mut status = status_mutex.lock().unwrap();
+                                status.2 += 1;
+                                None
+                            }
+                        }
+                    })
+                    .flatten()
+                    .collect()
+            });
+
+            // Write batch to cache (sequential - SQLite limitation)
+            if !parsed_results.is_empty() {
+                if let Err(e) = symbol_cache.batch_set(&parsed_results) {
+                    log::error!("Failed to write symbol batch: {}", e);
+                    let mut status = status_mutex.lock().unwrap();
+                    status.2 += parsed_results.len();
                 }
             }
 
-            self.status.processed_files += 1;
-            update_counter += 1;
+            // Update status counters
+            processed += chunk.len();
+            {
+                let status = status_mutex.lock().unwrap();
+                self.status.cached_files = status.0;
+                self.status.parsed_files = status.1;
+                self.status.failed_files = status.2;
+                self.status.processed_files = processed;
+            }
 
-            // Write status every 50 files for progress tracking
-            if update_counter % 50 == 0 {
+            // Write status every batch
+            if processed % 500 < batch_size {
                 if let Err(e) = self.write_status() {
                     log::warn!("Failed to write status: {}", e);
                 }
             }
         }
 
-        // Write remaining batch
-        if !batch.is_empty() {
-            symbol_cache.batch_set(&batch)
-                .context("Failed to write final symbol batch")?;
-        }
+        // Final status update
+        self.status.processed_files = files.len();
+        self.write_status()?;
 
         // Cleanup stale entries
         let removed = symbol_cache.cleanup_stale()
