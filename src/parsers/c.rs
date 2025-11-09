@@ -38,6 +38,7 @@ pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
     symbols.extend(extract_unions(source, &root_node, &language.into())?);
     symbols.extend(extract_typedefs(source, &root_node, &language.into())?);
     symbols.extend(extract_variables(source, &root_node, &language.into())?);
+    symbols.extend(extract_macros(source, &root_node, &language.into())?);
 
     // Add file path to all symbols
     for symbol in &mut symbols {
@@ -193,6 +194,26 @@ fn extract_variables(
     }
 
     Ok(symbols)
+}
+
+/// Extract macro definitions (#define)
+fn extract_macros(
+    source: &str,
+    root: &tree_sitter::Node,
+    language: &tree_sitter::Language,
+) -> Result<Vec<SearchResult>> {
+    let query_str = r#"
+        (preproc_def
+            name: (identifier) @name) @macro
+
+        (preproc_function_def
+            name: (identifier) @name) @macro
+    "#;
+
+    let query = Query::new(language, query_str)
+        .context("Failed to create macro query")?;
+
+    extract_symbols(source, root, &query, SymbolKind::Macro, None)
 }
 
 /// Generic symbol extraction helper
@@ -422,15 +443,23 @@ struct Node {
 
         let symbols = parse("test.c", source).unwrap();
 
-        // Should find: typedef, enum, variable, function, struct
-        assert!(symbols.len() >= 5);
+        // Should find: macro, typedef, enum, variable, function, struct
+        assert!(symbols.len() >= 6);
 
         let kinds: Vec<&SymbolKind> = symbols.iter().map(|s| &s.kind).collect();
+        assert!(kinds.contains(&&SymbolKind::Macro));
         assert!(kinds.contains(&&SymbolKind::Type));
         assert!(kinds.contains(&&SymbolKind::Enum));
         assert!(kinds.contains(&&SymbolKind::Variable));
         assert!(kinds.contains(&&SymbolKind::Function));
         assert!(kinds.contains(&&SymbolKind::Struct));
+
+        // Verify the macro symbol is found
+        let macro_symbols: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Macro))
+            .collect();
+        assert_eq!(macro_symbols.len(), 1);
+        assert_eq!(macro_symbols[0].symbol.as_deref(), Some("MAX_SIZE"));
     }
 
     #[test]
@@ -470,5 +499,30 @@ int calculate(int x) {
         assert_eq!(var_symbols.len(), 2);
         assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("global_var")));
         assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("local_var")));
+    }
+
+    #[test]
+    fn test_parse_macros() {
+        let source = r#"
+#define MAX_SIZE 100
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define DEBUG_PRINT(x) printf("Debug: %s\n", x)
+
+int main() {
+    return 0;
+}
+        "#;
+
+        let symbols = parse("test.c", source).unwrap();
+
+        let macro_symbols: Vec<_> = symbols.iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Macro))
+            .collect();
+
+        // Should find all three macros
+        assert_eq!(macro_symbols.len(), 3);
+        assert!(macro_symbols.iter().any(|s| s.symbol.as_deref() == Some("MAX_SIZE")));
+        assert!(macro_symbols.iter().any(|s| s.symbol.as_deref() == Some("MIN")));
+        assert!(macro_symbols.iter().any(|s| s.symbol.as_deref() == Some("DEBUG_PRINT")));
     }
 }
