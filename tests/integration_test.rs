@@ -2065,9 +2065,10 @@ fn test_broad_query_ast_without_glob_blocked() {
     let temp = TempDir::new().unwrap();
     let project = temp.path();
 
-    // Create files
-    fs::write(project.join("test1.rs"), "fn func1() {}").unwrap();
-    fs::write(project.join("test2.rs"), "fn func2() {}").unwrap();
+    // Create 100+ files to trigger the threshold
+    for i in 0..105 {
+        fs::write(project.join(format!("test{}.rs", i)), "fn func() {}").unwrap();
+    }
 
     // Index
     let cache = CacheManager::new(project);
@@ -2253,7 +2254,10 @@ fn test_broad_query_error_message_ast_without_glob() {
     let temp = TempDir::new().unwrap();
     let project = temp.path();
 
-    fs::write(project.join("main.rs"), "fn test() {}").unwrap();
+    // Create 100+ files to trigger the threshold
+    for i in 0..105 {
+        fs::write(project.join(format!("test{}.rs", i)), "fn test() {}").unwrap();
+    }
 
     let cache = CacheManager::new(project);
     let indexer = Indexer::new(cache, IndexConfig::default());
@@ -2286,10 +2290,10 @@ fn test_broad_query_with_exclude_still_requires_glob_for_ast() {
     let temp = TempDir::new().unwrap();
     let project = temp.path();
 
-    fs::create_dir_all(project.join("src")).unwrap();
-    fs::create_dir_all(project.join("target")).unwrap();
-    fs::write(project.join("src/main.rs"), "fn main() {}").unwrap();
-    fs::write(project.join("target/build.rs"), "fn build() {}").unwrap();
+    // Create 100+ files to trigger the threshold
+    for i in 0..105 {
+        fs::write(project.join(format!("test{}.rs", i)), "fn func() {}").unwrap();
+    }
 
     let cache = CacheManager::new(project);
     let indexer = Indexer::new(cache, IndexConfig::default());
@@ -2313,4 +2317,108 @@ fn test_broad_query_with_exclude_still_requires_glob_for_ast() {
     let error_msg = result.unwrap_err().to_string();
     assert!(error_msg.contains("Query too broad"));
     assert!(error_msg.contains("AST query without --glob"));
+}
+
+#[test]
+fn test_broad_query_large_index_short_pattern_early_check() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create 20,001+ files to trigger the LARGE_INDEX_THRESHOLD (20,000)
+    for i in 0..20_050 {
+        fs::write(project.join(format!("file{}.rs", i)), "fn get_data() {}").unwrap();
+    }
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Query with short pattern (3 chars - valid trigram but < 4 char threshold)
+    // This should be blocked by the EARLY check (before trigram search)
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        force: false,  // Not forcing
+        ..Default::default()
+    };
+    let result = engine.search("get", filter);
+
+    // Should fail with early broad query detection error
+    assert!(result.is_err());
+    let error_msg = result.unwrap_err().to_string();
+    assert!(error_msg.contains("Query too broad"));
+    assert!(error_msg.contains("large index"));
+    assert!(error_msg.contains("20050 files"));  // Should mention the file count
+    assert!(error_msg.contains("3 characters"));  // Should mention pattern length
+    assert!(error_msg.contains("--force"));
+}
+
+#[test]
+fn test_broad_query_large_index_force_bypass() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create 20,001+ files
+    for i in 0..20_050 {
+        if i == 0 {
+            // First file contains the pattern
+            fs::write(project.join(format!("file{}.rs", i)), "fn get_data() {}").unwrap();
+        } else {
+            // Other files don't contain it
+            fs::write(project.join(format!("file{}.rs", i)), "fn process() {}").unwrap();
+        }
+    }
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Query with short pattern BUT with force=true
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        force: true,  // Force bypass
+        use_contains: true,  // Enable substring matching (default is word-boundary)
+        ..Default::default()
+    };
+    let result = engine.search("get", filter);
+
+    // Should succeed (bypass the early check)
+    assert!(result.is_ok());
+    let results = result.unwrap();
+    assert!(results.len() >= 1);  // Should find "get" in "get_data"
+}
+
+#[test]
+fn test_broad_query_small_index_short_pattern_allowed() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create only 100 files (well below LARGE_INDEX_THRESHOLD)
+    for i in 0..100 {
+        fs::write(project.join(format!("file{}.rs", i)), "fn get_data() {}").unwrap();
+    }
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Query with same short pattern (3 chars)
+    // Should be ALLOWED because index is small
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        force: false,  // Not forcing
+        use_contains: true,  // Enable substring matching (default is word-boundary)
+        ..Default::default()
+    };
+    let result = engine.search("get", filter);
+
+    // Should succeed (small index allows short patterns)
+    assert!(result.is_ok());
+    let results = result.unwrap();
+    assert!(results.len() >= 1);
 }

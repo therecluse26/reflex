@@ -312,7 +312,10 @@ fn test_fulltext_search_across_all_files() {
 fn test_fulltext_unicode_search() {
     setup_corpus();
 
-    let filter = QueryFilter::default();
+    let filter = QueryFilter {
+        force: true,  // Unicode pattern is short, bypass broad query detection
+        ..Default::default()
+    };
     let results = query_corpus("你好", filter);
 
     assert_result_count_at_least(&results, 1);
@@ -323,7 +326,10 @@ fn test_fulltext_unicode_search() {
 fn test_fulltext_emoji_search() {
     setup_corpus();
 
-    let filter = QueryFilter::default();
+    let filter = QueryFilter {
+        force: true,  // Emoji pattern is short, bypass broad query detection
+        ..Default::default()
+    };
     let results = query_corpus("🚀", filter);
 
     assert_result_count_at_least(&results, 1);
