@@ -62,10 +62,12 @@ jobs:
       - name: Update Homebrew formula
         uses: dawidd6/action-homebrew-bump-formula@v3
         with:
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          token: ${{ secrets.HOMEBREW_GITHUB_API_TOKEN }}
           formula: reflex
           tap: reflex-search/homebrew-tap
           tag: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.HOMEBREW_GITHUB_API_TOKEN }}
 
   update-aur:
     name: Update AUR Package

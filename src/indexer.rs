@@ -16,6 +16,7 @@ use std::time::Instant;
 use crate::cache::CacheManager;
 use crate::content_store::ContentWriter;
 use crate::models::{IndexConfig, IndexStats, Language};
+use crate::output;
 use crate::trigram::TrigramIndex;
 
 /// Progress callback type: (current_file_count, total_file_count, status_message)
@@ -100,9 +101,9 @@ impl Indexer {
         // Check available disk space after cache is initialized
         self.check_disk_space(root)?;
 
-        // Load existing hashes for incremental indexing
-        let existing_hashes = self.cache.load_hashes()?;
-        log::debug!("Loaded {} existing file hashes", existing_hashes.len());
+        // Load existing hashes for incremental indexing (for current branch)
+        let existing_hashes = self.cache.load_hashes_for_branch(&branch)?;
+        log::debug!("Loaded {} existing file hashes for branch '{}'", existing_hashes.len(), branch);
 
         // Step 1: Walk directory tree and collect files
         let files = self.discover_files(root)?;
@@ -349,12 +350,14 @@ impl Indexer {
             pb.set_message("Writing file metadata to database...".to_string());
         }
 
-        // Batch write all file metadata to SQLite in one transaction
+        // Batch write file metadata AND branch hashes in a SINGLE atomic transaction
+        // This ensures that if files are inserted, their hashes are guaranteed to be inserted too
         if !file_metadata.is_empty() {
-            self.cache.batch_update_files(&file_metadata)
-                .context("Failed to batch update file metadata")?;
-            log::info!("Wrote metadata for {} files to database", file_metadata.len());
-        }
+            // Prepare files data (path, language, line_count)
+            let files_without_hash: Vec<(String, String, usize)> = file_metadata
+                .iter()
+                .map(|(path, _hash, lang, lines)| (path.clone(), lang.clone(), *lines))
+                .collect();
 
         // Record files for this branch (for branch-aware indexing)
         *progress_status.lock().unwrap() = "Recording branch files...".to_string();
@@ -362,19 +365,21 @@ impl Indexer {
             pb.set_message("Recording branch files...".to_string());
         }
 
-        // Prepare data for batch recording
-        let branch_files: Vec<(String, String)> = file_metadata
-            .iter()
-            .map(|(path, hash, _, _)| (path.clone(), hash.clone()))
-            .collect();
+            // Prepare branch files data (path, hash)
+            let branch_files: Vec<(String, String)> = file_metadata
+                .iter()
+                .map(|(path, hash, _, _)| (path.clone(), hash.clone()))
+                .collect();
 
-        // Batch record all files in a single transaction
-        if !branch_files.is_empty() {
-            self.cache.batch_record_branch_files(
+            // Use atomic method that combines both operations
+            self.cache.batch_update_files_and_branch(
+                &files_without_hash,
                 &branch_files,
                 &branch,
                 git_state.as_ref().map(|s| s.commit.as_str()),
-            )?;
+            ).context("Failed to batch update files and branch hashes")?;
+
+            log::info!("Wrote metadata and hashes for {} files to database", file_metadata.len());
         }
 
         // Update branch metadata
@@ -536,7 +541,7 @@ impl Indexer {
                                         // Warn if less than 100MB available
                                         if available_mb < 100 {
                                             log::warn!("Low disk space: only {}MB available. Indexing may fail.", available_mb);
-                                            eprintln!("Warning: Low disk space ({}MB available). Consider freeing up space.", available_mb);
+                                            output::warn(&format!("Low disk space ({}MB available). Consider freeing up space.", available_mb));
                                         } else {
                                             log::debug!("Available disk space: {}MB", available_mb);
                                         }

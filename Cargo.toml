@@ -1,11 +1,12 @@
 [package]
 name = "reflex-search"
-version = "0.4.2"
+version = "0.5.1"
 edition = "2024"
 authors = ["Reflex Contributors"]
 description = "A local-first, structure-aware code search engine for AI agents"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/reflex-search/reflex"
+homepage = "https://github.com/reflex-search/reflex"
 readme = "README.md"
 
 [dependencies]
@@ -60,6 +61,7 @@ env_logger = "0.11"
 
 # Parallel processing
 rayon = "1.10"
+num_cpus = "1.16"
 
 # Regex
 regex = "1.10"
@@ -79,6 +81,9 @@ globset = "0.4"
 # Date/time utilities
 chrono = "0.4"
 dirs = "5.0"
+
+# Lock and cleanup utilities
+scopeguard = "1.2"
 
 # Progress bar
 indicatif = "0.17"

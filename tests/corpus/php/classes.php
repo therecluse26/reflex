@@ -89,3 +89,65 @@ class Counter {
         return $this->count;
     }
 }
+
+// Edge case: Class implementing multiple interfaces
+interface Authenticatable {
+    public function authenticate(): bool;
+}
+
+interface HasPermissions {
+    public function hasPermission(string $permission): bool;
+}
+
+interface JWTSubject {
+    public function getJWTIdentifier();
+}
+
+class AdminUser implements Authenticatable, HasPermissions {
+    private string $username;
+
+    public function __construct(string $username) {
+        $this->username = $username;
+    }
+
+    public function authenticate(): bool {
+        return true;
+    }
+
+    public function hasPermission(string $permission): bool {
+        return true;
+    }
+}
+
+/**
+ * Complex edge case: Class with large docblock, extends base class, implements multiple interfaces
+ *
+ * @property string $name
+ * @property string $email
+ * @property-read int $id
+ * @property-read string $created_at
+ * @property-read Collection|Role[] $roles
+ * @property-read Collection|Permission[] $permissions
+ * @property-read Workflow $workflow
+ * @property-read Collection|NotificationSetting[] $notificationSettings
+ * @property-read Collection|Watch[] $watches
+ *
+ **/
+class ComplexUser extends AdminUser implements HasPermissions, JWTSubject
+{
+    private string $email;
+    private int $userId;
+
+    public function __construct(string $username, string $email) {
+        parent::__construct($username);
+        $this->email = $email;
+    }
+
+    public function hasPermission(string $permission): bool {
+        return parent::hasPermission($permission);
+    }
+
+    public function getJWTIdentifier() {
+        return $this->userId;
+    }
+}

@@ -649,6 +649,8 @@ impl InteractiveApp {
             exclude_patterns: Vec::new(),
             paths_only: false,
             offset: None,
+            force: false,
+            suppress_output: false,
         };
 
         // Spawn background thread for search

@@ -67,7 +67,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     let spacing = " ".repeat(spaces_needed);
 
     // Build complete title line
-    let mut title_spans = vec![
+    let title_spans = vec![
         Span::raw(title_left),
         Span::raw(spacing),
         Span::styled(
@@ -489,6 +489,11 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
         return;
     }
 
+    // Clear the background first to prevent rendering artifacts
+    let clear_block = Block::default()
+        .style(Style::default().bg(Color::Black));
+    f.render_widget(clear_block, area);
+
     // Render result list
     let items: Vec<ListItem> = results
         .visible_results((area.height.saturating_sub(2)) as usize)
@@ -608,6 +613,11 @@ fn render_file_preview(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     let palette = &app.theme().palette;
 
     if let Some(preview) = app.preview_content() {
+        // Clear the background first to prevent rendering artifacts
+        let clear_block = Block::default()
+            .style(Style::default().bg(Color::Black));
+        f.render_widget(clear_block, area);
+
         let visible_height = area.height.saturating_sub(2) as usize;
         let start = preview.scroll_offset();
         let center = preview.center_line();
@@ -638,12 +648,13 @@ fn render_file_preview(f: &mut Frame, area: Rect, app: &InteractiveApp) {
             .collect();
 
         let title = format!(" {} (line {}) ", preview.path(), center);
-        let list = List::new(items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .border_style(Style::default().fg(palette.accent)),
-        );
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(Style::default().fg(palette.accent)),
+            );
 
         f.render_widget(list, area);
     }

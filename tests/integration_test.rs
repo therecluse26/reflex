@@ -1410,8 +1410,8 @@ fn test_keyword_php_class() {
     };
     let results = engine.search("class", filter).unwrap();
 
-    // Should find 7 classes (per corpus file documentation)
-    assert_eq!(results.len(), 7);
+    // Should find 9 classes (Point, Person, Employee, Shape, Rectangle, Utils, Counter, AdminUser, ComplexUser)
+    assert_eq!(results.len(), 9);
     assert!(results.iter().all(|r| r.kind == SymbolKind::Class));
 }
 
@@ -1994,4 +1994,545 @@ fn test_keyword_multi_language_function_synonyms() {
     let results_go = engine.search("func", filter_go).unwrap();
     assert_eq!(results_go.len(), 1);
     assert!(results_go[0].path.ends_with(".go"));
+}
+
+// ==================== Broad Query Detection Tests ====================
+//
+// These tests verify that broad query detection prevents expensive queries
+// and allows bypassing with the --force flag.
+
+#[test]
+fn test_broad_query_short_pattern_blocked() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create a file
+    fs::write(project.join("main.rs"), "fn test() {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Query with short pattern (< 3 chars)
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        force: false,  // Not forcing
+        ..Default::default()
+    };
+    let result = engine.search("ab", filter);
+
+    // Should fail with broad query detection error
+    assert!(result.is_err());
+    let error_msg = result.unwrap_err().to_string();
+    assert!(error_msg.contains("Query too broad"));
+    assert!(error_msg.contains("too short"));
+    assert!(error_msg.contains("--force"));
+}
+
+#[test]
+fn test_broad_query_short_pattern_bypass_with_force() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create a file with matching pattern
+    fs::write(project.join("main.rs"), "let abc = 42;").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Query with short pattern BUT with force=true
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        force: true,  // Force bypass
+        ..Default::default()
+    };
+    let result = engine.search("ab", filter);
+
+    // Should succeed (bypass the check), even though trigram index can't find < 3 char patterns
+    // The query won't error out with "Query too broad", it will just return 0 results
+    assert!(result.is_ok());
+    // Note: results may be empty because trigram index requires >= 3 chars
+    // The important thing is that it didn't fail with a "Query too broad" error
+}
+
+#[test]
+fn test_broad_query_ast_without_glob_blocked() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create 100+ files to trigger the threshold
+    for i in 0..105 {
+        fs::write(project.join(format!("test{}.rs", i)), "fn func() {}").unwrap();
+    }
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // AST query without glob patterns
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        language: Some(reflex::Language::Rust),
+        use_ast: true,
+        force: false,  // Not forcing
+        glob_patterns: vec![],  // No glob!
+        ..Default::default()
+    };
+    let result = engine.search_ast_all_files("(function_item) @fn", filter);
+
+    // Should fail with broad query detection error
+    assert!(result.is_err());
+    let error_msg = result.unwrap_err().to_string();
+    assert!(error_msg.contains("Query too broad"));
+    assert!(error_msg.contains("AST query without --glob"));
+    assert!(error_msg.contains("--force"));
+}
+
+#[test]
+fn test_broad_query_ast_without_glob_bypass_with_force() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create files
+    fs::write(project.join("test.rs"), "fn func() {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // AST query without glob BUT with force=true
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        language: Some(reflex::Language::Rust),
+        use_ast: true,
+        force: true,  // Force bypass
+        glob_patterns: vec![],  // No glob, but forced
+        ..Default::default()
+    };
+    let result = engine.search_ast_all_files("(function_item) @fn", filter);
+
+    // Should succeed
+    assert!(result.is_ok());
+    let results = result.unwrap();
+    assert_eq!(results.len(), 1);
+}
+
+#[test]
+fn test_broad_query_ast_with_glob_allowed() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create files in different directories
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("tests")).unwrap();
+    fs::write(project.join("src/main.rs"), "fn main() {}").unwrap();
+    fs::write(project.join("tests/test.rs"), "fn test() {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // AST query WITH glob patterns (should be allowed)
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        language: Some(reflex::Language::Rust),
+        use_ast: true,
+        force: false,  // Not forcing, but has glob
+        glob_patterns: vec!["**/src/**/*.rs".to_string()],  // Glob provided
+        ..Default::default()
+    };
+    let result = engine.search_ast_all_files("(function_item) @fn", filter);
+
+    // Should succeed (glob pattern restricts scope)
+    assert!(result.is_ok());
+    let results = result.unwrap();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].path.contains("src/main.rs"));
+}
+
+#[test]
+fn test_broad_query_long_pattern_allowed() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create file
+    fs::write(project.join("main.rs"), "fn extract_symbols() {}").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Query with long pattern (>= 3 chars)
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        force: false,  // Not forcing
+        use_contains: true,  // "extract" in "extract_symbols"
+        ..Default::default()
+    };
+    let result = engine.search("extract", filter);
+
+    // Should succeed (pattern is long enough)
+    assert!(result.is_ok());
+    let results = result.unwrap();
+    assert!(results.len() >= 1);
+}
+
+#[test]
+fn test_broad_query_regex_short_pattern_allowed() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create file
+    fs::write(project.join("main.rs"), "let ab = 42; let abc = 43;").unwrap();
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Regex query with short pattern (regex bypass short pattern check)
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        use_regex: true,
+        force: false,  // Not forcing
+        ..Default::default()
+    };
+    let result = engine.search("ab", filter);
+
+    // Should succeed (regex mode bypasses short pattern check)
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_broad_query_error_message_short_pattern() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    fs::write(project.join("main.rs"), "fn test() {}").unwrap();
+
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        force: false,
+        ..Default::default()
+    };
+    let result = engine.search("ab", filter);
+
+    // Verify error message content
+    assert!(result.is_err());
+    let error_msg = result.unwrap_err().to_string();
+    assert!(error_msg.contains("Query too broad"));
+    assert!(error_msg.contains("too short"));
+    assert!(error_msg.contains("2 characters"));
+    assert!(error_msg.contains("Use a longer, more specific pattern"));
+    assert!(error_msg.contains("Add a language filter: --lang"));
+    assert!(error_msg.contains("Add a file path filter: --file"));
+    assert!(error_msg.contains("Use --force to bypass this check"));
+    assert!(error_msg.contains("rfx query \"ab\" --force"));
+}
+
+#[test]
+fn test_broad_query_error_message_ast_without_glob() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create 100+ files to trigger the threshold
+    for i in 0..105 {
+        fs::write(project.join(format!("test{}.rs", i)), "fn test() {}").unwrap();
+    }
+
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        language: Some(reflex::Language::Rust),
+        use_ast: true,
+        force: false,
+        glob_patterns: vec![],
+        ..Default::default()
+    };
+    let result = engine.search_ast_all_files("(function_item) @fn", filter);
+
+    // Verify error message content
+    assert!(result.is_err());
+    let error_msg = result.unwrap_err().to_string();
+    assert!(error_msg.contains("Query too broad"));
+    assert!(error_msg.contains("AST query without --glob"));
+    assert!(error_msg.contains("scan the ENTIRE codebase"));
+    assert!(error_msg.contains("Add --glob to restrict AST query"));
+    assert!(error_msg.contains("Use --symbols instead"));
+    assert!(error_msg.contains("Use --force to bypass this check"));
+}
+
+#[test]
+fn test_broad_query_with_exclude_still_requires_glob_for_ast() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create 100+ files to trigger the threshold
+    for i in 0..105 {
+        fs::write(project.join(format!("test{}.rs", i)), "fn func() {}").unwrap();
+    }
+
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // AST query with exclude but no glob (should still be blocked)
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        language: Some(reflex::Language::Rust),
+        use_ast: true,
+        force: false,
+        glob_patterns: vec![],  // No glob!
+        exclude_patterns: vec!["**/target/**".to_string()],  // Has exclude, but not enough
+        ..Default::default()
+    };
+    let result = engine.search_ast_all_files("(function_item) @fn", filter);
+
+    // Should still be blocked (exclude alone is not sufficient)
+    assert!(result.is_err());
+    let error_msg = result.unwrap_err().to_string();
+    assert!(error_msg.contains("Query too broad"));
+    assert!(error_msg.contains("AST query without --glob"));
+}
+
+#[test]
+fn test_broad_query_large_index_short_pattern_early_check() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create 20,001+ files to trigger the LARGE_INDEX_THRESHOLD (20,000)
+    for i in 0..20_050 {
+        fs::write(project.join(format!("file{}.rs", i)), "fn get_data() {}").unwrap();
+    }
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Query with short pattern (3 chars - valid trigram but < 4 char threshold)
+    // This should be blocked by the EARLY check (before trigram search)
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        force: false,  // Not forcing
+        ..Default::default()
+    };
+    let result = engine.search("get", filter);
+
+    // Should fail with early broad query detection error
+    assert!(result.is_err());
+    let error_msg = result.unwrap_err().to_string();
+    assert!(error_msg.contains("Query too broad"));
+    assert!(error_msg.contains("large index"));
+    assert!(error_msg.contains("20050 files"));  // Should mention the file count
+    assert!(error_msg.contains("3 characters"));  // Should mention pattern length
+    assert!(error_msg.contains("--force"));
+}
+
+#[test]
+fn test_broad_query_large_index_force_bypass() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create 20,001+ files
+    for i in 0..20_050 {
+        if i == 0 {
+            // First file contains the pattern
+            fs::write(project.join(format!("file{}.rs", i)), "fn get_data() {}").unwrap();
+        } else {
+            // Other files don't contain it
+            fs::write(project.join(format!("file{}.rs", i)), "fn process() {}").unwrap();
+        }
+    }
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Query with short pattern BUT with force=true
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        force: true,  // Force bypass
+        use_contains: true,  // Enable substring matching (default is word-boundary)
+        ..Default::default()
+    };
+    let result = engine.search("get", filter);
+
+    // Should succeed (bypass the early check)
+    assert!(result.is_ok());
+    let results = result.unwrap();
+    assert!(results.len() >= 1);  // Should find "get" in "get_data"
+}
+
+#[test]
+fn test_broad_query_small_index_short_pattern_allowed() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create only 100 files (well below LARGE_INDEX_THRESHOLD)
+    for i in 0..100 {
+        fs::write(project.join(format!("file{}.rs", i)), "fn get_data() {}").unwrap();
+    }
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Query with same short pattern (3 chars)
+    // Should be ALLOWED because index is small
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        force: false,  // Not forcing
+        use_contains: true,  // Enable substring matching (default is word-boundary)
+        ..Default::default()
+    };
+    let result = engine.search("get", filter);
+
+    // Should succeed (small index allows short patterns)
+    assert!(result.is_ok());
+    let results = result.unwrap();
+    assert!(results.len() >= 1);
+}
+
+#[test]
+fn test_broad_query_language_filter_applied_before_check() {
+    // Regression test for: Language filter should be applied BEFORE broad query check
+    // Previously, the broad query check used the unfiltered candidate count,
+    // causing queries like `rfx query "index" --lang rust --symbols` to fail
+    // even when the language-filtered result set was small.
+
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create many C files containing "index" (simulate Linux kernel scenario)
+    // 60,000+ files would trigger broad query check (threshold is 50,000)
+    for i in 0..60_100 {
+        fs::write(
+            project.join(format!("kernel{}.c", i)),
+            "int index_lookup(void) { return 0; }"
+        ).unwrap();
+    }
+
+    // Create a small number of Rust files containing "index"
+    // This should be well below the threshold (< 50,000)
+    for i in 0..300 {
+        fs::write(
+            project.join(format!("rust{}.rs", i)),
+            "fn index_lookup() -> usize { 0 }"
+        ).unwrap();
+    }
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Query with --lang rust --symbols
+    // The language filter should reduce 60,400 candidates to 300 Rust files
+    // BEFORE the broad query check, so this should succeed
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        language: Some(reflex::Language::Rust),
+        use_contains: true,  // Match "index" within "index_lookup"
+        force: false,  // Should succeed WITHOUT force
+        ..Default::default()
+    };
+    let result = engine.search("index", filter);
+
+    // Should succeed - language filter is applied BEFORE broad query check
+    assert!(result.is_ok(), "Query should succeed when language filter reduces candidate set below threshold");
+    let results = result.unwrap();
+
+    // The key assertion is that the query SUCCEEDED without --force
+    // This proves language filter was applied BEFORE broad query check
+    // (Without the fix, this would error with "Query too broad - 60,400 files")
+    assert!(results.len() > 0, "Should find at least one symbol matching 'index' in Rust files");
+}
+
+#[test]
+fn test_broad_query_glob_filter_applied_before_check() {
+    // Regression test for: Glob filter should be applied BEFORE broad query check
+    // Previously, the broad query check used the unfiltered candidate count,
+    // causing queries like `rfx query "index" --symbols --glob "src/**/*.rs"` to fail
+    // even when the glob-filtered result set was small.
+
+    let temp = TempDir::new().unwrap();
+    let project = temp.path();
+
+    // Create many files in different directories containing "index"
+    // 60,000+ files would trigger broad query check (threshold is 50,000)
+
+    // Create files in build/ directory (should be excluded by glob)
+    fs::create_dir(project.join("build")).unwrap();
+    for i in 0..60_000 {
+        fs::write(
+            project.join(format!("build/file{}.rs", i)),
+            "fn index_lookup() -> usize { 0 }"
+        ).unwrap();
+    }
+
+    // Create a small number of files in src/ directory (should be included by glob)
+    fs::create_dir(project.join("src")).unwrap();
+    for i in 0..200 {
+        fs::write(
+            project.join(format!("src/file{}.rs", i)),
+            "fn index_lookup() -> usize { 0 }"
+        ).unwrap();
+    }
+
+    // Index
+    let cache = CacheManager::new(project);
+    let indexer = Indexer::new(cache, IndexConfig::default());
+    indexer.index(project, false).unwrap();
+
+    // Query with --glob "src/**/*.rs" --symbols
+    // The glob filter should reduce 60,200 candidates to 200 src files
+    // BEFORE the broad query check, so this should succeed
+    let cache = CacheManager::new(project);
+    let engine = QueryEngine::new(cache);
+    let filter = QueryFilter {
+        symbols_mode: true,
+        glob_patterns: vec!["src/**/*.rs".to_string()],
+        use_contains: true,  // Match "index" within "index_lookup"
+        force: false,  // Should succeed WITHOUT force
+        ..Default::default()
+    };
+    let result = engine.search("index", filter);
+
+    // The key assertion is that the query SUCCEEDED without --force
+    // This proves glob filter was applied BEFORE broad query check
+    // (Without the fix, this would error with "Query too broad - 60,200 files")
+    assert!(result.is_ok(), "Query should succeed when glob filter reduces candidate set below threshold. \
+                             Without the fix, this would error: 'Query too broad - would be expensive to execute'");
 }

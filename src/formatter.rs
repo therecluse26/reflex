@@ -291,6 +291,9 @@ impl OutputFormatter {
             output.push_str(&escaped);
         }
 
+        // Reset colors to prevent bleeding into subsequent output
+        output.push_str("\x1b[0m");
+
         output
     }
 
