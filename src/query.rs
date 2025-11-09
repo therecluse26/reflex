@@ -49,6 +49,8 @@ pub struct QueryFilter {
     pub paths_only: bool,
     /// Pagination offset (skip first N results after sorting)
     pub offset: Option<usize>,
+    /// Force execution of potentially expensive queries (bypass broad query detection)
+    pub force: bool,
 }
 
 impl Default for QueryFilter {
@@ -69,6 +71,7 @@ impl Default for QueryFilter {
             exclude_patterns: Vec::new(),
             paths_only: false,
             offset: None,
+            force: false,  // Default: enable broad query detection
         }
     }
 }
@@ -201,6 +204,56 @@ impl QueryEngine {
             }
         }
 
+        // EARLY BROAD QUERY DETECTION (Index Size Check)
+        // This check happens BEFORE the expensive trigram search to prevent hangs on large indexes
+        // For very large codebases (like Linux kernel with 62K files), even valid 3-char trigrams
+        // like "get" can take 10-30+ seconds to search. This early check prevents that hang.
+        //
+        // Criteria for early blocking:
+        // 1. Large index (> 20,000 files) AND
+        // 2. Short pattern (< 4 chars) AND
+        // 3. Not using regex (regex has its own trigram extraction) AND
+        // 4. Not a keyword query (keywords are intentionally broad) AND
+        // 5. Not forced by --force flag
+        if !filter.force && !filter.use_regex && !is_keyword_query {
+            let stats = self.cache.stats()?;
+            let total_files = stats.total_files;
+            let pattern_len = pattern.chars().count();
+
+            // Thresholds for early blocking:
+            // - Large index: 20,000+ files (approximately where performance degrades significantly)
+            // - Short pattern: < 4 chars (3-char trigrams are borderline, < 4 catches edge cases)
+            const LARGE_INDEX_THRESHOLD: usize = 20_000;
+            const SHORT_PATTERN_THRESHOLD: usize = 4;
+
+            if total_files > LARGE_INDEX_THRESHOLD && pattern_len < SHORT_PATTERN_THRESHOLD {
+                anyhow::bail!(
+                    "Query too broad - would be expensive to execute on this large index\n\
+                     \n\
+                     This index contains {} files, and pattern '{}' ({} characters) is too short for efficient searching.\n\
+                     On large codebases, short patterns can take 10-30+ seconds to complete.\n\
+                     \n\
+                     This query could:\n\
+                     • Hang for an extended period before returning results\n\
+                     • Return thousands of results\n\
+                     • Flood LLM context windows with excessive data\n\
+                     \n\
+                     Suggestions to narrow the query:\n\
+                     • Use a longer, more specific pattern (4+ characters recommended for large indexes)\n\
+                     • Add a language filter: --lang <language>\n\
+                     • Add a file filter: --glob <pattern> or --file <path>\n\
+                     • Use --force to bypass this check if you really need all results\n\
+                     \n\
+                     To force execution anyway:\n\
+                     rfx query \"{}\" --force",
+                    total_files,
+                    pattern,
+                    pattern_len,
+                    pattern
+                );
+            }
+        }
+
         // PHASE 1: Get initial candidates (choose search strategy)
         let mut results = if is_keyword_query {
             // KEYWORD QUERY MODE: Scan all files (or files of target language if --lang specified)
@@ -220,29 +273,9 @@ impl QueryEngine {
             self.get_trigram_candidates(pattern, &filter)?
         };
 
-
-        // Check timeout after Phase 1
-        if let Some(timeout_duration) = timeout {
-            if start_time.elapsed() > timeout_duration {
-                anyhow::bail!(
-                    "Query timeout exceeded ({} seconds).\n\
-                     \n\
-                     The query took too long to complete. Try one of these approaches:\n\
-                     • Use a more specific search pattern (longer patterns = faster search)\n\
-                     • Add a language filter with --lang to narrow the search space\n\
-                     • Add a file filter with --file to search specific directories\n\
-                     • Increase the timeout with --timeout <seconds>\n\
-                     \n\
-                     Example: rfx query \"{}\" --lang rust --timeout 60",
-                    filter.timeout_secs,
-                    pattern
-                );
-            }
-        }
-
-        // EARLY LANGUAGE FILTER: Apply language filtering BEFORE early limiting
+        // EARLY LANGUAGE FILTER: Apply language filtering BEFORE broad query check
         // This ensures we only parse files matching the language filter in Phase 2
-        // Critical for non-keyword queries to work correctly
+        // Critical for non-keyword queries to work correctly with accurate candidate counts
         //
         // Skip for keyword queries - those candidates are already pre-filtered by language
         if !is_keyword_query {
@@ -258,60 +291,9 @@ impl QueryEngine {
             }
         }
 
-        // DETERMINISTIC SORTING: Sort candidates early for deterministic results
-        // This ensures results are always returned in the same order
-        if filter.symbols_mode || filter.kind.is_some() || filter.use_ast {
-            results.sort_by(|a, b| {
-                a.path.cmp(&b.path)
-                    .then_with(|| a.span.start_line.cmp(&b.span.start_line))
-            });
-
-            // Warn if many candidates need parsing (helps users refine queries)
-            let candidate_count = results.len();
-            if candidate_count > 1000 {
-                log::warn!(
-                    "Pattern '{}' matched {} files - parsing may take some time. Consider using --file, --glob, or a more specific pattern to narrow the search.",
-                    pattern,
-                    candidate_count
-                );
-            } else if candidate_count > 100 {
-                log::info!("Parsing {} candidate files for symbol extraction", candidate_count);
-            }
-        }
-
-        // PHASE 2: Enrich with symbol information or AST pattern matching (if needed)
-        if filter.use_ast {
-            // AST pattern matching: Execute Tree-sitter query on candidate files
-            results = self.enrich_with_ast(results, pattern, filter.language)?;
-        } else if filter.symbols_mode || filter.kind.is_some() {
-            // Symbol enrichment: Parse candidate files and extract symbol definitions
-            results = self.enrich_with_symbols(results, pattern, &filter)?;
-        }
-
-        // PHASE 3: Apply filters
-        if let Some(lang) = filter.language {
-            results.retain(|r| r.lang == lang);
-        }
-
-        // Apply kind filter (only relevant for symbol searches)
-        // Special case: --kind function also includes methods (methods are functions in classes)
-        if let Some(ref kind) = filter.kind {
-            results.retain(|r| {
-                if matches!(kind, SymbolKind::Function) {
-                    // When searching for functions, also include methods
-                    matches!(r.kind, SymbolKind::Function | SymbolKind::Method)
-                } else {
-                    r.kind == *kind
-                }
-            });
-        }
-
-        // Apply file path filter (substring match)
-        if let Some(ref file_pattern) = filter.file_pattern {
-            results.retain(|r| r.path.contains(file_pattern));
-        }
-
-        // Apply glob pattern filters
+        // EARLY GLOB PATTERN FILTER: Apply glob/exclude filtering BEFORE broad query check
+        // This ensures candidate count reflects actual files that will be parsed
+        // Critical for queries like: rfx query "index" --symbols --glob "src/**/*.rs"
         if !filter.glob_patterns.is_empty() || !filter.exclude_patterns.is_empty() {
             use globset::{Glob, GlobSetBuilder};
 
@@ -368,6 +350,7 @@ impl QueryEngine {
             };
 
             // Apply filters
+            let before_count = results.len();
             results.retain(|r| {
                 // If include patterns specified, path must match at least one
                 let included = if let Some(ref matcher) = include_matcher {
@@ -385,6 +368,194 @@ impl QueryEngine {
 
                 included && !excluded
             });
+            log::debug!(
+                "Glob filter: reduced {} candidates to {} candidates",
+                before_count,
+                results.len()
+            );
+        }
+
+        // Check timeout after Phase 1
+        if let Some(timeout_duration) = timeout {
+            if start_time.elapsed() > timeout_duration {
+                anyhow::bail!(
+                    "Query timeout exceeded ({} seconds).\n\
+                     \n\
+                     The query took too long to complete. Try one of these approaches:\n\
+                     • Use a more specific search pattern (longer patterns = faster search)\n\
+                     • Add a language filter with --lang to narrow the search space\n\
+                     • Add a file filter with --file to search specific directories\n\
+                     • Increase the timeout with --timeout <seconds>\n\
+                     \n\
+                     Example: rfx query \"{}\" --lang rust --timeout 60",
+                    filter.timeout_secs,
+                    pattern
+                );
+            }
+        }
+
+        // BROAD QUERY DETECTION: Check if query is too expensive BEFORE parsing
+        // This protects LLM users from accidentally running expensive queries that flood context windows
+        if !filter.force {
+            let candidate_count = results.len();
+            let pattern_len = pattern.chars().count();
+
+            // Condition 1: Pattern too short (< 3 chars can't use trigram optimization efficiently)
+            // Exception: Allow short keyword queries (e.g., "fn", "if") since they scan all language files
+            let is_short_pattern = pattern_len < 3 && !filter.use_regex && !is_keyword_query;
+
+            // Condition 2: AST query without glob restriction on large codebases
+            // Allow on small codebases (< 100 files) but require glob for larger ones
+            let is_broad_ast = filter.use_ast && filter.glob_patterns.is_empty() && candidate_count >= 100;
+
+            // Condition 3: Query-type-aware threshold for symbol/AST parsing
+            // Different thresholds based on actual performance characteristics:
+            // - AST without glob: 100 files (allow small codebases, block large ones)
+            // - AST with glob: 10,000 files (~5 seconds max)
+            // - Keyword queries: 20,000 files (~3 seconds max) - scan all files of language
+            // - Trigram-filtered symbols: 50,000 files (~5 seconds max) - very fast due to trigram filtering
+            let threshold = if filter.use_ast && filter.glob_patterns.is_empty() {
+                100  // AST without glob - allow small codebases
+            } else if filter.use_ast {
+                10_000  // AST with glob restriction
+            } else if is_keyword_query {
+                20_000  // Keyword queries (e.g., "class", "function")
+            } else {
+                50_000  // Trigram-filtered symbol queries
+            };
+
+            let has_many_candidates = candidate_count > threshold &&
+                                     (filter.symbols_mode || filter.kind.is_some() || filter.use_ast);
+
+            if is_short_pattern || has_many_candidates || is_broad_ast {
+                let reason = if is_short_pattern {
+                    format!("Pattern '{}' is too short ({} characters). Short patterns bypass trigram optimization and require scanning many files.", pattern, pattern_len)
+                } else if is_broad_ast {
+                    format!("AST query without --glob restriction will scan the entire codebase ({} files). AST queries are SLOW (500ms-10s+).", candidate_count)
+                } else if is_keyword_query {
+                    format!("Keyword query '{}' matched {} files. This query scans all files of the target language, which will take significant time and produce excessive results.", pattern, candidate_count)
+                } else {
+                    format!("Query matched {} files. Parsing this many files with --symbols or --kind will take significant time and produce excessive results.", candidate_count)
+                };
+
+                let suggestions = if is_short_pattern {
+                    vec![
+                        "• Use a longer, more specific pattern (3+ characters recommended)",
+                        "• Add a language filter: --lang <language>",
+                        "• Add a file path filter: --file <path> or --glob <pattern>",
+                        "• Use --force to bypass this check if you really need all results"
+                    ]
+                } else if is_broad_ast {
+                    vec![
+                        "• Add --glob to restrict AST query to specific files: --glob 'src/**/*.rs'",
+                        "• Use --symbols instead (10-100x faster in 95% of cases)",
+                        "• Use --force to bypass this check if you need a full codebase scan"
+                    ]
+                } else if is_keyword_query {
+                    vec![
+                        "• Add a language filter to reduce files scanned: --lang <language>",
+                        "• Add glob patterns to search specific directories: --glob 'src/**/*.rs'",
+                        "• Add --kind to filter to specific symbol types: --kind function",
+                        "• Use a more specific pattern instead of a keyword",
+                        "• Use --force to bypass this check if you need all results"
+                    ]
+                } else {
+                    vec![
+                        "• Add a language filter to reduce candidate set: --lang <language>",
+                        "• Add glob patterns to search specific directories: --glob 'src/**/*.rs'",
+                        "• Use a more specific search pattern",
+                        "• Use --force to bypass this check if you need all results"
+                    ]
+                };
+
+                // Build the command snippet showing current flags
+                let mut cmd_flags = String::new();
+                if filter.symbols_mode {
+                    cmd_flags.push_str("--symbols ");
+                }
+                if let Some(ref lang) = filter.language {
+                    cmd_flags.push_str(&format!("--lang {:?} ", lang));
+                }
+                if let Some(ref kind) = filter.kind {
+                    cmd_flags.push_str(&format!("--kind {:?} ", kind));
+                }
+                if filter.use_ast {
+                    cmd_flags.push_str("--ast ");
+                }
+
+                anyhow::bail!(
+                    "Query too broad - would be expensive to execute\n\
+                     \n\
+                     {}\n\
+                     \n\
+                     This query could:\n\
+                     • Take 10-30+ seconds to complete\n\
+                     • Return thousands of results\n\
+                     • Flood LLM context windows with excessive data\n\
+                     \n\
+                     Suggestions to narrow the query:\n\
+                     {}\n\
+                     \n\
+                     To force execution anyway:\n\
+                     rfx query \"{}\" --force {}",
+                    reason,
+                    suggestions.join("\n             "),
+                    pattern,
+                    cmd_flags
+                );
+            }
+        }
+
+        // DETERMINISTIC SORTING: Sort candidates early for deterministic results
+        // This ensures results are always returned in the same order
+        if filter.symbols_mode || filter.kind.is_some() || filter.use_ast {
+            results.sort_by(|a, b| {
+                a.path.cmp(&b.path)
+                    .then_with(|| a.span.start_line.cmp(&b.span.start_line))
+            });
+
+            // Warn if many candidates need parsing (helps users refine queries)
+            let candidate_count = results.len();
+            if candidate_count > 1000 {
+                log::warn!(
+                    "Pattern '{}' matched {} files - parsing may take some time. Consider using --file, --glob, or a more specific pattern to narrow the search.",
+                    pattern,
+                    candidate_count
+                );
+            } else if candidate_count > 100 {
+                log::info!("Parsing {} candidate files for symbol extraction", candidate_count);
+            }
+        }
+
+        // PHASE 2: Enrich with symbol information or AST pattern matching (if needed)
+        if filter.use_ast {
+            // AST pattern matching: Execute Tree-sitter query on candidate files
+            results = self.enrich_with_ast(results, pattern, filter.language)?;
+        } else if filter.symbols_mode || filter.kind.is_some() {
+            // Symbol enrichment: Parse candidate files and extract symbol definitions
+            results = self.enrich_with_symbols(results, pattern, &filter)?;
+        }
+
+        // PHASE 3: Apply post-enrichment filters
+        // Note: Language and glob filters are applied in Phase 1 (before broad query check)
+        // Only kind, file_pattern, and exact filters are applied here
+
+        // Apply kind filter (only relevant for symbol searches)
+        // Special case: --kind function also includes methods (methods are functions in classes)
+        if let Some(ref kind) = filter.kind {
+            results.retain(|r| {
+                if matches!(kind, SymbolKind::Function) {
+                    // When searching for functions, also include methods
+                    matches!(r.kind, SymbolKind::Function | SymbolKind::Method)
+                } else {
+                    r.kind == *kind
+                }
+            });
+        }
+
+        // Apply file path filter (substring match)
+        if let Some(ref file_pattern) = filter.file_pattern {
+            results.retain(|r| r.path.contains(file_pattern));
         }
 
         // Apply exact name filter (only for symbol searches)
@@ -595,6 +766,32 @@ impl QueryEngine {
         }
 
         log::info!("AST query scanning {} files for language {:?}", candidates.len(), lang);
+
+        // BROAD QUERY DETECTION: Block large AST queries without glob restriction
+        // Allow small codebases (<100 files) but require --glob for larger ones
+        if !filter.force && filter.glob_patterns.is_empty() && candidates.len() >= 100 {
+            anyhow::bail!(
+                "Query too broad - would be expensive to execute\n\
+                 \n\
+                 AST query without --glob restriction will scan the ENTIRE codebase ({} files). AST queries are SLOW (500ms-10s+).\n\
+                 \n\
+                 This query could:\n\
+                 • Take 10-30+ seconds to complete\n\
+                 • Return thousands of results\n\
+                 • Flood LLM context windows with excessive data\n\
+                 \n\
+                 Suggestions to narrow the query:\n\
+                 • Add --glob to restrict AST query to specific files: --glob 'src/**/*.rs'\n\
+                 • Use --symbols instead (10-100x faster in 95% of cases)\n\
+                 • Use --force to bypass this check if you need a full codebase scan\n\
+                 \n\
+                 To force execution anyway:\n\
+                 rfx query \"{}\" --force --ast --lang {:?}",
+                candidates.len(),
+                ast_pattern,
+                lang
+            );
+        }
 
         if candidates.is_empty() {
             log::warn!("No files found for language {:?}. Check your language filter or glob patterns.", lang);
@@ -886,6 +1083,18 @@ impl QueryEngine {
             Self::rebuild_trigram_index(&content_reader)?
         };
 
+        // Open symbol cache for reading cached symbols
+        let symbol_cache = crate::symbol_cache::SymbolCache::open(self.cache.path())
+            .context("Failed to open symbol cache")?;
+
+        // Load file hashes for current branch for cache lookups
+        let root = self.cache.workspace_root();
+        let branch = crate::git::get_current_branch(&root)
+            .unwrap_or_else(|_| "_default".to_string());
+        let file_hashes = self.cache.load_hashes_for_branch(&branch)
+            .context("Failed to load file hashes")?;
+        log::debug!("Loaded {} file hashes for branch '{}' for symbol cache lookups", file_hashes.len(), branch);
+
         // Group candidates by file, filtering out unsupported languages
         use std::collections::HashMap;
         let mut files_by_path: HashMap<String, Vec<SearchResult>> = HashMap::new();
@@ -1010,11 +1219,76 @@ impl QueryEngine {
             .build()
             .context("Failed to create thread pool for symbol extraction")?;
 
-        // Parse files in parallel using custom thread pool
+        // OPTIMIZATION: Batch read all cached symbols in ONE database transaction
+        // This is 10-30x faster than calling get() individually for each file
+
+        // Step 1: Collect file paths that have hashes
+        let files_with_hashes: Vec<String> = files_to_process
+            .iter()
+            .filter(|path| file_hashes.contains_key(path.as_str()))
+            .cloned()
+            .collect();
+
+        // Step 2: Batch lookup file_ids for all paths
+        let file_id_map = self.cache.batch_get_file_ids(&files_with_hashes)
+            .context("Failed to batch lookup file IDs")?;
+
+        // Step 3: Build (file_id, hash, path) tuples for batch_get_with_kind
+        let file_lookup_tuples: Vec<(i64, String, String)> = files_with_hashes
+            .iter()
+            .filter_map(|path| {
+                let file_id = file_id_map.get(path)?;
+                let hash = file_hashes.get(path.as_str())?;
+                Some((*file_id, hash.clone(), path.clone()))
+            })
+            .collect();
+
+        // Step 4: Batch read symbols with kind filtering (uses junction table + integer joins)
+        let batch_results = symbol_cache.batch_get_with_kind(&file_lookup_tuples, filter.kind.clone())
+            .context("Failed to batch read symbol cache")?;
+
+        // Step 5: Separate files into cached vs need-to-parse
+        let mut cached_symbols: HashMap<String, Vec<SearchResult>> = HashMap::new();
+        let mut files_needing_parse: Vec<String> = Vec::new();
+
+        // Build path lookup from file_id
+        let id_to_path: HashMap<i64, String> = file_id_map
+            .iter()
+            .map(|(path, id)| (*id, path.clone()))
+            .collect();
+
+        // Process cached results
+        for (file_id, symbols) in batch_results {
+            if let Some(file_path) = id_to_path.get(&file_id) {
+                cached_symbols.insert(file_path.clone(), symbols);
+            }
+        }
+
+        // Files with hashes but not in cache results need parsing
+        for path in &files_with_hashes {
+            if file_id_map.contains_key(path) && !cached_symbols.contains_key(path) {
+                files_needing_parse.push(path.clone());
+            }
+        }
+
+        // Add files without hashes to parse list
+        for file_path in &files_to_process {
+            if !file_hashes.contains_key(file_path.as_str()) {
+                files_needing_parse.push(file_path.clone());
+            }
+        }
+
+        log::debug!(
+            "Symbol cache: {} hits, {} need parsing",
+            cached_symbols.len(),
+            files_needing_parse.len()
+        );
+
+        // Parse files in parallel using custom thread pool (only cache misses)
         use rayon::prelude::*;
 
-        let all_symbols: Vec<SearchResult> = pool.install(|| {
-            files_to_process
+        let parsed_symbols: Vec<SearchResult> = pool.install(|| {
+            files_needing_parse
                 .par_iter()
                 .flat_map(|file_path| {
                 // Find file_id for this path
@@ -1042,7 +1316,7 @@ impl QueryEngine {
                 let lang = Language::from_extension(ext);
 
                 // Parse file to extract symbols
-                match ParserFactory::parse(file_path, content, lang) {
+                let symbols = match ParserFactory::parse(file_path, content, lang) {
                     Ok(symbols) => {
                         log::debug!("Parsed {} symbols from {}", symbols.len(), file_path);
                         symbols
@@ -1051,10 +1325,30 @@ impl QueryEngine {
                         log::debug!("Failed to parse {}: {}", file_path, e);
                         Vec::new()
                     }
+                };
+
+                // Cache the parsed symbols (ignore errors - caching is best-effort)
+                if let Some(file_hash) = file_hashes.get(file_path.as_str()) {
+                    if let Err(e) = symbol_cache.set(file_path, file_hash, &symbols) {
+                        log::debug!("Failed to cache symbols for {}: {}", file_path, e);
+                    }
                 }
+
+                symbols
             })
             .collect()
         });
+
+        // Combine cached and parsed symbols
+        let mut all_symbols: Vec<SearchResult> = Vec::new();
+
+        // Add all cached symbols
+        for symbols in cached_symbols.values() {
+            all_symbols.extend_from_slice(symbols);
+        }
+
+        // Add all parsed symbols
+        all_symbols.extend(parsed_symbols);
 
         // KEYWORD DETECTION: Check if pattern is a language keyword (e.g., "class", "function")
         // If it matches a keyword AND symbols_mode is true, interpret as "list all symbols of that type"
@@ -2319,6 +2613,7 @@ mod tests {
         let engine = QueryEngine::new(cache);
         let filter = QueryFilter {
             use_contains: true,  // Unicode word boundaries may not work as expected
+            force: true,  // Bypass broad query detection for 2-char Unicode pattern
             ..Default::default()
         };
 

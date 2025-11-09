@@ -26,6 +26,7 @@
 //! ```
 
 pub mod ast_query;
+pub mod background_indexer;
 pub mod cache;
 pub mod cli;
 pub mod content_store;
@@ -38,6 +39,7 @@ pub mod models;
 pub mod parsers;
 pub mod query;
 pub mod regex_trigrams;
+pub mod symbol_cache;
 pub mod trigram;
 pub mod watcher;
 

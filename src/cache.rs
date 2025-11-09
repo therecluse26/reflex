@@ -11,7 +11,6 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::models::IndexedFile;
@@ -48,12 +47,10 @@ impl CacheManager {
         // Create meta.db with schema
         self.init_meta_db()?;
 
-        // Create empty tokens.bin with header
-        self.init_tokens_bin()?;
-
         // Create default config.toml
         self.init_config_toml()?;
 
+        // Note: tokens.bin removed - was never used
         // Note: hashes.json is deprecated - hashes are now stored in meta.db
 
         log::info!("Cache initialized successfully");
@@ -77,7 +74,6 @@ impl CacheManager {
             "CREATE TABLE IF NOT EXISTS files (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 path TEXT NOT NULL UNIQUE,
-                hash TEXT NOT NULL,
                 last_indexed INTEGER NOT NULL,
                 language TEXT NOT NULL,
                 token_count INTEGER DEFAULT 0,
@@ -87,7 +83,6 @@ impl CacheManager {
         )?;
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_files_path ON files(path)", [])?;
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_files_hash ON files(hash)", [])?;
 
         // Create statistics table
         conn.execute(
@@ -122,18 +117,19 @@ impl CacheManager {
         // Create branch tracking tables for git-aware indexing
         conn.execute(
             "CREATE TABLE IF NOT EXISTS file_branches (
-                path TEXT NOT NULL,
-                branch TEXT NOT NULL,
+                file_id INTEGER NOT NULL,
+                branch_id INTEGER NOT NULL,
                 hash TEXT NOT NULL,
-                commit_sha TEXT,
                 last_indexed INTEGER NOT NULL,
-                PRIMARY KEY (path, branch)
+                PRIMARY KEY (file_id, branch_id),
+                FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
             )",
             [],
         )?;
 
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_branch_lookup ON file_branches(branch, path)",
+            "CREATE INDEX IF NOT EXISTS idx_branch_lookup ON file_branches(branch_id, file_id)",
             [],
         )?;
 
@@ -145,7 +141,8 @@ impl CacheManager {
         // Create branches metadata table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS branches (
-                branch TEXT PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
                 commit_sha TEXT NOT NULL,
                 last_indexed INTEGER NOT NULL,
                 file_count INTEGER DEFAULT 0,
@@ -155,56 +152,6 @@ impl CacheManager {
         )?;
 
         log::debug!("Created meta.db with schema");
-        Ok(())
-    }
-
-    /// Initialize tokens.bin with header
-    fn init_tokens_bin(&self) -> Result<()> {
-        let tokens_path = self.cache_path.join(TOKENS_BIN);
-
-        if tokens_path.exists() {
-            return Ok(());
-        }
-
-        let mut file = File::create(&tokens_path)?;
-
-        // Write header: magic bytes + version + compression type + sizes
-        let magic_bytes = b"RFTK"; // Reflex Tokens
-        let version: u32 = 1;
-        let compression_type: u32 = 1; // 1 = zstd
-        let uncompressed_size: u64 = 0;
-        let token_count: u64 = 0;
-        let reserved = [0u8; 8];
-
-        file.write_all(magic_bytes)?;
-        file.write_all(&version.to_le_bytes())?;
-        file.write_all(&compression_type.to_le_bytes())?;
-        file.write_all(&uncompressed_size.to_le_bytes())?;
-        file.write_all(&token_count.to_le_bytes())?;
-        file.write_all(&reserved)?;
-
-        log::debug!("Created empty tokens.bin");
-        Ok(())
-    }
-
-    /// Initialize hashes.json with empty map
-    ///
-    /// DEPRECATED: Hashes are now stored in SQLite (meta.db).
-    /// This function is kept for backward compatibility but is not called by init().
-    #[deprecated(note = "Hashes are now stored in SQLite")]
-    #[allow(dead_code)]
-    fn init_hashes_json(&self) -> Result<()> {
-        let hashes_path = self.cache_path.join(HASHES_JSON);
-
-        if hashes_path.exists() {
-            return Ok(());
-        }
-
-        let empty_map: HashMap<String, String> = HashMap::new();
-        let json = serde_json::to_string_pretty(&empty_map)?;
-        std::fs::write(&hashes_path, json)?;
-
-        log::debug!("Created empty hashes.json");
         Ok(())
     }
 
@@ -359,6 +306,14 @@ compression_level = 3  # zstd level
         &self.cache_path
     }
 
+    /// Get the workspace root directory (parent of .reflex/)
+    pub fn workspace_root(&self) -> PathBuf {
+        self.cache_path
+            .parent()
+            .expect(".reflex directory should have a parent")
+            .to_path_buf()
+    }
+
     /// Clear the entire cache
     pub fn clear(&self) -> Result<()> {
         log::warn!("Clearing cache at {:?}", self.cache_path);
@@ -370,8 +325,11 @@ compression_level = 3  # zstd level
         Ok(())
     }
 
-    /// Load file hashes for incremental indexing from SQLite
-    pub fn load_hashes(&self) -> Result<HashMap<String, String>> {
+    /// Load all file hashes across all branches from SQLite
+    ///
+    /// Used by background indexer to get hashes for all indexed files.
+    /// Returns the most recent hash for each file across all branches.
+    pub fn load_all_hashes(&self) -> Result<HashMap<String, String>> {
         let db_path = self.cache_path.join(META_DB);
 
         if !db_path.exists() {
@@ -381,28 +339,69 @@ compression_level = 3  # zstd level
         let conn = Connection::open(&db_path)
             .context("Failed to open meta.db")?;
 
-        let mut stmt = conn.prepare("SELECT path, hash FROM files")?;
+        // Get all hashes from file_branches, joined with files to get paths
+        // If a file appears in multiple branches, we'll get multiple entries
+        // (HashMap will keep the last one, which is fine for background indexer)
+        let mut stmt = conn.prepare(
+            "SELECT f.path, fb.hash
+             FROM file_branches fb
+             JOIN files f ON fb.file_id = f.id"
+        )?;
         let hashes: HashMap<String, String> = stmt.query_map([], |row| {
             Ok((row.get(0)?, row.get(1)?))
         })?
         .collect::<Result<HashMap<_, _>, _>>()?;
 
-        log::debug!("Loaded {} file hashes from SQLite", hashes.len());
+        log::debug!("Loaded {} file hashes across all branches from SQLite", hashes.len());
+        Ok(hashes)
+    }
+
+    /// Load file hashes for a specific branch from SQLite
+    ///
+    /// Used by indexer and query engine to get hashes for the current branch.
+    /// This ensures branch-specific incremental indexing and symbol cache lookups.
+    pub fn load_hashes_for_branch(&self, branch: &str) -> Result<HashMap<String, String>> {
+        let db_path = self.cache_path.join(META_DB);
+
+        if !db_path.exists() {
+            return Ok(HashMap::new());
+        }
+
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db")?;
+
+        // Get hashes for specific branch only
+        let mut stmt = conn.prepare(
+            "SELECT f.path, fb.hash
+             FROM file_branches fb
+             JOIN files f ON fb.file_id = f.id
+             JOIN branches b ON fb.branch_id = b.id
+             WHERE b.name = ?"
+        )?;
+        let hashes: HashMap<String, String> = stmt.query_map([branch], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<Result<HashMap<_, _>, _>>()?;
+
+        log::debug!("Loaded {} file hashes for branch '{}' from SQLite", hashes.len(), branch);
         Ok(hashes)
     }
 
     /// Save file hashes for incremental indexing
     ///
-    /// DEPRECATED: Hashes are now saved directly to SQLite via update_file().
+    /// DEPRECATED: Hashes are now saved via record_branch_file() or batch_record_branch_files().
     /// This method is kept for backward compatibility but does nothing.
-    #[deprecated(note = "Hashes are now stored in SQLite via update_file()")]
+    #[deprecated(note = "Hashes are now stored in file_branches table via record_branch_file()")]
     pub fn save_hashes(&self, _hashes: &HashMap<String, String>) -> Result<()> {
-        // No-op: hashes are now persisted to SQLite in update_file()
+        // No-op: hashes are now persisted to SQLite in record_branch_file()
         Ok(())
     }
 
     /// Update file metadata in the files table
-    pub fn update_file(&self, path: &str, hash: &str, language: &str, line_count: usize) -> Result<()> {
+    ///
+    /// Note: File content hashes are stored separately in the file_branches table
+    /// via record_branch_file() or batch_record_branch_files().
+    pub fn update_file(&self, path: &str, language: &str, line_count: usize) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
         let conn = Connection::open(&db_path)
             .context("Failed to open meta.db for file update")?;
@@ -410,16 +409,19 @@ compression_level = 3  # zstd level
         let now = chrono::Utc::now().timestamp();
 
         conn.execute(
-            "INSERT OR REPLACE INTO files (path, hash, last_indexed, language, line_count)
-             VALUES (?, ?, ?, ?, ?)",
-            [path, hash, &now.to_string(), language, &line_count.to_string()],
+            "INSERT OR REPLACE INTO files (path, last_indexed, language, line_count)
+             VALUES (?, ?, ?, ?)",
+            [path, &now.to_string(), language, &line_count.to_string()],
         )?;
 
         Ok(())
     }
 
     /// Batch update multiple files in a single transaction for performance
-    pub fn batch_update_files(&self, files: &[(String, String, String, usize)]) -> Result<()> {
+    ///
+    /// Note: File content hashes are stored separately in the file_branches table
+    /// via batch_update_files_and_branch().
+    pub fn batch_update_files(&self, files: &[(String, String, usize)]) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
         let mut conn = Connection::open(&db_path)
             .context("Failed to open meta.db for batch update")?;
@@ -430,15 +432,78 @@ compression_level = 3  # zstd level
         // Use a transaction for batch inserts
         let tx = conn.transaction()?;
 
-        for (path, hash, language, line_count) in files {
+        for (path, language, line_count) in files {
             tx.execute(
-                "INSERT OR REPLACE INTO files (path, hash, last_indexed, language, line_count)
-                 VALUES (?, ?, ?, ?, ?)",
-                [path.as_str(), hash.as_str(), &now_str, language.as_str(), &line_count.to_string()],
+                "INSERT OR REPLACE INTO files (path, last_indexed, language, line_count)
+                 VALUES (?, ?, ?, ?)",
+                [path.as_str(), &now_str, language.as_str(), &line_count.to_string()],
             )?;
         }
 
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Batch update files AND record their hashes for a branch in a SINGLE transaction
+    ///
+    /// This is the recommended method for indexing as it ensures atomicity:
+    /// if files are inserted, their branch hashes are guaranteed to be inserted too.
+    pub fn batch_update_files_and_branch(
+        &self,
+        files: &[(String, String, usize)],      // (path, language, line_count)
+        branch_files: &[(String, String)],       // (path, hash)
+        branch: &str,
+        commit_sha: Option<&str>,
+    ) -> Result<()> {
+        log::info!("batch_update_files_and_branch: Processing {} files for branch '{}'", files.len(), branch);
+
+        let db_path = self.cache_path.join(META_DB);
+        let mut conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for batch update and branch recording")?;
+
+        let now = chrono::Utc::now().timestamp();
+        let now_str = now.to_string();
+
+        // Use a SINGLE transaction for both operations
+        let tx = conn.transaction()?;
+
+        // Step 1: Insert/update files table
+        for (path, language, line_count) in files {
+            tx.execute(
+                "INSERT OR REPLACE INTO files (path, last_indexed, language, line_count)
+                 VALUES (?, ?, ?, ?)",
+                [path.as_str(), &now_str, language.as_str(), &line_count.to_string()],
+            )?;
+        }
+        log::info!("Inserted {} files into files table", files.len());
+
+        // Step 2: Get or create branch_id (within same transaction)
+        let branch_id = self.get_or_create_branch_id(&tx, branch, commit_sha)?;
+        log::debug!("Got branch_id={} for branch '{}'", branch_id, branch);
+
+        // Step 3: Insert file_branches entries (within same transaction)
+        let mut inserted = 0;
+        for (path, hash) in branch_files {
+            // Lookup file_id from path (will find it because we just inserted above)
+            let file_id: i64 = tx.query_row(
+                "SELECT id FROM files WHERE path = ?",
+                [path.as_str()],
+                |row| row.get(0)
+            ).context(format!("File not found in index after insert: {}", path))?;
+
+            // Insert into file_branches using INTEGER values (not strings!)
+            tx.execute(
+                "INSERT OR REPLACE INTO file_branches (file_id, branch_id, hash, last_indexed)
+                 VALUES (?, ?, ?, ?)",
+                rusqlite::params![file_id, branch_id, hash.as_str(), now],
+            )?;
+            inserted += 1;
+        }
+        log::info!("Inserted {} file_branches entries", inserted);
+
+        // Commit the entire transaction atomically
+        tx.commit()?;
+        log::info!("Transaction committed successfully (files + file_branches)");
         Ok(())
     }
 
@@ -588,6 +653,36 @@ compression_level = 3  # zstd level
 
     // ===== Branch-aware indexing methods =====
 
+    /// Get or create a branch ID by name
+    ///
+    /// Returns the numeric branch ID, creating a new entry if needed.
+    fn get_or_create_branch_id(&self, conn: &Connection, branch_name: &str, commit_sha: Option<&str>) -> Result<i64> {
+        // Try to get existing branch
+        let existing_id: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM branches WHERE name = ?",
+                [branch_name],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(id) = existing_id {
+            return Ok(id);
+        }
+
+        // Create new branch entry
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO branches (name, commit_sha, last_indexed, file_count, is_dirty)
+             VALUES (?, ?, ?, 0, 0)",
+            [branch_name, commit_sha.unwrap_or("unknown"), &now.to_string()],
+        )?;
+
+        // Get the ID we just created
+        let id: i64 = conn.last_insert_rowid();
+        Ok(id)
+    }
+
     /// Record a file's hash for a specific branch
     pub fn record_branch_file(
         &self,
@@ -600,50 +695,76 @@ compression_level = 3  # zstd level
         let conn = Connection::open(&db_path)
             .context("Failed to open meta.db for branch file recording")?;
 
+        // Lookup file_id from path
+        let file_id: i64 = conn.query_row(
+            "SELECT id FROM files WHERE path = ?",
+            [path],
+            |row| row.get(0)
+        ).context(format!("File not found in index: {}", path))?;
+
+        // Get or create branch_id
+        let branch_id = self.get_or_create_branch_id(&conn, branch, commit_sha)?;
+
         let now = chrono::Utc::now().timestamp();
 
+        // Insert using proper INTEGER types (not strings!)
         conn.execute(
-            "INSERT OR REPLACE INTO file_branches (path, branch, hash, commit_sha, last_indexed)
-             VALUES (?, ?, ?, ?, ?)",
-            [
-                path,
-                branch,
-                hash,
-                commit_sha.unwrap_or(""),
-                &now.to_string(),
-            ],
+            "INSERT OR REPLACE INTO file_branches (file_id, branch_id, hash, last_indexed)
+             VALUES (?, ?, ?, ?)",
+            rusqlite::params![file_id, branch_id, hash, now],
         )?;
 
         Ok(())
     }
 
     /// Batch record multiple files for a specific branch in a single transaction
+    ///
+    /// IMPORTANT: Files must already exist in the `files` table before calling this method.
+    /// For atomic insertion of both files and branch hashes, use `batch_update_files_and_branch()` instead.
     pub fn batch_record_branch_files(
         &self,
         files: &[(String, String)],  // (path, hash)
         branch: &str,
         commit_sha: Option<&str>,
     ) -> Result<()> {
+        log::info!("batch_record_branch_files: Processing {} files for branch '{}'", files.len(), branch);
+
         let db_path = self.cache_path.join(META_DB);
         let mut conn = Connection::open(&db_path)
             .context("Failed to open meta.db for batch branch recording")?;
 
         let now = chrono::Utc::now().timestamp();
-        let now_str = now.to_string();
-        let commit = commit_sha.unwrap_or("");
 
         // Use a transaction for batch inserts
         let tx = conn.transaction()?;
 
+        // Get or create branch_id (use transaction connection)
+        let branch_id = self.get_or_create_branch_id(&tx, branch, commit_sha)?;
+        log::debug!("Got branch_id={} for branch '{}'", branch_id, branch);
+
+        let mut inserted = 0;
         for (path, hash) in files {
+            // Lookup file_id from path
+            log::trace!("Looking up file_id for path: {}", path);
+            let file_id: i64 = tx.query_row(
+                "SELECT id FROM files WHERE path = ?",
+                [path.as_str()],
+                |row| row.get(0)
+            ).context(format!("File not found in index: {}", path))?;
+            log::trace!("Found file_id={} for path: {}", file_id, path);
+
+            // Insert using proper INTEGER types (not strings!)
             tx.execute(
-                "INSERT OR REPLACE INTO file_branches (path, branch, hash, commit_sha, last_indexed)
-                 VALUES (?, ?, ?, ?, ?)",
-                [path.as_str(), branch, hash.as_str(), commit, &now_str],
+                "INSERT OR REPLACE INTO file_branches (file_id, branch_id, hash, last_indexed)
+                 VALUES (?, ?, ?, ?)",
+                rusqlite::params![file_id, branch_id, hash.as_str(), now],
             )?;
+            inserted += 1;
         }
 
+        log::info!("Inserted {} file_branches entries", inserted);
         tx.commit()?;
+        log::info!("Transaction committed successfully");
         Ok(())
     }
 
@@ -660,7 +781,13 @@ compression_level = 3  # zstd level
         let conn = Connection::open(&db_path)
             .context("Failed to open meta.db")?;
 
-        let mut stmt = conn.prepare("SELECT path, hash FROM file_branches WHERE branch = ?")?;
+        let mut stmt = conn.prepare(
+            "SELECT f.path, fb.hash
+             FROM file_branches fb
+             JOIN files f ON fb.file_id = f.id
+             JOIN branches b ON fb.branch_id = b.id
+             WHERE b.name = ?"
+        )?;
         let files: HashMap<String, String> = stmt
             .query_map([branch], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<HashMap<_, _>, _>>()?;
@@ -688,7 +815,11 @@ compression_level = 3  # zstd level
 
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM file_branches WHERE branch = ? LIMIT 1",
+                "SELECT COUNT(*)
+                 FROM file_branches fb
+                 JOIN branches b ON fb.branch_id = b.id
+                 WHERE b.name = ?
+                 LIMIT 1",
                 [branch],
                 |row| row.get(0),
             )
@@ -709,7 +840,7 @@ compression_level = 3  # zstd level
             .context("Failed to open meta.db")?;
 
         let info = conn.query_row(
-            "SELECT commit_sha, last_indexed, file_count, is_dirty FROM branches WHERE branch = ?",
+            "SELECT commit_sha, last_indexed, file_count, is_dirty FROM branches WHERE name = ?",
             [branch],
             |row| {
                 Ok(BranchInfo {
@@ -726,6 +857,9 @@ compression_level = 3  # zstd level
     }
 
     /// Update branch metadata after indexing
+    ///
+    /// Uses UPDATE instead of INSERT OR REPLACE to preserve branch_id and prevent
+    /// CASCADE DELETE on file_branches table.
     pub fn update_branch_metadata(
         &self,
         branch: &str,
@@ -738,18 +872,36 @@ compression_level = 3  # zstd level
             .context("Failed to open meta.db for branch metadata update")?;
 
         let now = chrono::Utc::now().timestamp();
+        let is_dirty_int = if is_dirty { 1 } else { 0 };
 
-        conn.execute(
-            "INSERT OR REPLACE INTO branches (branch, commit_sha, last_indexed, file_count, is_dirty)
-             VALUES (?, ?, ?, ?, ?)",
-            [
-                branch,
+        // Try UPDATE first to preserve branch_id (prevents CASCADE DELETE)
+        let rows_updated = conn.execute(
+            "UPDATE branches
+             SET commit_sha = ?, last_indexed = ?, file_count = ?, is_dirty = ?
+             WHERE name = ?",
+            rusqlite::params![
                 commit_sha.unwrap_or("unknown"),
-                &now.to_string(),
-                &file_count.to_string(),
-                &(if is_dirty { 1 } else { 0 }).to_string(),
+                now,
+                file_count,
+                is_dirty_int,
+                branch
             ],
         )?;
+
+        // If no rows updated (branch doesn't exist yet), INSERT new one
+        if rows_updated == 0 {
+            conn.execute(
+                "INSERT INTO branches (name, commit_sha, last_indexed, file_count, is_dirty)
+                 VALUES (?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    branch,
+                    commit_sha.unwrap_or("unknown"),
+                    now,
+                    file_count,
+                    is_dirty_int
+                ],
+            )?;
+        }
 
         log::debug!(
             "Updated branch metadata for '{}': commit={}, files={}, dirty={}",
@@ -777,13 +929,89 @@ compression_level = 3  # zstd level
 
         let result = conn
             .query_row(
-                "SELECT path, branch FROM file_branches WHERE hash = ? LIMIT 1",
+                "SELECT f.path, b.name
+                 FROM file_branches fb
+                 JOIN files f ON fb.file_id = f.id
+                 JOIN branches b ON fb.branch_id = b.id
+                 WHERE fb.hash = ?
+                 LIMIT 1",
                 [hash],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
 
         Ok(result)
+    }
+
+    /// Get file ID by path
+    ///
+    /// Returns the integer ID for a file path, or None if not found.
+    pub fn get_file_id(&self, path: &str) -> Result<Option<i64>> {
+        let db_path = self.cache_path.join(META_DB);
+
+        if !db_path.exists() {
+            return Ok(None);
+        }
+
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db")?;
+
+        let result = conn
+            .query_row(
+                "SELECT id FROM files WHERE path = ?",
+                [path],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        Ok(result)
+    }
+
+    /// Batch get file IDs for multiple paths
+    ///
+    /// Returns a HashMap of path → file_id for all found paths.
+    /// Paths not in the database are omitted from the result.
+    ///
+    /// Automatically chunks large batches to avoid SQLite parameter limits (999 max).
+    pub fn batch_get_file_ids(&self, paths: &[String]) -> Result<HashMap<String, i64>> {
+        let db_path = self.cache_path.join(META_DB);
+
+        if !db_path.exists() {
+            return Ok(HashMap::new());
+        }
+
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db")?;
+
+        // SQLite has a limit of 999 parameters by default
+        // Chunk requests to stay well under that limit
+        const BATCH_SIZE: usize = 900;
+
+        let mut results = HashMap::new();
+
+        for chunk in paths.chunks(BATCH_SIZE) {
+            // Build IN clause for this chunk
+            let placeholders = chunk.iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let query = format!("SELECT path, id FROM files WHERE path IN ({})", placeholders);
+
+            let params: Vec<&str> = chunk.iter().map(|s| s.as_str()).collect();
+            let mut stmt = conn.prepare(&query)?;
+
+            let chunk_results = stmt.query_map(rusqlite::params_from_iter(params), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<Result<HashMap<_, _>, _>>()?;
+
+            results.extend(chunk_results);
+        }
+
+        log::debug!("Batch loaded {} file IDs (out of {} requested, {} chunks)",
+                   results.len(), paths.len(), (paths.len() + BATCH_SIZE - 1) / BATCH_SIZE);
+        Ok(results)
     }
 }
 
@@ -819,7 +1047,6 @@ mod tests {
 
         // Verify all expected files were created
         assert!(cache.path().join(META_DB).exists());
-        assert!(cache.path().join(TOKENS_BIN).exists());
         assert!(cache.path().join(CONFIG_TOML).exists());
     }
 
@@ -859,22 +1086,32 @@ mod tests {
     }
 
     #[test]
-    fn test_load_hashes_empty() {
+    fn test_load_all_hashes_empty() {
         let temp = TempDir::new().unwrap();
         let cache = CacheManager::new(temp.path());
 
         cache.init().unwrap();
-        let hashes = cache.load_hashes().unwrap();
+        let hashes = cache.load_all_hashes().unwrap();
         assert_eq!(hashes.len(), 0);
     }
 
     #[test]
-    fn test_load_hashes_before_init() {
+    fn test_load_all_hashes_before_init() {
         let temp = TempDir::new().unwrap();
         let cache = CacheManager::new(temp.path());
 
         // Loading hashes before init should return empty map
-        let hashes = cache.load_hashes().unwrap();
+        let hashes = cache.load_all_hashes().unwrap();
+        assert_eq!(hashes.len(), 0);
+    }
+
+    #[test]
+    fn test_load_hashes_for_branch_empty() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+        let hashes = cache.load_hashes_for_branch("main").unwrap();
         assert_eq!(hashes.len(), 0);
     }
 
@@ -884,11 +1121,13 @@ mod tests {
         let cache = CacheManager::new(temp.path());
 
         cache.init().unwrap();
-        cache.update_file("src/main.rs", "abc123", "rust", 100).unwrap();
+        cache.update_file("src/main.rs", "rust", 100).unwrap();
 
-        // Verify file was stored
-        let hashes = cache.load_hashes().unwrap();
-        assert_eq!(hashes.get("src/main.rs"), Some(&"abc123".to_string()));
+        // Verify file was stored (check via list_files)
+        let files = cache.list_files().unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "src/main.rs");
+        assert_eq!(files[0].language, "rust");
     }
 
     #[test]
@@ -897,15 +1136,13 @@ mod tests {
         let cache = CacheManager::new(temp.path());
 
         cache.init().unwrap();
-        cache.update_file("src/main.rs", "abc123", "rust", 100).unwrap();
-        cache.update_file("src/lib.rs", "def456", "rust", 200).unwrap();
-        cache.update_file("README.md", "ghi789", "markdown", 50).unwrap();
+        cache.update_file("src/main.rs", "rust", 100).unwrap();
+        cache.update_file("src/lib.rs", "rust", 200).unwrap();
+        cache.update_file("README.md", "markdown", 50).unwrap();
 
-        let hashes = cache.load_hashes().unwrap();
-        assert_eq!(hashes.len(), 3);
-        assert_eq!(hashes.get("src/main.rs"), Some(&"abc123".to_string()));
-        assert_eq!(hashes.get("src/lib.rs"), Some(&"def456".to_string()));
-        assert_eq!(hashes.get("README.md"), Some(&"ghi789".to_string()));
+        // Verify files were stored
+        let files = cache.list_files().unwrap();
+        assert_eq!(files.len(), 3);
     }
 
     #[test]
@@ -914,13 +1151,13 @@ mod tests {
         let cache = CacheManager::new(temp.path());
 
         cache.init().unwrap();
-        cache.update_file("src/main.rs", "abc123", "rust", 100).unwrap();
-        cache.update_file("src/main.rs", "xyz999", "rust", 150).unwrap();
+        cache.update_file("src/main.rs", "rust", 100).unwrap();
+        cache.update_file("src/main.rs", "rust", 150).unwrap();
 
         // Second update should replace the first
-        let hashes = cache.load_hashes().unwrap();
-        assert_eq!(hashes.len(), 1);
-        assert_eq!(hashes.get("src/main.rs"), Some(&"xyz999".to_string()));
+        let files = cache.list_files().unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "src/main.rs");
     }
 
     #[test]
@@ -931,18 +1168,16 @@ mod tests {
         cache.init().unwrap();
 
         let files = vec![
-            ("src/main.rs".to_string(), "hash1".to_string(), "rust".to_string(), 100),
-            ("src/lib.rs".to_string(), "hash2".to_string(), "rust".to_string(), 200),
-            ("test.py".to_string(), "hash3".to_string(), "python".to_string(), 50),
+            ("src/main.rs".to_string(), "rust".to_string(), 100),
+            ("src/lib.rs".to_string(), "rust".to_string(), 200),
+            ("test.py".to_string(), "python".to_string(), 50),
         ];
 
         cache.batch_update_files(&files).unwrap();
 
-        let hashes = cache.load_hashes().unwrap();
-        assert_eq!(hashes.len(), 3);
-        assert_eq!(hashes.get("src/main.rs"), Some(&"hash1".to_string()));
-        assert_eq!(hashes.get("src/lib.rs"), Some(&"hash2".to_string()));
-        assert_eq!(hashes.get("test.py"), Some(&"hash3".to_string()));
+        // Verify files were stored
+        let stored_files = cache.list_files().unwrap();
+        assert_eq!(stored_files.len(), 3);
     }
 
     #[test]
@@ -951,8 +1186,8 @@ mod tests {
         let cache = CacheManager::new(temp.path());
 
         cache.init().unwrap();
-        cache.update_file("src/main.rs", "abc123", "rust", 100).unwrap();
-        cache.update_file("src/lib.rs", "def456", "rust", 200).unwrap();
+        cache.update_file("src/main.rs", "rust", 100).unwrap();
+        cache.update_file("src/lib.rs", "rust", 200).unwrap();
         cache.update_stats().unwrap();
 
         let stats = cache.stats().unwrap();
@@ -987,10 +1222,10 @@ mod tests {
         let cache = CacheManager::new(temp.path());
 
         cache.init().unwrap();
-        cache.update_file("main.rs", "hash1", "rust", 100).unwrap();
-        cache.update_file("lib.rs", "hash2", "rust", 200).unwrap();
-        cache.update_file("script.py", "hash3", "python", 50).unwrap();
-        cache.update_file("test.py", "hash4", "python", 80).unwrap();
+        cache.update_file("main.rs", "rust", 100).unwrap();
+        cache.update_file("lib.rs", "rust", 200).unwrap();
+        cache.update_file("script.py", "python", 50).unwrap();
+        cache.update_file("test.py", "python", 80).unwrap();
         cache.update_stats().unwrap();
 
         let stats = cache.stats().unwrap();
@@ -1016,8 +1251,8 @@ mod tests {
         let cache = CacheManager::new(temp.path());
 
         cache.init().unwrap();
-        cache.update_file("src/main.rs", "hash1", "rust", 100).unwrap();
-        cache.update_file("src/lib.rs", "hash2", "rust", 200).unwrap();
+        cache.update_file("src/main.rs", "rust", 100).unwrap();
+        cache.update_file("src/lib.rs", "rust", 200).unwrap();
 
         let files = cache.list_files().unwrap();
         assert_eq!(files.len(), 2);
@@ -1048,6 +1283,8 @@ mod tests {
 
         assert!(!cache.branch_exists("main").unwrap());
 
+        // Add file to index first (required for record_branch_file)
+        cache.update_file("src/main.rs", "rust", 100).unwrap();
         cache.record_branch_file("src/main.rs", "main", "hash1", Some("commit123")).unwrap();
 
         assert!(cache.branch_exists("main").unwrap());
@@ -1060,6 +1297,8 @@ mod tests {
         let cache = CacheManager::new(temp.path());
 
         cache.init().unwrap();
+        // Add file to index first (required for record_branch_file)
+        cache.update_file("src/main.rs", "rust", 100).unwrap();
         cache.record_branch_file("src/main.rs", "main", "hash1", Some("commit123")).unwrap();
 
         let files = cache.get_branch_files("main").unwrap();
@@ -1083,6 +1322,14 @@ mod tests {
         let cache = CacheManager::new(temp.path());
 
         cache.init().unwrap();
+
+        // Add files to index first (required for batch_record_branch_files)
+        let file_metadata = vec![
+            ("src/main.rs".to_string(), "rust".to_string(), 100),
+            ("src/lib.rs".to_string(), "rust".to_string(), 200),
+            ("README.md".to_string(), "markdown".to_string(), 50),
+        ];
+        cache.batch_update_files(&file_metadata).unwrap();
 
         let files = vec![
             ("src/main.rs".to_string(), "hash1".to_string()),
@@ -1132,6 +1379,8 @@ mod tests {
         let cache = CacheManager::new(temp.path());
 
         cache.init().unwrap();
+        // Add file to index first (required for record_branch_file)
+        cache.update_file("src/main.rs", "rust", 100).unwrap();
         cache.record_branch_file("src/main.rs", "main", "unique_hash", Some("commit123")).unwrap();
 
         let result = cache.find_file_with_hash("unique_hash").unwrap();
@@ -1151,24 +1400,6 @@ mod tests {
 
         let result = cache.find_file_with_hash("nonexistent_hash").unwrap();
         assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_tokens_bin_header() {
-        let temp = TempDir::new().unwrap();
-        let cache = CacheManager::new(temp.path());
-
-        cache.init().unwrap();
-
-        let tokens_path = cache.path().join(TOKENS_BIN);
-        let contents = std::fs::read(&tokens_path).unwrap();
-
-        // Verify magic bytes
-        assert_eq!(&contents[0..4], b"RFTK");
-
-        // Verify version (u32 = 4 bytes)
-        let version = u32::from_le_bytes([contents[4], contents[5], contents[6], contents[7]]);
-        assert_eq!(version, 1);
     }
 
     #[test]
@@ -1230,7 +1461,6 @@ mod tests {
                     cache
                         .update_file(
                             &format!("file_{}.rs", i),
-                            &format!("hash_{}", i),
                             "rust",
                             i * 10,
                         )
@@ -1244,7 +1474,7 @@ mod tests {
         }
 
         let cache = CacheManager::new(&cache_path);
-        let hashes = cache.load_hashes().unwrap();
-        assert_eq!(hashes.len(), 10);
+        let files = cache.list_files().unwrap();
+        assert_eq!(files.len(), 10);
     }
 }

@@ -1,6 +1,6 @@
 //! CLI argument parsing and command handlers
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -48,6 +48,10 @@ pub enum Command {
         /// Suppress all output (no progress bar, no summary)
         #[arg(short, long)]
         quiet: bool,
+
+        /// Show background symbol indexing status
+        #[arg(long)]
+        status: bool,
     },
 
     /// Query the code index
@@ -179,6 +183,14 @@ pub enum Command {
         /// Equivalent to --limit 0, convenience flag for getting unlimited results
         #[arg(short = 'a', long)]
         all: bool,
+
+        /// Force execution of potentially expensive queries
+        /// Bypasses broad query detection that prevents queries with:
+        /// • Short patterns (< 3 characters)
+        /// • High candidate counts (> 5,000 files for symbol/AST queries)
+        /// • AST queries without --glob restrictions
+        #[arg(long)]
+        force: bool,
     },
 
     /// Start a local HTTP API server
@@ -262,6 +274,13 @@ pub enum Command {
     ///   }
     /// }
     Mcp,
+
+    /// Internal command: Run background symbol indexing (hidden from help)
+    #[command(hide = true)]
+    IndexSymbolsInternal {
+        /// Cache directory path
+        cache_dir: PathBuf,
+    },
 }
 
 impl Cli {
@@ -279,11 +298,11 @@ impl Cli {
 
         // Execute the subcommand
         match self.command {
-            Command::Index { path, force, languages, quiet } => {
-                handle_index(path, force, languages, quiet)
+            Command::Index { path, force, languages, quiet, status } => {
+                handle_index(path, force, languages, quiet, status)
             }
-            Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all } => {
-                handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all)
+            Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force } => {
+                handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force)
             }
             Command::Serve { port, host } => {
                 handle_serve(port, host)
@@ -303,15 +322,61 @@ impl Cli {
             Command::Mcp => {
                 handle_mcp()
             }
+            Command::IndexSymbolsInternal { cache_dir } => {
+                handle_index_symbols_internal(cache_dir)
+            }
         }
     }
 }
 
 /// Handle the `index` subcommand
-fn handle_index(path: PathBuf, force: bool, languages: Vec<String>, quiet: bool) -> Result<()> {
+fn handle_index(path: PathBuf, force: bool, languages: Vec<String>, quiet: bool, show_status: bool) -> Result<()> {
     log::info!("Starting index command");
 
     let cache = CacheManager::new(&path);
+    let cache_path = cache.path().to_path_buf();
+
+    // Handle --status flag
+    if show_status {
+        match crate::background_indexer::BackgroundIndexer::get_status(&cache_path) {
+            Ok(Some(status)) => {
+                println!("Background Symbol Indexing Status");
+                println!("==================================");
+                println!("State:           {:?}", status.state);
+                println!("Total files:     {}", status.total_files);
+                println!("Processed:       {}", status.processed_files);
+                println!("Cached:          {}", status.cached_files);
+                println!("Parsed:          {}", status.parsed_files);
+                println!("Failed:          {}", status.failed_files);
+                println!("Started:         {}", status.started_at);
+                println!("Last updated:    {}", status.updated_at);
+
+                if let Some(completed_at) = &status.completed_at {
+                    println!("Completed:       {}", completed_at);
+                }
+
+                if let Some(error) = &status.error {
+                    println!("Error:           {}", error);
+                }
+
+                // Show progress percentage if running
+                if status.state == crate::background_indexer::IndexerState::Running && status.total_files > 0 {
+                    let progress = (status.processed_files as f64 / status.total_files as f64) * 100.0;
+                    println!("\nProgress:        {:.1}%", progress);
+                }
+
+                return Ok(());
+            }
+            Ok(None) => {
+                println!("No background symbol indexing in progress.");
+                println!("\nRun 'rfx index' to start background symbol indexing.");
+                return Ok(());
+            }
+            Err(e) => {
+                anyhow::bail!("Failed to get indexing status: {}", e);
+            }
+        }
+    }
 
     if force {
         log::info!("Force rebuild requested, clearing existing cache");
@@ -381,6 +446,53 @@ fn handle_index(path: PathBuf, force: bool, languages: Vec<String>, quiet: bool)
         }
     }
 
+    // Start background symbol indexing (if not already running)
+    if !crate::background_indexer::BackgroundIndexer::is_running(&cache_path) {
+        if !quiet {
+            println!("\nStarting background symbol indexing...");
+            println!("  Symbols will be cached for faster queries");
+            println!("  Check status with: rfx index --status");
+        }
+
+        // Spawn detached background process for symbol indexing
+        // Pass the workspace root, not the .reflex directory
+        let current_exe = std::env::current_exe()
+            .context("Failed to get current executable path")?;
+
+        #[cfg(unix)]
+        {
+            std::process::Command::new(&current_exe)
+                .arg("index-symbols-internal")
+                .arg(&path)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .context("Failed to spawn background indexing process")?;
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+            std::process::Command::new(&current_exe)
+                .arg("index-symbols-internal")
+                .arg(&path)
+                .creation_flags(CREATE_NO_WINDOW)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .context("Failed to spawn background indexing process")?;
+        }
+
+        log::debug!("Spawned background symbol indexing process");
+    } else if !quiet {
+        println!("\n⚠️  Background symbol indexing already in progress");
+        println!("  Check status with: rfx index --status");
+    }
+
     Ok(())
 }
 
@@ -448,6 +560,7 @@ fn handle_query(
     paths_only: bool,
     no_truncate: bool,
     all: bool,
+    force: bool,
 ) -> Result<()> {
     log::info!("Starting query command");
 
@@ -582,24 +695,53 @@ fn handle_query(
         exclude_patterns,
         paths_only,
         offset,
+        force,
     };
 
     // Measure query time
     let start = Instant::now();
 
     // Execute query and get pagination metadata
-    // We always use search_with_metadata to get total count for pagination info
-    let (mut results, total_results, has_more) = if use_ast {
+    // Handle errors specially for JSON output mode
+    let query_result = if use_ast {
         // AST query: pattern is the S-expression, scan all files
-        let ast_results = engine.search_ast_all_files(&pattern, filter.clone())?;
-        let count = ast_results.len();
-        (ast_results, count, false)
+        engine.search_ast_all_files(&pattern, filter.clone())
+            .map(|ast_results| {
+                let count = ast_results.len();
+                (ast_results, count, false)
+            })
     } else {
         // Use metadata-aware search for all queries (to get pagination info)
-        let response = engine.search_with_metadata(&pattern, filter.clone())?;
-        let total = response.pagination.total;
-        let has_more = response.pagination.has_more;
-        (response.results, total, has_more)
+        engine.search_with_metadata(&pattern, filter.clone())
+            .map(|response| {
+                let total = response.pagination.total;
+                let has_more = response.pagination.has_more;
+                (response.results, total, has_more)
+            })
+    };
+
+    // Handle errors with JSON formatting when --json is set
+    let (mut results, total_results, has_more) = match query_result {
+        Ok(data) => data,
+        Err(e) => {
+            if as_json {
+                // Output error as JSON
+                let error_response = serde_json::json!({
+                    "error": e.to_string(),
+                    "query_too_broad": e.to_string().contains("Query too broad")
+                });
+                let json_output = if pretty_json {
+                    serde_json::to_string_pretty(&error_response)?
+                } else {
+                    serde_json::to_string(&error_response)?
+                };
+                println!("{}", json_output);
+                std::process::exit(1);
+            } else {
+                // Plain text error (default behavior)
+                return Err(e);
+            }
+        }
     };
 
     // Apply preview truncation unless --no-truncate is set
@@ -780,6 +922,8 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         exclude: Vec<String>,
         #[serde(default)]
         paths: bool,
+        #[serde(default)]
+        force: bool,
     }
 
     // Default timeout for HTTP queries (30 seconds)
@@ -877,6 +1021,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             exclude_patterns: params.exclude,
             paths_only: params.paths,
             offset: params.offset,
+            force: params.force,
         };
 
         match engine.search_with_metadata(&params.q, filter) {
@@ -1203,4 +1348,11 @@ fn handle_watch(path: PathBuf, debounce_ms: u64, quiet: bool) -> Result<()> {
 fn handle_mcp() -> Result<()> {
     log::info!("Starting MCP server");
     crate::mcp::run_mcp_server()
+}
+
+/// Handle the internal `index-symbols-internal` command
+fn handle_index_symbols_internal(cache_dir: PathBuf) -> Result<()> {
+    let mut indexer = crate::background_indexer::BackgroundIndexer::new(&cache_dir)?;
+    indexer.run()?;
+    Ok(())
 }

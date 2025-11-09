@@ -128,6 +128,10 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "Exclude files matching patterns (e.g., ['vendor/**', 'tests/**'])"
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": "Force execution of potentially expensive queries (bypasses broad query detection)"
                         }
                     },
                     "required": ["pattern"]
@@ -168,6 +172,10 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "Exclude files matching patterns"
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": "Force execution of potentially expensive queries (bypasses broad query detection)"
                         }
                     },
                     "required": ["pattern"]
@@ -228,6 +236,10 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         "paths": {
                             "type": "boolean",
                             "description": "Return only unique file paths (not full results)"
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": "Force execution of potentially expensive queries (bypasses broad query detection)"
                         }
                     },
                     "required": ["pattern"]
@@ -272,6 +284,10 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         "paths": {
                             "type": "boolean",
                             "description": "Return only unique file paths"
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": "Force execution of potentially expensive queries (bypasses broad query detection)"
                         }
                     },
                     "required": ["pattern"]
@@ -316,6 +332,10 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         "paths": {
                             "type": "boolean",
                             "description": "Return only unique file paths"
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": "Force execution of potentially expensive queries (bypasses broad query detection)"
                         }
                     },
                     "required": ["pattern", "lang"]
@@ -371,6 +391,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 .as_array()
                 .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default();
+            let force = arguments["force"].as_bool().unwrap_or(false);
 
             let language = parse_language(lang);
 
@@ -390,6 +411,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 exclude_patterns,
                 paths_only: true,  // KEY: Enable paths-only mode
                 offset: None,
+                force,
             };
 
             let cache = CacheManager::new(".");
@@ -434,6 +456,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 .as_array()
                 .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default();
+            let force = arguments["force"].as_bool().unwrap_or(false);
 
             let language = parse_language(lang);
             let parsed_kind = parse_symbol_kind(kind);
@@ -455,6 +478,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 exclude_patterns,
                 paths_only: false,  // Need to count all occurrences
                 offset: None,
+                force,
             };
 
             let cache = CacheManager::new(".");
@@ -504,6 +528,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default();
             let paths_only = arguments["paths"].as_bool().unwrap_or(false);
+            let force = arguments["force"].as_bool().unwrap_or(false);
 
             let language = parse_language(lang);
             let parsed_kind = parse_symbol_kind(kind);
@@ -539,6 +564,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 exclude_patterns,
                 paths_only,
                 offset,
+                force,
             };
 
             let cache = CacheManager::new(".");
@@ -576,6 +602,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default();
             let paths_only = arguments["paths"].as_bool().unwrap_or(false);
+            let force = arguments["force"].as_bool().unwrap_or(false);
 
             let language = parse_language(lang);
             let offset = arguments["offset"].as_u64().map(|n| n as usize);
@@ -605,6 +632,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 exclude_patterns,
                 paths_only,
                 offset,
+                force,
             };
 
             let cache = CacheManager::new(".");
@@ -647,6 +675,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default();
             let paths_only = arguments["paths"].as_bool().unwrap_or(false);
+            let force = arguments["force"].as_bool().unwrap_or(false);
 
             let language = parse_language(Some(lang_str))
                 .ok_or_else(|| anyhow::anyhow!("Invalid or unsupported language for AST queries"))?;
@@ -684,6 +713,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 exclude_patterns,
                 paths_only,
                 offset,
+                force,
             };
 
             let cache = CacheManager::new(".");
