@@ -102,8 +102,8 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
     Ok(json!({
         "tools": [
             {
-                "name": "list_files",
-                "description": "⭐ RECOMMENDED FIRST STEP - Fast file discovery with minimal token usage.\n\n**Purpose:** Find which files contain a pattern without loading content (70-90% fewer tokens than search_code).\n\n**Use this when:**\n- Starting exploration (\"which files use CourtCase?\")\n- Counting affected files\n- Building a file list for targeted analysis\n- You need paths only, not content\n\n**Returns:** Unique file paths only (no previews, no line numbers).\n\n**Workflow:**\n1. Use list_files to discover (cheap)\n2. Use search_code on specific files if you need details (targeted)\n\n**Supports:** lang, file, glob, exclude filters\n**No limit:** Returns ALL matching files\n\n**Example:** Pattern \"CourtCase\" → [\"app/Models/CourtCase.php\", \"app/Http/Controllers/CourtController.php\"]",
+                "name": "list_locations",
+                "description": "Fast location discovery with minimal token usage.\n\n**Purpose:** Find where a pattern occurs (file + line) without loading previews or detailed context.\n\n**Returns:** Array of {path, line} objects - one per match location.\n\n**Use this when:**\n- Starting exploration (\"where is X used?\")\n- Counting affected locations\n- Building a list for targeted Read operations\n- You need locations only, not code content\n\n**Workflow:**\n1. Use list_locations to discover (cheap, returns locations only)\n2. Use Read tool or search_code on specific files if you need content (targeted)\n\n**Supports:** lang, file, glob, exclude filters\n**No limit:** Returns ALL matching locations\n\n**Example:** Pattern \"CourtCase\" → [{\"path\": \"app/Models/CourtCase.php\", \"line\": 15}, {\"path\": \"app/Http/Controllers/CourtController.php\", \"line\": 42}]",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -139,7 +139,7 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
             },
             {
                 "name": "count_occurrences",
-                "description": "Quick statistics - count how many times a pattern occurs (minimal token usage).\n\n**Purpose:** Get total occurrence count and file count without loading any content.\n\n**Use this when:**\n- You need quick stats (\"how many times is CourtCase used?\")\n- Checking impact before refactoring\n- Validating search scope\n\n**Returns:** Total occurrences, unique files, and pagination info (no content, no previews).\n\n**Token usage:** ~100 bytes (vs ~10KB for full search_code results)\n\n**Supports:** All filters (lang, file, glob, exclude, symbols)\n\n**Example output:** {\"total\": 87, \"files\": 12, \"pattern\": \"CourtCase\"}",
+                "description": "Quick statistics - count how many times a pattern occurs.\n\n**Purpose:** Get total occurrence count and file count without loading any content.\n\n**Use this when:**\n- You need quick stats (\"how many times is X used?\")\n- Checking impact before refactoring\n- Validating search scope\n\n**Returns:** {total: count, files: count, pattern: string}\n\n**Supports:** All filters (lang, file, glob, exclude, symbols)\n\n**Example output:** {\"total\": 87, \"files\": 12, \"pattern\": \"CourtCase\"}",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -183,7 +183,7 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
             },
             {
                 "name": "search_code",
-                "description": "Full-text or symbol-only code search with detailed results.\n\n**⚠️ TOKEN USAGE:** Returns detailed results (previews, line numbers, spans). For discovery, use list_files first (70-90% fewer tokens).\n\n**Search modes:**\n- Full-text (default): Finds ALL occurrences - definitions + usages\n- Symbol-only (symbols=true): Finds ONLY definitions where symbols are declared\n\n**Use this for:**\n- Detailed analysis after list_files discovery\n- When you need line numbers and code previews\n- Symbol definition searches\n\n**Token efficiency tips:**\n- Start with list_files, then target specific files with file= filter\n- Use limit=10 for quick sampling\n- Use glob/exclude to narrow scope\n- Paginate with offset when has_more=true\n\n**Pagination:** Check response.pagination.has_more. If true, use offset parameter to fetch next page.\n\n**Note:** If results seem outdated, run index_project first.",
+                "description": "Full-text or symbol-only code search with detailed results.\n\n**When to use search_regex instead:**\n- Patterns with special characters: -> :: () [] {} . * + ? \\\\ | ^ $\n- Complex pattern matching: wildcards, alternation, anchors\n- Examples: '->with(', '::new', 'function*', '[derive]', 'fn (get|set)_.*'\n\n**Search modes:**\n- Full-text (default): Finds ALL occurrences - definitions + usages\n- Symbol-only (symbols=true): Finds ONLY definitions where symbols are declared\n\n**Use this for:**\n- Simple text patterns (alphanumeric, underscores, hyphens)\n- Detailed analysis with line numbers and code previews\n- Symbol definition searches\n\n**Pagination:** Check response.pagination.has_more. If true, use offset parameter to fetch next page.\n\n**Note:** If results seem outdated, run index_project first.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -247,7 +247,7 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
             },
             {
                 "name": "search_regex",
-                "description": "Regex-based code search for complex pattern matching (e.g., 'fn (get|set)_\\w+').\n\n**Use for:** Complex patterns requiring regex, case-insensitive variants, word boundaries.\n\n**Don't use for:** Simple text searches or symbol definitions (use search_code instead).\n\n**Token efficiency:** Previews are auto-truncated to ~100 chars. Use paths=true for minimal token usage.",
+                "description": "Regex-based code search for complex pattern matching (e.g., 'fn (get|set)_\\\\w+').\n\n**Use for:**\n- Patterns with special characters: -> :: () [] {} . * + ? \\\\ | ^ $\n- Pattern matching: wildcards (.*), alternation (a|b), anchors (^$)\n- Complex searches: case-insensitive variants, word boundaries\n\n**Common examples:**\n- Method calls: '->with\\\\(', '->map\\\\(', '::new\\\\('\n- Operators: '->', '::', '||', '&&'\n- Functions: 'fn (get|set)_\\\\\\\\w+' (getter/setter functions)\n- Attributes: '\\\\\\\\[(derive|test)\\\\\\\\]' (Rust attributes)\n\n**Escaping rules:**\n- Must escape: ( ) [ ] { } . * + ? \\\\ | ^ $\n- No escaping needed: -> :: - _ / = < >\n- Use double backslash in JSON: \\\\\\\\( \\\\\\\\) \\\\\\\\[ \\\\\\\\]\n\n**Don't use for:**\n- Simple text searches (use search_code instead - faster)\n- Symbol definitions (use search_code with symbols=true instead)",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -374,8 +374,8 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
     let arguments = params["arguments"].clone();
 
     match name {
-        "list_files" => {
-            // Paths-only discovery tool (minimal token usage)
+        "list_locations" => {
+            // Location discovery tool (minimal token usage)
             let pattern = arguments["pattern"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("Missing pattern"))?
@@ -419,16 +419,19 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let engine = QueryEngine::new(cache);
             let response = engine.search_with_metadata(&pattern, filter)?;
 
-            // Extract just the unique paths (minimal JSON)
-            let paths: Vec<String> = response.results.iter()
-                .map(|r| r.path.clone())
+            // Extract locations (path + line) for each match
+            let locations: Vec<serde_json::Value> = response.results.iter()
+                .map(|r| json!({
+                    "path": r.path,
+                    "line": r.span.start_line
+                }))
                 .collect();
 
-            // Return compact response (just paths + count)
+            // Return compact response (just locations + count)
             let compact_response = json!({
                 "status": response.status,
-                "total_files": paths.len(),
-                "paths": paths
+                "total_locations": locations.len(),
+                "locations": locations
             });
 
             Ok(json!({
@@ -521,7 +524,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let file = arguments["file"].as_str().map(|s| s.to_string());
             let limit = arguments["limit"].as_u64().map(|n| n as usize);
             let expand = arguments["expand"].as_bool();
-            let glob_patterns = arguments["glob"]
+            let glob_patterns: Vec<String> = arguments["glob"]
                 .as_array()
                 .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default();
@@ -562,7 +565,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 exact: exact.unwrap_or(false),
                 use_contains: false, // Default to word-boundary matching for MCP
                 timeout_secs: 30, // Default 30 second timeout for MCP queries
-                glob_patterns,
+                glob_patterns: glob_patterns.clone(),
                 exclude_patterns,
                 paths_only,
                 offset,
@@ -580,6 +583,20 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 result.preview = crate::cli::truncate_preview(&result.preview, MAX_PREVIEW_LENGTH);
             }
 
+            // Generate AI instruction (MCP always uses AI mode)
+            response.ai_instruction = crate::query::generate_ai_instruction(
+                response.results.len(),
+                response.pagination.total,
+                response.pagination.has_more,
+                symbols_mode,
+                paths_only,
+                false,  // use_ast
+                false,  // use_regex
+                language.is_some(),
+                !glob_patterns.is_empty(),
+                exact.unwrap_or(false),
+            );
+
             Ok(json!({
                 "content": [{
                     "type": "text",
@@ -596,7 +613,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let lang = arguments["lang"].as_str().map(|s| s.to_string());
             let file = arguments["file"].as_str().map(|s| s.to_string());
             let limit = arguments["limit"].as_u64().map(|n| n as usize);
-            let glob_patterns = arguments["glob"]
+            let glob_patterns: Vec<String> = arguments["glob"]
                 .as_array()
                 .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default();
@@ -631,7 +648,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 exact: false,
                 use_contains: false, // Regex mode uses substring matching via use_regex flag
                 timeout_secs: 30, // Default 30 second timeout for MCP queries
-                glob_patterns,
+                glob_patterns: glob_patterns.clone(),
                 exclude_patterns,
                 paths_only,
                 offset,
@@ -648,6 +665,20 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             for result in &mut response.results {
                 result.preview = crate::cli::truncate_preview(&result.preview, MAX_PREVIEW_LENGTH);
             }
+
+            // Generate AI instruction (MCP always uses AI mode)
+            response.ai_instruction = crate::query::generate_ai_instruction(
+                response.results.len(),
+                response.pagination.total,
+                response.pagination.has_more,
+                false,  // symbols_mode
+                paths_only,
+                false,  // use_ast
+                true,   // use_regex
+                language.is_some(),
+                !glob_patterns.is_empty(),
+                false,  // exact
+            );
 
             Ok(json!({
                 "content": [{

@@ -295,6 +295,11 @@ pub struct PaginationInfo {
 /// Query response with results and index status
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResponse {
+    /// AI-optimized instruction for how to handle these results
+    /// Only present when --ai flag is used or in MCP mode
+    /// Provides guidance to AI agents on response format and next actions
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_instruction: Option<String>,
     /// Status of the index (fresh or stale)
     pub status: IndexStatus,
     /// Whether the results can be trusted
