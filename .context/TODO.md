@@ -63,7 +63,7 @@
 
 ---
 
-## 🎯 Current Status Summary (Updated: 2025-11-04)
+## 🎯 Current Status Summary (Updated: 2025-11-09)
 
 ### 🚀 NEXT PRIORITY
 **All MVP Features Complete!**
@@ -75,8 +75,9 @@ Reflex is **production-ready** with all core features implemented:
 ✅ **File Watcher** - FULLY IMPLEMENTED (src/watcher.rs, 289 lines)
 ✅ **MCP Server** - FULLY IMPLEMENTED (src/mcp.rs, 476 lines)
 ✅ **Additional Language Support** - C#, Ruby, Kotlin, Zig ALL COMPLETE
+✅ **Background Symbol Indexing** - FULLY IMPLEMENTED (src/background_indexer.rs, src/symbol_cache.rs)
 
-**Current Phase:** ✅ Testing Complete (334 tests passing) - Production Ready
+**Current Phase:** ✅ Testing Complete (347 tests passing) - Production Ready
 
 ---
 
@@ -115,6 +116,9 @@ Reflex is **operational as a local code search engine** with the following capab
 # Index current directory
 reflex index
 
+# Check background symbol indexing status
+reflex index --status
+
 # Full-text search (finds all occurrences)
 reflex query "extract_symbols"  # Finds: definitions + call sites
 
@@ -124,6 +128,17 @@ reflex query "parse" --symbols --kind function
 # Regex search (with trigram optimization)
 reflex query "fn.*test" --regex  # or -r
 reflex query "(class|function)" --regex
+
+# Paths-only mode (return unique file paths)
+reflex query "TODO" --paths
+vim $(reflex query "TODO" --paths)  # Open all files with TODOs
+
+# Pagination
+reflex query "extract" --limit 10 --offset 0   # First page
+reflex query "extract" --limit 10 --offset 10  # Second page
+
+# Glob and exclude patterns
+reflex query "config" --glob "src/**/*.rs" --exclude "src/generated/**"
 
 # With filters
 reflex query "unwrap" --lang rust --limit 10 --json
@@ -135,7 +150,28 @@ reflex query "unwrap" --lang rust --limit 10 --json
 - None - all core features are fully functional
 
 **Recently Completed:**
-1. **Query Pipeline Refactor** - COMPLETED (2025-11-03) ✅
+1. **Background Symbol Indexing** - COMPLETED (2025-11-09) ✅
+   - Daemonized background process for symbol caching (src/background_indexer.rs, ~350 lines)
+   - Symbol cache system (src/symbol_cache.rs, 803 lines)
+   - Persistent symbol storage for faster symbol queries
+   - Progress tracking with status command (`rfx index --status`)
+   - Automatic spawning after trigram indexing completes
+   - Platform-specific process detachment (Unix/Windows support)
+   - Benefits: Dramatically faster symbol searches on large codebases
+   - Architecture: Separate process reads from content cache, parses with tree-sitter, writes to symbol cache
+
+2. **CLI Enhancements** - COMPLETED (2025-11-09) ✅
+   - `--paths` flag: Return unique file paths only (no line numbers/content)
+   - `--offset` flag: Pagination support (use with --limit for windowed results)
+   - `--all` flag: Return unlimited results (convenience for --limit 0)
+   - `--force` flag: Bypass broad query detection for expensive queries
+   - `--glob` patterns: Include specific files/directories (can be repeated)
+   - `--exclude` patterns: Exclude specific files/directories (can be repeated)
+   - `--no-truncate` flag: Disable smart preview truncation
+   - `--pretty` flag: Pretty-print JSON output
+   - Smart limit handling: Automatic unlimited mode for --paths without explicit --limit
+
+3. **Query Pipeline Refactor** - COMPLETED (2025-11-03) ✅
    - Replaced mutually-exclusive branching with composable pipeline architecture
    - Fixed bug: regex + symbol filtering now works correctly
    - Architecture: Phase 1 (candidates) → Phase 2 (enrichment) → Phase 3 (filters)
@@ -144,7 +180,7 @@ reflex query "unwrap" --lang rust --limit 10 --json
    - Performance maintained: 2-190ms depending on query type
    - 221 tests passing
 
-2. **Regex support** - FULLY IMPLEMENTED ✅
+4. **Regex support** - FULLY IMPLEMENTED ✅
    - Regex pattern matching with trigram optimization (src/regex_trigrams.rs)
    - Literal extraction from regex patterns (≥3 chars)
    - Union-based file selection for correctness
@@ -188,7 +224,7 @@ reflex query "unwrap" --lang rust --limit 10 --json
 | **File Watcher** | ✅ Complete | 100% |
 | **MCP Server** | ✅ Complete | 100% |
 | **AST Pattern Matching** | ✅ Complete | 100% |
-| **Tests** | ✅ Complete | 100% (334 total tests) |
+| **Tests** | ✅ Complete | 100% (347 total tests) |
 | **Documentation** | ✅ Complete | 85% (README, ARCHITECTURE, rustdoc, HTTP API) |
 
 ---
@@ -631,7 +667,7 @@ reflex query  →  [Query Engine] → [Mode: Full-text or Symbol-only]
 
 ### 7. Testing & Quality ✅ COMPLETED
 
-**Status:** Comprehensive test suite implemented with **334 total tests** across unit, integration, and performance categories.
+**Status:** Comprehensive test suite implemented with **347 total tests** across unit, integration, and performance categories.
 
 #### P0: Unit Tests ✅ COMPLETED (261+ tests)
 Embedded in source files using `#[cfg(test)]` modules:
@@ -1114,7 +1150,7 @@ Tree-sitter Grammars ──────────→ AST Extraction ───�
 - [x] JSON output support across commands
 - [x] Regex search support (--regex/-r flag) ✅
 
-### Comprehensive Testing Suite (COMPLETED - 334 tests)
+### Comprehensive Testing Suite (COMPLETED - 347 tests)
 - [x] **Unit Tests** (261+ tests in src/ modules)
   - Cache: 29 tests (init, persistence, stats, clearing)
   - Indexer: 24 tests (filtering, hashing, incremental updates)
