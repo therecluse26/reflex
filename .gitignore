@@ -26,3 +26,5 @@ reflex
 
 # cargo-dist artifacts
 /target/distrib/
+
+benchmark*.json
