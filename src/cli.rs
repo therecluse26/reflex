@@ -120,6 +120,12 @@ pub enum Command {
         #[arg(long)]
         pretty: bool,
 
+        /// AI-optimized mode: returns JSON with ai_instruction field
+        /// Implies --json (minified by default, use --pretty for formatted output)
+        /// Provides context-aware guidance to AI agents on response format and next actions
+        #[arg(long)]
+        ai: bool,
+
         /// Maximum number of results
         #[arg(short = 'n', long)]
         limit: Option<usize>,
@@ -307,8 +313,8 @@ impl Cli {
             Some(Command::Index { path, force, languages, quiet, status }) => {
                 handle_index(path, force, languages, quiet, status)
             }
-            Some(Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force }) => {
-                handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force)
+            Some(Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force }) => {
+                handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force)
             }
             Some(Command::Serve { port, host }) => {
                 handle_serve(port, host)
@@ -552,6 +558,7 @@ fn handle_query(
     use_regex: bool,
     as_json: bool,
     pretty_json: bool,
+    ai_mode: bool,
     limit: Option<usize>,
     offset: Option<usize>,
     expand: bool,
@@ -569,6 +576,9 @@ fn handle_query(
     force: bool,
 ) -> Result<()> {
     log::info!("Starting query command");
+
+    // AI mode implies JSON output
+    let as_json = as_json || ai_mode;
 
     let cache = CacheManager::new(".");
     let engine = QueryEngine::new(cache);
@@ -697,7 +707,7 @@ fn handle_query(
         exact,
         use_contains,
         timeout_secs,
-        glob_patterns,
+        glob_patterns: glob_patterns.clone(),
         exclude_patterns,
         paths_only,
         offset,
@@ -782,23 +792,27 @@ fn handle_query(
             };
             println!("{}", json_output);
         } else if paths_only {
-            // Paths-only JSON mode: output array of unique file paths
-            let paths: Vec<String> = results.iter()
-                .map(|r| r.path.clone())
+            // Paths-only JSON mode: output array of {path, line} objects
+            let locations: Vec<serde_json::Value> = results.iter()
+                .map(|r| serde_json::json!({
+                    "path": r.path,
+                    "line": r.span.start_line
+                }))
                 .collect();
             let json_output = if pretty_json {
-                serde_json::to_string_pretty(&paths)?
+                serde_json::to_string_pretty(&locations)?
             } else {
-                serde_json::to_string(&paths)?
+                serde_json::to_string(&locations)?
             };
             println!("{}", json_output);
-            eprintln!("Found {} unique files in {}", paths.len(), timing_str);
+            eprintln!("Found {} unique files in {}", locations.len(), timing_str);
         } else {
             // Get or build QueryResponse for JSON output
-            let response = if use_ast {
+            let mut response = if use_ast {
                 // For AST queries, build a response with minimal metadata
                 use crate::models::{PaginationInfo, IndexStatus};
                 crate::models::QueryResponse {
+                    ai_instruction: None,  // Will be populated below if ai_mode is true
                     status: IndexStatus::Fresh,
                     can_trust_results: true,
                     warning: None,
@@ -818,6 +832,22 @@ fn handle_query(
                 response.results = results;
                 response
             };
+
+            // Generate AI instruction if in AI mode
+            if ai_mode {
+                response.ai_instruction = crate::query::generate_ai_instruction(
+                    response.results.len(),
+                    response.pagination.total,
+                    response.pagination.has_more,
+                    symbols_mode,
+                    paths_only,
+                    use_ast,
+                    use_regex,
+                    language.is_some(),
+                    !glob_patterns.is_empty(),
+                    exact,
+                );
+            }
 
             let json_output = if pretty_json {
                 serde_json::to_string_pretty(&response)?
