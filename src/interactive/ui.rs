@@ -494,29 +494,62 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
         .style(Style::default().bg(Color::Black));
     f.render_widget(clear_block, area);
 
-    // Render result list
+    // Render result list (2 lines per result)
+    // Calculate how many results fit (each result takes 2 lines)
+    let visible_lines = area.height.saturating_sub(2) as usize;
+    let visible_results_count = visible_lines / 2;
+
     let items: Vec<ListItem> = results
-        .visible_results((area.height.saturating_sub(2)) as usize)
+        .visible_results(visible_results_count)
         .iter()
         .enumerate()
         .map(|(idx, result)| {
             let global_idx = idx + results.scroll_offset();
             let is_selected = global_idx == results.selected_index();
 
-            let file_display = format!("{}:{}", result.path, result.span.start_line);
-            let match_display = result.preview.trim();
+            // Make path relative to project root
+            let relative_path = std::path::Path::new(&result.path)
+                .strip_prefix(app.cwd())
+                .ok()
+                .and_then(|p| p.to_str())
+                .map(|p| format!("./{}", p))
+                .unwrap_or_else(|| result.path.clone());
 
-            let style = if is_selected {
-                Style::default()
+            // When selected: both lines get highlighted background
+            // When not selected: file path is cyan, code snippet is normal foreground
+            if is_selected {
+                let file_line = format!("{}:{}", relative_path, result.span.start_line);
+                let match_line = format!("    {}", result.preview.trim()); // 4 spaces indent
+
+                let style = Style::default()
                     .fg(Color::Black)
                     .bg(palette.highlight)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(palette.foreground)
-            };
+                    .add_modifier(Modifier::BOLD);
 
-            let content = format!("{:<60} {}", file_display, match_display);
-            ListItem::new(content).style(style)
+                let lines = vec![
+                    Line::from(file_line),
+                    Line::from(match_line),
+                ];
+                ListItem::new(lines).style(style)
+            } else {
+                // Use Span for different colors per line
+                let file_line = Line::from(vec![
+                    Span::styled(
+                        format!("{}:{}", relative_path, result.span.start_line),
+                        Style::default().fg(palette.info) // Cyan for file path
+                    )
+                ]);
+
+                let match_line = Line::from(vec![
+                    Span::styled(
+                        format!("    {}", result.preview.trim()), // 4 spaces indent
+                        Style::default().fg(palette.foreground) // Normal color for code
+                    )
+                ]);
+
+                let lines = vec![file_line, match_line];
+                ListItem::new(lines)
+            }
         })
         .collect();
 
@@ -533,8 +566,8 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     f.render_widget(list, area);
 
     // Render scrollbar if there are more results than visible
-    let visible_height = area.height.saturating_sub(2) as usize;
-    if result_count > visible_height {
+    // (each result takes 2 lines, so we divide visible height by 2)
+    if result_count > visible_results_count {
         let mut scrollbar_state = ScrollbarState::new(result_count)
             .position(results.selected_index());
 
@@ -647,7 +680,17 @@ fn render_file_preview(f: &mut Frame, area: Rect, app: &InteractiveApp) {
             })
             .collect();
 
-        let title = format!(" {} (line {}) ", preview.path(), center);
+        // Make path relative to project root
+        let relative_path = preview.path()
+            .strip_prefix(app.cwd().to_str().unwrap_or(""))
+            .unwrap_or(preview.path())
+            .trim_start_matches('/');
+        let relative_display = if relative_path.is_empty() {
+            "./".to_string()
+        } else {
+            format!("./{}", relative_path)
+        };
+        let title = format!(" {} (line {}) ", relative_display, center);
         let list = List::new(items)
             .block(
                 Block::default()

@@ -415,13 +415,13 @@ impl Indexer {
         log::info!("Wrote {} files ({} bytes) to content.bin",
                    content_writer.file_count(), content_writer.content_size());
 
-        // Step 5: Update SQLite statistics from database totals
+        // Step 5: Update SQLite statistics from database totals (branch-aware)
         *progress_status.lock().unwrap() = "Updating statistics...".to_string();
         if show_progress {
             pb.set_message("Updating statistics...".to_string());
         }
-        // Note: Hashes are already persisted to SQLite via cache.update_file() in the loop above
-        self.cache.update_stats()?;
+        // Update stats for current branch only
+        self.cache.update_stats(&branch)?;
 
         pb.finish_with_message("Indexing complete");
 

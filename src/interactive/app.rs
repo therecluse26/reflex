@@ -44,12 +44,6 @@ pub struct InteractiveApp {
     effects: EffectManager,
     /// Mouse state
     mouse: MouseState,
-    /// Whether a search is pending (debounce)
-    search_pending: bool,
-    /// Last search time (for debouncing)
-    last_input_time: Option<Instant>,
-    /// Debounce duration in milliseconds
-    debounce_ms: u64,
     /// Index status
     index_status: IndexStatusState,
     /// Whether to quit
@@ -167,9 +161,6 @@ impl InteractiveApp {
             theme,
             effects: EffectManager::new(),
             mouse: MouseState::new(),
-            search_pending: false,
-            last_input_time: None,
-            debounce_ms: 600, // 2x longer debounce for smoother typing
             index_status,
             should_quit: false,
             focus_state: FocusState::Input, // Start with input focused
@@ -229,8 +220,9 @@ impl InteractiveApp {
             // Update visible height for scroll calculations
             let terminal_size = terminal.size()?;
             let terminal_height = terminal_size.height;
-            let visible_height = terminal_height.saturating_sub(9) as usize; // header(3) + filters(3) + footer(1) + result_borders(2)
-            self.results.set_visible_height(visible_height);
+            let visible_lines = terminal_height.saturating_sub(9) as usize; // header(3) + filters(3) + footer(1) + result_borders(2)
+            let visible_results_count = visible_lines / 2; // Each result takes 2 lines
+            self.results.set_visible_height(visible_results_count);
 
             // Render UI
             terminal.draw(|f| ui::render(f, self))?;
@@ -254,11 +246,6 @@ impl InteractiveApp {
                     }
                     _ => {}
                 }
-            }
-
-            // Check if we need to execute a search
-            if self.should_execute_search() {
-                self.execute_search()?;
             }
 
             // Check for search results
@@ -446,13 +433,11 @@ impl InteractiveApp {
 
             KeyCommand::ToggleSymbols => {
                 self.filters.symbols_mode = !self.filters.symbols_mode;
-                self.trigger_search();
                 Ok(None)
             }
 
             KeyCommand::ToggleRegex => {
                 self.filters.regex_mode = !self.filters.regex_mode;
-                self.trigger_search();
                 Ok(None)
             }
 
@@ -470,7 +455,6 @@ impl InteractiveApp {
                 if let Some(query) = self.history.prev() {
                     self.input.set_value(query.pattern.clone());
                     self.filters = query.filters.clone();
-                    self.trigger_search();
                 }
                 Ok(None)
             }
@@ -479,7 +463,6 @@ impl InteractiveApp {
                 if let Some(query) = self.history.next() {
                     self.input.set_value(query.pattern.clone());
                     self.filters = query.filters.clone();
-                    self.trigger_search();
                 } else {
                     // At the end of history, clear input
                     self.input.clear();
@@ -491,10 +474,7 @@ impl InteractiveApp {
             KeyCommand::None => {
                 // If input is focused, handle the key for text input
                 if self.focus_state == FocusState::Input {
-                    if self.input.handle_key(key) {
-                        // Input changed, trigger debounced search
-                        self.trigger_search();
-                    }
+                    self.input.handle_key(key);
                 }
                 Ok(None)
             }
@@ -591,39 +571,19 @@ impl InteractiveApp {
                 }
             }
             MouseAction::ScrollDown => {
-                for _ in 0..3 {
-                    self.results.next();
-                }
+                self.results.next();
             }
             MouseAction::ScrollUp => {
-                for _ in 0..3 {
-                    self.results.prev();
-                }
+                self.results.prev();
             }
             _ => {}
         }
     }
 
-    fn trigger_search(&mut self) {
-        self.search_pending = true;
-        self.last_input_time = Some(Instant::now());
-        self.history.reset_cursor();
-    }
-
-    fn should_execute_search(&self) -> bool {
-        if !self.search_pending {
-            return false;
-        }
-
-        if let Some(last_time) = self.last_input_time {
-            last_time.elapsed() >= Duration::from_millis(self.debounce_ms)
-        } else {
-            false
-        }
-    }
 
     fn execute_search(&mut self) -> Result<()> {
-        self.search_pending = false;
+        // Reset history cursor when executing a new search
+        self.history.reset_cursor();
 
         let pattern = self.input.value();
         if pattern.trim().is_empty() {
@@ -835,6 +795,10 @@ impl InteractiveApp {
 
     pub fn indexing_elapsed_secs(&self) -> Option<u64> {
         self.indexing_start_time.map(|start| start.elapsed().as_secs())
+    }
+
+    pub fn cwd(&self) -> &PathBuf {
+        &self.cwd
     }
 }
 
