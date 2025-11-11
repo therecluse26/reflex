@@ -158,6 +158,13 @@ pub enum KeyCommand {
     ToggleRegex,
     PromptLanguage,
     PromptKind,
+    PromptGlob,
+    PromptExclude,
+    ToggleExpand,
+    ToggleExact,
+    ToggleContains,
+    ClearLanguage,
+    ClearKind,
 
     // Actions
     OpenInEditor,
@@ -204,23 +211,31 @@ impl KeyCommand {
 
         // Global shortcuts when input not focused
         match (key.code, key.modifiers) {
-            // Navigation
+            // Navigation (j/k conflict resolved - j for next, arrow keys work)
             (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, _) => Self::NextResult,
-            (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, _) => Self::PrevResult,
+            (KeyCode::Up, _) => Self::PrevResult,
             (KeyCode::PageDown, _) => Self::PageDown,
             (KeyCode::PageUp, _) => Self::PageUp,
-            (KeyCode::Home, _) | (KeyCode::Char('g'), KeyModifiers::NONE) => Self::First,
+            (KeyCode::Home, _) => Self::First,
+            (KeyCode::Char('g'), KeyModifiers::SHIFT) => Self::First, // G for first (like vim gg)
             (KeyCode::End, _) | (KeyCode::Char('G'), KeyModifiers::SHIFT) => Self::Last,
 
             // Input focus
             (KeyCode::Char('/'), KeyModifiers::NONE) => Self::FocusInput,
             (KeyCode::Esc, _) => Self::UnfocusInput,
 
-            // Filters
+            // Filters - need specific ordering to avoid conflicts
+            (KeyCode::Char('l'), KeyModifiers::CONTROL) => Self::ClearLanguage,
+            (KeyCode::Char('k'), KeyModifiers::CONTROL) => Self::ClearKind,
             (KeyCode::Char('s'), KeyModifiers::NONE) => Self::ToggleSymbols,
             (KeyCode::Char('r'), KeyModifiers::NONE) => Self::ToggleRegex,
             (KeyCode::Char('l'), KeyModifiers::NONE) => Self::PromptLanguage,
-            (KeyCode::Char('K'), KeyModifiers::SHIFT) => Self::PromptKind,
+            (KeyCode::Char('k'), KeyModifiers::NONE) => Self::PromptKind,
+            (KeyCode::Char('g'), KeyModifiers::NONE) => Self::PromptGlob,
+            (KeyCode::Char('x'), KeyModifiers::NONE) => Self::PromptExclude,
+            (KeyCode::Char('e'), KeyModifiers::NONE) => Self::ToggleExpand,
+            (KeyCode::Char('E'), KeyModifiers::SHIFT) => Self::ToggleExact,
+            (KeyCode::Char('c'), KeyModifiers::NONE) => Self::ToggleContains,
 
             // Actions
             (KeyCode::Char('o'), KeyModifiers::NONE) | (KeyCode::Enter, _) => Self::OpenInEditor,

@@ -26,6 +26,13 @@ pub fn render(f: &mut Frame, app: &InteractiveApp) {
     match app.mode() {
         AppMode::Help => render_help_screen(f, chunks[2], app),
         AppMode::FilePreview => render_file_preview(f, chunks[2], app),
+        AppMode::FilterSelector => {
+            render_results_area(f, chunks[2], app);
+            // Render filter selector modal on top
+            if let Some(selector) = app.filter_selector() {
+                selector.render(f, chunks[2], app.theme());
+            }
+        }
         AppMode::Indexing | AppMode::Normal => render_results_area(f, chunks[2], app),
     }
 
@@ -124,13 +131,16 @@ fn render_filters(f: &mut Frame, area: Rect, app: &InteractiveApp) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Filters [s: symbols, r: regex] ")
+        .title(" Filters [s: symbols, r: regex, l: lang, k: kind, e: expand, E: exact, c: contains] ")
         .border_style(border_style);
 
     let filters = app.filters();
 
-    // Create clickable filter buttons
+    // Create clickable filter buttons - ALL VISIBLE ALL THE TIME
     let mut filter_spans = vec![];
+    let inactive_style = Style::default()
+        .fg(palette.muted)
+        .bg(Color::Rgb(30, 30, 30));
 
     // Symbols button
     let symbols_style = if filters.symbols_mode {
@@ -139,9 +149,7 @@ fn render_filters(f: &mut Frame, area: Rect, app: &InteractiveApp) {
             .bg(palette.badge_active)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default()
-            .fg(palette.muted)
-            .bg(Color::Rgb(30, 30, 30))
+        inactive_style
     };
     filter_spans.push(Span::styled(" [s] Symbols ", symbols_style));
     filter_spans.push(Span::raw("  "));
@@ -153,42 +161,82 @@ fn render_filters(f: &mut Frame, area: Rect, app: &InteractiveApp) {
             .bg(palette.warning)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default()
-            .fg(palette.muted)
-            .bg(Color::Rgb(30, 30, 30))
+        inactive_style
     };
     filter_spans.push(Span::styled(" [r] Regex ", regex_style));
+    filter_spans.push(Span::raw("  "));
 
-    // Language filter (if set)
-    if let Some(ref lang) = filters.language {
-        filter_spans.push(Span::raw("  "));
-        filter_spans.push(Span::styled(
-            format!(" Lang: {} ", lang),
-            Style::default()
-                .fg(Color::Black)
-                .bg(palette.info)
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
+    // Language filter (always visible)
+    let lang_style = if filters.language.is_some() {
+        Style::default()
+            .fg(Color::Black)
+            .bg(palette.info)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        inactive_style
+    };
+    let lang_text = if let Some(ref lang) = filters.language {
+        format!(" [l] Lang: {} ", lang)
+    } else {
+        " [l] Lang ".to_string()
+    };
+    filter_spans.push(Span::styled(lang_text, lang_style));
+    filter_spans.push(Span::raw("  "));
 
-    // Kind filter (if set)
-    if let Some(ref kind) = filters.kind {
-        filter_spans.push(Span::raw("  "));
-        filter_spans.push(Span::styled(
-            format!(" Kind: {} ", kind),
-            Style::default()
-                .fg(Color::Black)
-                .bg(palette.info)
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
+    // Kind filter (always visible)
+    let kind_style = if filters.kind.is_some() {
+        Style::default()
+            .fg(Color::Black)
+            .bg(palette.info)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        inactive_style
+    };
+    let kind_text = if let Some(ref kind) = filters.kind {
+        format!(" [k] Kind: {} ", kind)
+    } else {
+        " [k] Kind ".to_string()
+    };
+    filter_spans.push(Span::styled(kind_text, kind_style));
+    filter_spans.push(Span::raw("  "));
 
-    if filter_spans.is_empty() {
-        filter_spans.push(Span::styled(
-            " No filters active ",
-            Style::default().fg(palette.muted),
-        ));
-    }
+    // Expand mode (always visible)
+    let expand_style = if filters.expand {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Rgb(150, 200, 100))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        inactive_style
+    };
+    filter_spans.push(Span::styled(" [e] Expand ", expand_style));
+    filter_spans.push(Span::raw("  "));
+
+    // Exact mode (always visible)
+    let exact_style = if filters.exact {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Rgb(200, 150, 100))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        inactive_style
+    };
+    filter_spans.push(Span::styled(" [E] Exact ", exact_style));
+    filter_spans.push(Span::raw("  "));
+
+    // Contains mode (always visible)
+    let contains_style = if filters.contains {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Rgb(180, 120, 200))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        inactive_style
+    };
+    filter_spans.push(Span::styled(" [c] Contains ", contains_style));
+
+    // Note: filter_spans will always have at least Symbols and Regex badges,
+    // so no need to check if empty
 
     let paragraph = Paragraph::new(Line::from(filter_spans))
         .block(block)
@@ -668,24 +716,32 @@ fn render_help_screen(f: &mut Frame, area: Rect, app: &InteractiveApp) {
         "",
         "  Search:",
         "    /             Focus search input",
-        "    Esc           Unfocus input / close help",
+        "    Esc           Unfocus input / close help / close selector",
         "    Ctrl+P        Previous query from history",
         "    Ctrl+N        Next query from history",
         "",
         "  Filters:",
         "    s             Toggle symbols-only mode",
         "    r             Toggle regex mode",
-        "    l             Filter by language (not yet implemented)",
-        "    k             Filter by kind (not yet implemented)",
+        "    l             Select language filter",
+        "    k             Select symbol kind filter",
+        "    g             Add glob pattern (CLI only for now)",
+        "    x             Add exclude pattern (CLI only for now)",
+        "    e             Toggle expand mode (full definitions)",
+        "    E             Toggle exact match mode",
+        "    c             Toggle contains mode (substring)",
+        "    Ctrl+L        Clear language filter",
+        "    Ctrl+K        Clear kind filter",
         "",
         "  Actions:",
-        "    o / Enter     Open file in $EDITOR",
+        "    o / Enter     Open file in $EDITOR / Expand preview",
         "    i             Trigger reindex",
         "    ?             Toggle this help screen",
         "    q / Ctrl+C    Quit",
         "",
         "  Mouse:",
-        "    Click         Select result",
+        "    Click         Select result / Focus input / Toggle filters",
+        "    Click status  Trigger reindex (top-right corner)",
         "    Scroll        Navigate results",
         "",
         "  Press '?' to close this help screen",
@@ -801,6 +857,20 @@ fn render_footer(f: &mut Frame, area: Rect, app: &InteractiveApp) {
             Span::styled("Press ", Style::default().fg(palette.muted)),
             Span::styled("?", Style::default().fg(palette.accent).add_modifier(Modifier::BOLD)),
             Span::styled(" to close help", Style::default().fg(palette.muted)),
+        ],
+        AppMode::FilterSelector => vec![
+            Span::styled(
+                "[FILTER SELECTOR] ",
+                Style::default()
+                    .fg(palette.info)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("↑↓/j/k", Style::default().fg(palette.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(" navigate  ", Style::default().fg(palette.muted)),
+            Span::styled("Enter", Style::default().fg(palette.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(" select  ", Style::default().fg(palette.muted)),
+            Span::styled("Esc", Style::default().fg(palette.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(" cancel", Style::default().fg(palette.muted)),
         ],
         AppMode::FilePreview => vec![
             Span::styled(

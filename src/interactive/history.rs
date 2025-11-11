@@ -37,6 +37,16 @@ pub struct QueryFilters {
     pub language: Option<String>,
     /// Symbol kind filter
     pub kind: Option<String>,
+    /// Glob patterns (include files matching)
+    pub glob_patterns: Vec<String>,
+    /// Exclude patterns (exclude files matching)
+    pub exclude_patterns: Vec<String>,
+    /// Expand mode (show full symbol definitions)
+    pub expand: bool,
+    /// Exact match mode (no substring matching)
+    pub exact: bool,
+    /// Contains mode (substring matching)
+    pub contains: bool,
 }
 
 impl QueryHistory {

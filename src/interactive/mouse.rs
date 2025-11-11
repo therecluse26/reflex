@@ -81,9 +81,20 @@ impl MouseState {
                 // Update last click
                 self.last_click = Some((event.column, event.row, button, now));
 
-                // Check input area (click to focus)
+                // Check input area (click to focus or click on index status)
                 if self.is_in_area(input_area) {
-                    // Calculate cursor position (subtract 1 for left border)
+                    // Index status is in the top-right corner of input area
+                    // It appears after significant spacing from the left title
+                    // Check if click is in the right portion of the header (last 20 chars)
+                    let col = event.column.saturating_sub(input_area.x);
+                    let row = event.row.saturating_sub(input_area.y);
+
+                    // If clicking in the title bar (row 0) and in the right portion
+                    if row == 0 && col > input_area.width.saturating_sub(22) {
+                        return MouseAction::TriggerIndex;
+                    }
+
+                    // Otherwise, calculate cursor position for input focus (subtract 1 for left border)
                     let cursor_pos = (event.column.saturating_sub(input_area.x + 1)) as usize;
                     return MouseAction::FocusInput(cursor_pos);
                 }
@@ -174,6 +185,8 @@ pub enum MouseAction {
     ToggleRegex,
     /// Close file preview
     ClosePreview,
+    /// Trigger reindexing (click on index status)
+    TriggerIndex,
 }
 
 #[cfg(test)]

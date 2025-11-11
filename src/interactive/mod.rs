@@ -1,6 +1,7 @@
 // Interactive mode modules
 mod app;
 mod effects;
+mod filter_selector;
 mod history;
 mod input;
 mod mouse;

@@ -74,6 +74,8 @@ pub struct InteractiveApp {
     filter_change_time: Option<Instant>,
     /// Filter debounce duration in milliseconds
     filter_debounce_ms: u64,
+    /// Current filter selector (if open)
+    filter_selector: Option<super::filter_selector::FilterSelector>,
 }
 
 /// File preview state
@@ -97,6 +99,8 @@ pub enum AppMode {
     Indexing,
     /// File preview is showing
     FilePreview,
+    /// Filter selector is showing (language or kind)
+    FilterSelector,
 }
 
 /// Focus state for Tab navigation
@@ -181,6 +185,7 @@ impl InteractiveApp {
             indexing_start_time: None,
             filter_change_time: None,
             filter_debounce_ms: 1000, // 1 second
+            filter_selector: None,
         })
     }
 
@@ -338,6 +343,39 @@ impl InteractiveApp {
     }
 
     fn handle_key_event_with_editor(&mut self, key: KeyEvent) -> Result<Option<SearchResult>> {
+        // Handle filter selector mode first
+        if self.mode == AppMode::FilterSelector {
+            if let Some(ref mut selector) = self.filter_selector {
+                if key.code == crossterm::event::KeyCode::Esc {
+                    // Close selector without selection
+                    self.mode = AppMode::Normal;
+                    self.filter_selector = None;
+                    return Ok(None);
+                }
+
+                if let Some(selection) = selector.handle_key(key.code) {
+                    // We need to know which type of selector this is
+                    // Let's check by seeing if selection is a valid language or kind
+                    let selection_lower = selection.to_lowercase();
+                    let is_language = matches!(selection_lower.as_str(),
+                        "rust" | "python" | "javascript" | "typescript" | "vue" | "svelte" |
+                        "go" | "java" | "php" | "c" | "cpp" | "csharp" | "ruby" | "kotlin" | "zig"
+                    );
+
+                    if is_language {
+                        self.filters.language = Some(selection);
+                    } else {
+                        self.filters.kind = Some(selection);
+                    }
+
+                    self.mode = AppMode::Normal;
+                    self.filter_selector = None;
+                    self.filter_change_time = Some(Instant::now());
+                }
+                return Ok(None);
+            }
+        }
+
         // Handle Tab/Shift+Tab for focus cycling
         if key.code == crossterm::event::KeyCode::Tab {
             if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) {
@@ -453,6 +491,60 @@ impl InteractiveApp {
 
             KeyCommand::ToggleRegex => {
                 self.filters.regex_mode = !self.filters.regex_mode;
+                self.filter_change_time = Some(Instant::now());
+                Ok(None)
+            }
+
+            KeyCommand::PromptLanguage => {
+                self.filter_selector = Some(super::filter_selector::FilterSelector::new_language());
+                self.mode = AppMode::FilterSelector;
+                Ok(None)
+            }
+
+            KeyCommand::PromptKind => {
+                self.filter_selector = Some(super::filter_selector::FilterSelector::new_kind());
+                self.mode = AppMode::FilterSelector;
+                Ok(None)
+            }
+
+            KeyCommand::PromptGlob => {
+                // For now, set a simple info message. In future, could add text input modal
+                self.info_message = Some("Glob patterns: Use CLI for now (--glob flag)".to_string());
+                Ok(None)
+            }
+
+            KeyCommand::PromptExclude => {
+                // For now, set a simple info message. In future, could add text input modal
+                self.info_message = Some("Exclude patterns: Use CLI for now (--exclude flag)".to_string());
+                Ok(None)
+            }
+
+            KeyCommand::ToggleExpand => {
+                self.filters.expand = !self.filters.expand;
+                self.filter_change_time = Some(Instant::now());
+                Ok(None)
+            }
+
+            KeyCommand::ToggleExact => {
+                self.filters.exact = !self.filters.exact;
+                self.filter_change_time = Some(Instant::now());
+                Ok(None)
+            }
+
+            KeyCommand::ToggleContains => {
+                self.filters.contains = !self.filters.contains;
+                self.filter_change_time = Some(Instant::now());
+                Ok(None)
+            }
+
+            KeyCommand::ClearLanguage => {
+                self.filters.language = None;
+                self.filter_change_time = Some(Instant::now());
+                Ok(None)
+            }
+
+            KeyCommand::ClearKind => {
+                self.filters.kind = None;
                 self.filter_change_time = Some(Instant::now());
                 Ok(None)
             }
@@ -622,6 +714,9 @@ impl InteractiveApp {
             MouseAction::ScrollUp => {
                 self.results.prev();
             }
+            MouseAction::TriggerIndex => {
+                let _ = self.trigger_index();
+            }
             _ => {}
         }
     }
@@ -665,21 +760,48 @@ impl InteractiveApp {
             return Ok(());
         }
 
+        // Parse language filter
+        let language = self.filters.language.as_ref().and_then(|lang_str| {
+            match lang_str.to_lowercase().as_str() {
+                "rust" | "rs" => Some(crate::models::Language::Rust),
+                "python" | "py" => Some(crate::models::Language::Python),
+                "javascript" | "js" => Some(crate::models::Language::JavaScript),
+                "typescript" | "ts" => Some(crate::models::Language::TypeScript),
+                "vue" => Some(crate::models::Language::Vue),
+                "svelte" => Some(crate::models::Language::Svelte),
+                "go" => Some(crate::models::Language::Go),
+                "java" => Some(crate::models::Language::Java),
+                "php" => Some(crate::models::Language::PHP),
+                "c" => Some(crate::models::Language::C),
+                "cpp" | "c++" => Some(crate::models::Language::Cpp),
+                "csharp" | "cs" | "c#" => Some(crate::models::Language::CSharp),
+                "ruby" | "rb" => Some(crate::models::Language::Ruby),
+                "kotlin" | "kt" => Some(crate::models::Language::Kotlin),
+                "zig" => Some(crate::models::Language::Zig),
+                _ => None,
+            }
+        });
+
+        // Parse symbol kind filter
+        let kind = self.filters.kind.as_ref().and_then(|kind_str| {
+            kind_str.parse::<crate::models::SymbolKind>().ok()
+        });
+
         // Build query filter
         let filter = QueryFilter {
-            language: None, // TODO: Add language filter
-            kind: None,     // TODO: Add kind filter
+            language,
+            kind,
             use_ast: false,
             use_regex: self.filters.regex_mode,
             limit: Some(500),
             symbols_mode: self.filters.symbols_mode,
-            expand: false,
+            expand: self.filters.expand,
             file_pattern: None,
-            exact: false,
-            use_contains: false,
+            exact: self.filters.exact,
+            use_contains: self.filters.contains,
             timeout_secs: 10,
-            glob_patterns: Vec::new(),
-            exclude_patterns: Vec::new(),
+            glob_patterns: self.filters.glob_patterns.clone(),
+            exclude_patterns: self.filters.exclude_patterns.clone(),
             paths_only: false,
             offset: None,
             force: false,
@@ -876,6 +998,10 @@ impl InteractiveApp {
 
     pub fn cwd(&self) -> &PathBuf {
         &self.cwd
+    }
+
+    pub fn filter_selector(&self) -> Option<&super::filter_selector::FilterSelector> {
+        self.filter_selector.as_ref()
     }
 }
 
