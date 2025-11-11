@@ -9,7 +9,7 @@ use ratatui::{
 use super::app::{AppMode, FocusState, IndexStatusState, InteractiveApp};
 
 /// Main render function
-pub fn render(f: &mut Frame, app: &InteractiveApp) {
+pub fn render(f: &mut Frame, app: &mut InteractiveApp) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -117,8 +117,10 @@ fn render_header(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     }
 }
 
-fn render_filters(f: &mut Frame, area: Rect, app: &InteractiveApp) {
-    let palette = &app.theme().palette;
+fn render_filters(f: &mut Frame, area: Rect, app: &mut InteractiveApp) {
+    // Clone what we need upfront to avoid borrow checker issues
+    let filters = app.filters().clone();
+    let palette = app.theme().palette.clone();
     let filters_focused = matches!(app.focus_state(), FocusState::Filters);
 
     let border_style = if filters_focused {
@@ -134,15 +136,16 @@ fn render_filters(f: &mut Frame, area: Rect, app: &InteractiveApp) {
         .title(" Filters [s: symbols, r: regex, l: lang, k: kind, e: expand, E: exact, c: contains] ")
         .border_style(border_style);
 
-    let filters = app.filters();
-
     // Create clickable filter buttons - ALL VISIBLE ALL THE TIME
+    // Track position for accurate mouse click detection
     let mut filter_spans = vec![];
+    let mut pos = 0; // Current column position
     let inactive_style = Style::default()
         .fg(palette.muted)
         .bg(Color::Rgb(30, 30, 30));
 
     // Symbols button
+    let symbols_text = " [s] Symbols ";
     let symbols_style = if filters.symbols_mode {
         Style::default()
             .fg(Color::Black)
@@ -151,10 +154,15 @@ fn render_filters(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     } else {
         inactive_style
     };
-    filter_spans.push(Span::styled(" [s] Symbols ", symbols_style));
+    let symbols_start = pos;
+    filter_spans.push(Span::styled(symbols_text, symbols_style));
+    pos += symbols_text.len();
+    let symbols_end = pos;
     filter_spans.push(Span::raw("  "));
+    pos += 2;
 
     // Regex button
+    let regex_text = " [r] Regex ";
     let regex_style = if filters.regex_mode {
         Style::default()
             .fg(Color::Black)
@@ -163,8 +171,12 @@ fn render_filters(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     } else {
         inactive_style
     };
-    filter_spans.push(Span::styled(" [r] Regex ", regex_style));
+    let regex_start = pos;
+    filter_spans.push(Span::styled(regex_text, regex_style));
+    pos += regex_text.len();
+    let regex_end = pos;
     filter_spans.push(Span::raw("  "));
+    pos += 2;
 
     // Language filter (always visible)
     let lang_style = if filters.language.is_some() {
@@ -180,8 +192,12 @@ fn render_filters(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     } else {
         " [l] Lang ".to_string()
     };
-    filter_spans.push(Span::styled(lang_text, lang_style));
+    let lang_start = pos;
+    filter_spans.push(Span::styled(lang_text.clone(), lang_style));
+    pos += lang_text.len();
+    let lang_end = pos;
     filter_spans.push(Span::raw("  "));
+    pos += 2;
 
     // Kind filter (always visible)
     let kind_style = if filters.kind.is_some() {
@@ -197,10 +213,15 @@ fn render_filters(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     } else {
         " [k] Kind ".to_string()
     };
-    filter_spans.push(Span::styled(kind_text, kind_style));
+    let kind_start = pos;
+    filter_spans.push(Span::styled(kind_text.clone(), kind_style));
+    pos += kind_text.len();
+    let kind_end = pos;
     filter_spans.push(Span::raw("  "));
+    pos += 2;
 
     // Expand mode (always visible)
+    let expand_text = " [e] Expand ";
     let expand_style = if filters.expand {
         Style::default()
             .fg(Color::Black)
@@ -209,10 +230,15 @@ fn render_filters(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     } else {
         inactive_style
     };
-    filter_spans.push(Span::styled(" [e] Expand ", expand_style));
+    let expand_start = pos;
+    filter_spans.push(Span::styled(expand_text, expand_style));
+    pos += expand_text.len();
+    let expand_end = pos;
     filter_spans.push(Span::raw("  "));
+    pos += 2;
 
     // Exact mode (always visible)
+    let exact_text = " [E] Exact ";
     let exact_style = if filters.exact {
         Style::default()
             .fg(Color::Black)
@@ -221,10 +247,15 @@ fn render_filters(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     } else {
         inactive_style
     };
-    filter_spans.push(Span::styled(" [E] Exact ", exact_style));
+    let exact_start = pos;
+    filter_spans.push(Span::styled(exact_text, exact_style));
+    pos += exact_text.len();
+    let exact_end = pos;
     filter_spans.push(Span::raw("  "));
+    pos += 2;
 
     // Contains mode (always visible)
+    let contains_text = " [c] Contains ";
     let contains_style = if filters.contains {
         Style::default()
             .fg(Color::Black)
@@ -233,10 +264,20 @@ fn render_filters(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     } else {
         inactive_style
     };
-    filter_spans.push(Span::styled(" [c] Contains ", contains_style));
+    let contains_start = pos;
+    filter_spans.push(Span::styled(contains_text, contains_style));
+    pos += contains_text.len();
+    let contains_end = pos;
 
-    // Note: filter_spans will always have at least Symbols and Regex badges,
-    // so no need to check if empty
+    // Store badge positions for mouse click detection
+    let badge_positions = app.filter_badge_positions_mut();
+    badge_positions.symbols = (symbols_start, symbols_end);
+    badge_positions.regex = (regex_start, regex_end);
+    badge_positions.language = (lang_start, lang_end);
+    badge_positions.kind = (kind_start, kind_end);
+    badge_positions.expand = (expand_start, expand_end);
+    badge_positions.exact = (exact_start, exact_end);
+    badge_positions.contains = (contains_start, contains_end);
 
     let paragraph = Paragraph::new(Line::from(filter_spans))
         .block(block)

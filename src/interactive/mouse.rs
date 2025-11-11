@@ -2,6 +2,18 @@ use crossterm::event::{MouseEvent, MouseEventKind, MouseButton};
 use ratatui::layout::Rect;
 use std::time::Instant;
 
+/// Filter badge positions for accurate mouse click detection
+#[derive(Debug, Clone, Default)]
+pub struct FilterBadgePositions {
+    pub symbols: (usize, usize),    // (start, end) column positions
+    pub regex: (usize, usize),
+    pub language: (usize, usize),
+    pub kind: (usize, usize),
+    pub expand: (usize, usize),
+    pub exact: (usize, usize),
+    pub contains: (usize, usize),
+}
+
 /// Mouse interaction state and event handling
 #[derive(Debug, Clone)]
 pub struct MouseState {
@@ -56,6 +68,7 @@ impl MouseState {
         input_area: Rect,
         filters_area: Rect,
         result_area: Rect,
+        badge_positions: &FilterBadgePositions,
     ) -> MouseAction {
         self.update_position(&event);
 
@@ -101,44 +114,28 @@ impl MouseState {
 
                 // Check filters area (click to toggle filters)
                 if self.is_in_area(filters_area) {
-                    let col = event.column.saturating_sub(filters_area.x + 1);
+                    let col = event.column.saturating_sub(filters_area.x + 1) as usize;
 
-                    // Calculate positions based on filter layout:
-                    // " [s] Symbols " + "  " + " [r] Regex " + "  " + " [l] Lang " + "  " + ...
-
-                    // Symbols badge: positions 0-14
-                    if col < 14 {
+                    // Use the actual badge positions calculated during rendering
+                    if col >= badge_positions.symbols.0 && col < badge_positions.symbols.1 {
                         return MouseAction::ToggleSymbols;
                     }
-
-                    // Regex badge: positions 16-28 (after 2-space gap)
-                    if col >= 16 && col < 28 {
+                    if col >= badge_positions.regex.0 && col < badge_positions.regex.1 {
                         return MouseAction::ToggleRegex;
                     }
-
-                    // Language badge: positions 30-42 (approximate - depends on content)
-                    // We'll use a wider range to account for " [l] Lang: rust " etc
-                    if col >= 30 && col < 60 {
+                    if col >= badge_positions.language.0 && col < badge_positions.language.1 {
                         return MouseAction::PromptLanguage;
                     }
-
-                    // Kind badge: positions 62-90 (approximate - depends on content)
-                    if col >= 62 && col < 100 {
+                    if col >= badge_positions.kind.0 && col < badge_positions.kind.1 {
                         return MouseAction::PromptKind;
                     }
-
-                    // Expand badge: positions 102-115 (approximate)
-                    if col >= 102 && col < 125 {
+                    if col >= badge_positions.expand.0 && col < badge_positions.expand.1 {
                         return MouseAction::ToggleExpand;
                     }
-
-                    // Exact badge: positions 127-140 (approximate)
-                    if col >= 127 && col < 150 {
+                    if col >= badge_positions.exact.0 && col < badge_positions.exact.1 {
                         return MouseAction::ToggleExact;
                     }
-
-                    // Contains badge: positions 152-170 (approximate)
-                    if col >= 152 && col < 180 {
+                    if col >= badge_positions.contains.0 && col < badge_positions.contains.1 {
                         return MouseAction::ToggleContains;
                     }
 

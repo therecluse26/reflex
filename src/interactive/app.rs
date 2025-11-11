@@ -44,6 +44,8 @@ pub struct InteractiveApp {
     effects: EffectManager,
     /// Mouse state
     mouse: MouseState,
+    /// Filter badge positions (for accurate mouse click detection)
+    filter_badge_positions: super::mouse::FilterBadgePositions,
     /// Index status
     index_status: IndexStatusState,
     /// Whether to quit
@@ -170,6 +172,7 @@ impl InteractiveApp {
             theme,
             effects: EffectManager::new(),
             mouse: MouseState::new(),
+            filter_badge_positions: super::mouse::FilterBadgePositions::default(),
             index_status,
             should_quit: false,
             focus_state: FocusState::Input, // Start with input focused
@@ -677,7 +680,7 @@ impl InteractiveApp {
         let result_height = terminal_size.1.saturating_sub(7); // 6 from top + 1 from bottom
         let result_area = ratatui::layout::Rect::new(0, result_y, terminal_size.0, result_height);
 
-        let action = self.mouse.handle_event(mouse, input_area, filters_area, result_area);
+        let action = self.mouse.handle_event(mouse, input_area, filters_area, result_area, &self.filter_badge_positions);
 
         match action {
             MouseAction::FocusInput(cursor_pos) => {
@@ -1022,6 +1025,10 @@ impl InteractiveApp {
 
     pub fn filter_selector(&self) -> Option<&super::filter_selector::FilterSelector> {
         self.filter_selector.as_ref()
+    }
+
+    pub fn filter_badge_positions_mut(&mut self) -> &mut super::mouse::FilterBadgePositions {
+        &mut self.filter_badge_positions
     }
 }
 
