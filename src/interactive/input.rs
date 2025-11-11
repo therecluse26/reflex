@@ -33,6 +33,15 @@ impl InputField {
         self.value = value;
     }
 
+    /// Set cursor position (clamped to valid range)
+    pub fn set_cursor(&mut self, position: usize) {
+        self.cursor = position.min(self.value.len());
+        // Ensure we're on a character boundary
+        while self.cursor > 0 && !self.value.is_char_boundary(self.cursor) {
+            self.cursor -= 1;
+        }
+    }
+
     /// Clear the input
     pub fn clear(&mut self) {
         self.value.clear();

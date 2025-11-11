@@ -654,29 +654,54 @@ fn render_file_preview(f: &mut Frame, area: Rect, app: &InteractiveApp) {
         let visible_height = area.height.saturating_sub(2) as usize;
         let start = preview.scroll_offset();
         let center = preview.center_line();
+        let lang = preview.language();
+
+        // Load theme for syntax highlighting
+        let theme = app.theme().load_syntect_theme();
 
         // Get content lines in visible range
         let content_lines = preview.content();
         let end = (start + visible_height).min(content_lines.len());
 
-        let items: Vec<ListItem> = content_lines[start..end]
-            .iter()
+        // IMPORTANT: Highlight from the beginning of the file up to the visible end
+        // This ensures syntect maintains proper state (for multi-line strings, comments, etc.)
+        // We'll only render the visible portion, but we need to process all lines up to that point
+        let lines_to_highlight: Vec<String> = content_lines[..end].to_vec();
+        let all_highlighted = super::syntax::highlight_code_lines(&lines_to_highlight, lang, &theme);
+
+        // Extract only the visible portion
+        let highlighted_lines: Vec<_> = all_highlighted.into_iter().skip(start).collect();
+
+        let items: Vec<ListItem> = highlighted_lines
+            .into_iter()
             .enumerate()
-            .map(|(idx, line)| {
+            .map(|(idx, highlighted_line)| {
                 let line_number = start + idx + 1;
                 let is_center = line_number == center;
 
-                let style = if is_center {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(palette.highlight)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(palette.foreground)
-                };
+                // Build the complete line with line number prefix
+                let mut spans = vec![
+                    Span::styled(
+                        format!("{:4} │ ", line_number),
+                        Style::default().fg(palette.muted)
+                    )
+                ];
 
-                let content = format!("{:4} │ {}", line_number, line);
-                ListItem::new(content).style(style)
+                // Add highlighted code spans
+                spans.extend(highlighted_line.spans);
+
+                let line_content = Line::from(spans);
+
+                // Apply selection style if this is the center line
+                if is_center {
+                    ListItem::new(line_content).style(
+                        Style::default()
+                            .bg(palette.highlight)
+                            .add_modifier(Modifier::BOLD)
+                    )
+                } else {
+                    ListItem::new(line_content)
+                }
             })
             .collect();
 

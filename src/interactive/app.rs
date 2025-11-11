@@ -79,6 +79,7 @@ pub struct FilePreview {
     content: Vec<String>,
     center_line: usize,
     scroll_offset: usize,
+    language: crate::models::Language,
 }
 
 /// Application mode
@@ -504,11 +505,19 @@ impl InteractiveApp {
         let content = std::fs::read_to_string(&result.path)?;
         let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
 
+        // Detect language from file extension
+        let language = std::path::Path::new(&result.path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| crate::models::Language::from_extension(ext))
+            .unwrap_or(crate::models::Language::Unknown);
+
         self.preview_content = Some(FilePreview {
             path: result.path.clone(),
             content: lines,
             center_line: result.span.start_line,
             scroll_offset: result.span.start_line.saturating_sub(10),
+            language,
         });
 
         self.mode = AppMode::FilePreview;
@@ -543,29 +552,49 @@ impl InteractiveApp {
                         self.scroll_preview_up();
                     }
                 }
+                crossterm::event::MouseEventKind::Down(_) => {
+                    // Click anywhere to close preview
+                    self.mode = AppMode::Normal;
+                    self.preview_content = None;
+                }
                 _ => {}
             }
             return;
         }
 
-        // In normal mode, handle result selection and scrolling
-        // Calculate the actual result area based on terminal size
-        // header(3) + filters(3) = 6 rows from top
-        // footer(1) from bottom
+        // Calculate UI regions based on terminal size
+        // Layout: header(3) + filters(3) + results(rest) + footer(1)
+        let input_area = ratatui::layout::Rect::new(0, 0, terminal_size.0, 3);
+        let filters_area = ratatui::layout::Rect::new(0, 3, terminal_size.0, 3);
         let result_y = 6;
         let result_height = terminal_size.1.saturating_sub(7); // 6 from top + 1 from bottom
         let result_area = ratatui::layout::Rect::new(0, result_y, terminal_size.0, result_height);
 
-        let action = self.mouse.handle_event(mouse, result_area);
+        let action = self.mouse.handle_event(mouse, input_area, filters_area, result_area);
 
         match action {
+            MouseAction::FocusInput(cursor_pos) => {
+                self.focus_state = FocusState::Input;
+                // Clamp cursor position to input length
+                let max_pos = self.input.value().len();
+                let clamped_pos = cursor_pos.min(max_pos);
+                self.input.set_cursor(clamped_pos);
+            }
+            MouseAction::ToggleSymbols => {
+                self.filters.symbols_mode = !self.filters.symbols_mode;
+            }
+            MouseAction::ToggleRegex => {
+                self.filters.regex_mode = !self.filters.regex_mode;
+            }
             MouseAction::SelectResult(index) => {
-                self.results.select(index + self.results.scroll_offset());
+                // Convert line index to result index (each result is 2 lines)
+                let result_index = (index / 2) + self.results.scroll_offset();
+                self.results.select(result_index);
             }
             MouseAction::DoubleClick(index) => {
-                // Double-click opens preview
-                let global_index = index + self.results.scroll_offset();
-                self.results.select(global_index);
+                // Convert line index to result index (each result is 2 lines)
+                let result_index = (index / 2) + self.results.scroll_offset();
+                self.results.select(result_index);
                 if let Some(result) = self.results.selected().cloned() {
                     let _ = self.show_file_preview(&result);
                 }
@@ -823,5 +852,9 @@ impl FilePreview {
 
     pub fn scroll_offset(&self) -> usize {
         self.scroll_offset
+    }
+
+    pub fn language(&self) -> crate::models::Language {
+        self.language
     }
 }

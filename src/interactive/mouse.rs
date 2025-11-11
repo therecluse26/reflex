@@ -49,18 +49,28 @@ impl MouseState {
     }
 
     /// Handle a mouse event and return the action to take
-    pub fn handle_event(&mut self, event: MouseEvent, result_area: Rect) -> MouseAction {
+    /// Supports multiple UI regions: input, filters, and results
+    pub fn handle_event(
+        &mut self,
+        event: MouseEvent,
+        input_area: Rect,
+        filters_area: Rect,
+        result_area: Rect,
+    ) -> MouseAction {
         self.update_position(&event);
 
         match event.kind {
             MouseEventKind::Down(button) => {
+                if button != MouseButton::Left {
+                    return MouseAction::None;
+                }
+
                 let now = Instant::now();
                 let current_pos = (event.column, event.row);
 
                 // Check for double-click (within 300ms at same position)
                 let is_double_click = if let Some((last_col, last_row, last_button, last_time)) = self.last_click {
-                    button == MouseButton::Left
-                        && last_button == MouseButton::Left
+                    last_button == MouseButton::Left
                         && last_col == current_pos.0
                         && last_row == current_pos.1
                         && now.duration_since(last_time).as_millis() < 300
@@ -71,20 +81,39 @@ impl MouseState {
                 // Update last click
                 self.last_click = Some((event.column, event.row, button, now));
 
+                // Check input area (click to focus)
+                if self.is_in_area(input_area) {
+                    // Calculate cursor position (subtract 1 for left border)
+                    let cursor_pos = (event.column.saturating_sub(input_area.x + 1)) as usize;
+                    return MouseAction::FocusInput(cursor_pos);
+                }
+
+                // Check filters area (click to toggle filters)
+                if self.is_in_area(filters_area) {
+                    let col = event.column.saturating_sub(filters_area.x + 1);
+
+                    // Symbols badge is at positions 0-14: " [s] Symbols "
+                    if col < 14 {
+                        return MouseAction::ToggleSymbols;
+                    }
+                    // Regex badge is at positions 16-28: " [r] Regex "
+                    if col >= 16 && col < 28 {
+                        return MouseAction::ToggleRegex;
+                    }
+                    return MouseAction::None;
+                }
+
+                // Check results area (click to select)
                 if self.is_in_area(result_area) {
                     if let Some(row) = self.row_in_area(result_area) {
-                        return match button {
-                            MouseButton::Left => {
-                                if is_double_click {
-                                    MouseAction::DoubleClick(row)
-                                } else {
-                                    MouseAction::SelectResult(row)
-                                }
-                            }
-                            _ => MouseAction::None,
+                        return if is_double_click {
+                            MouseAction::DoubleClick(row)
+                        } else {
+                            MouseAction::SelectResult(row)
                         };
                     }
                 }
+
                 MouseAction::None
             }
             MouseEventKind::ScrollDown => {
@@ -133,8 +162,14 @@ pub enum MouseAction {
     ScrollDown,
     /// Scroll up
     ScrollUp,
-    /// Click on a filter badge
-    ToggleFilter(String),
+    /// Click on input field to focus (cursor position)
+    FocusInput(usize),
+    /// Toggle symbols filter
+    ToggleSymbols,
+    /// Toggle regex filter
+    ToggleRegex,
+    /// Close file preview
+    ClosePreview,
 }
 
 #[cfg(test)]

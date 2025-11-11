@@ -5,6 +5,7 @@ mod history;
 mod input;
 mod mouse;
 mod results;
+mod syntax;
 mod terminal;
 mod theme;
 mod ui;
