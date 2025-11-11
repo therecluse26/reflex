@@ -120,8 +120,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &InteractiveApp) {
 }
 
 fn render_filters(f: &mut Frame, area: Rect, app: &mut InteractiveApp) {
-    // Clear the area completely to prevent rendering artifacts
-    // This is especially important when filter text length changes (e.g., "Lang" → "Lang: Rust")
+    // Clear area to prevent artifacts when filter text changes
     f.render_widget(Clear, area);
 
     // Clone what we need upfront to avoid borrow checker issues
@@ -275,6 +274,9 @@ fn render_filters(f: &mut Frame, area: Rect, app: &mut InteractiveApp) {
 }
 
 fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
+    // Clear entire results area to prevent artifacts when content changes
+    f.render_widget(Clear, area);
+
     let palette = &app.theme().palette;
 
     // Show animated indexing modal (takes priority over search)
@@ -566,10 +568,6 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
         return;
     }
 
-    // Clear the area completely to prevent rendering artifacts
-    // Fill entire area with blank cells using ratatui's built-in Clear widget
-    f.render_widget(Clear, area);
-
     // Render result list with variable-height items
     // Load theme for syntax highlighting
     let theme = app.theme().load_syntect_theme();
@@ -731,6 +729,9 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
 }
 
 fn render_help_screen(f: &mut Frame, area: Rect, app: &InteractiveApp) {
+    // Clear area to prevent artifacts when switching to help screen
+    f.render_widget(Clear, area);
+
     let palette = &app.theme().palette;
 
     let help_text = vec![
@@ -794,13 +795,12 @@ fn render_help_screen(f: &mut Frame, area: Rect, app: &InteractiveApp) {
 }
 
 fn render_file_preview(f: &mut Frame, area: Rect, app: &InteractiveApp) {
+    // Clear area to prevent artifacts when switching to file preview
+    f.render_widget(Clear, area);
+
     let palette = &app.theme().palette;
 
     if let Some(preview) = app.preview_content() {
-        // Clear the area completely to prevent rendering artifacts
-        // Fill entire area with blank cells using ratatui's built-in Clear widget
-        f.render_widget(Clear, area);
-
         let visible_height = area.height.saturating_sub(2) as usize;
         let start = preview.scroll_offset();
         let center = preview.center_line();
