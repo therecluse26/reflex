@@ -29,8 +29,10 @@ pub fn render(f: &mut Frame, app: &mut InteractiveApp) {
         AppMode::FilterSelector => {
             render_results_area(f, chunks[2], app);
             // Render filter selector modal on top
-            if let Some(selector) = app.filter_selector() {
-                selector.render(f, chunks[2], app.theme());
+            // Clone theme to avoid borrow conflict
+            let theme = app.theme().clone();
+            if let Some(selector) = app.filter_selector_mut() {
+                selector.render(f, chunks[2], &theme);
             }
         }
         AppMode::Indexing | AppMode::Normal => render_results_area(f, chunks[2], app),
@@ -133,7 +135,7 @@ fn render_filters(f: &mut Frame, area: Rect, app: &mut InteractiveApp) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Filters [s: symbols, r: regex, l: lang, k: kind, e: expand, E: exact, c: contains] ")
+        .title(" Filters [s: symbols, r: regex, l: lang, k: kind, e: expand, c: contains] ")
         .border_style(border_style);
 
     // Create clickable filter buttons - ALL VISIBLE ALL THE TIME
@@ -237,23 +239,6 @@ fn render_filters(f: &mut Frame, area: Rect, app: &mut InteractiveApp) {
     filter_spans.push(Span::raw("  "));
     pos += 2;
 
-    // Exact mode (always visible)
-    let exact_text = " [E] Exact ";
-    let exact_style = if filters.exact {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Rgb(200, 150, 100))
-            .add_modifier(Modifier::BOLD)
-    } else {
-        inactive_style
-    };
-    let exact_start = pos;
-    filter_spans.push(Span::styled(exact_text, exact_style));
-    pos += exact_text.len();
-    let exact_end = pos;
-    filter_spans.push(Span::raw("  "));
-    pos += 2;
-
     // Contains mode (always visible)
     let contains_text = " [c] Contains ";
     let contains_style = if filters.contains {
@@ -276,7 +261,6 @@ fn render_filters(f: &mut Frame, area: Rect, app: &mut InteractiveApp) {
     badge_positions.language = (lang_start, lang_end);
     badge_positions.kind = (kind_start, kind_end);
     badge_positions.expand = (expand_start, expand_end);
-    badge_positions.exact = (exact_start, exact_end);
     badge_positions.contains = (contains_start, contains_end);
 
     let paragraph = Paragraph::new(Line::from(filter_spans))
@@ -769,7 +753,6 @@ fn render_help_screen(f: &mut Frame, area: Rect, app: &InteractiveApp) {
         "    g             Add glob pattern (CLI only for now)",
         "    x             Add exclude pattern (CLI only for now)",
         "    e             Toggle expand mode (full definitions)",
-        "    E             Toggle exact match mode",
         "    c             Toggle contains mode (substring)",
         "    Ctrl+L        Clear language filter",
         "    Ctrl+K        Clear kind filter",

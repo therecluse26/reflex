@@ -43,8 +43,6 @@ pub struct QueryFilters {
     pub exclude_patterns: Vec<String>,
     /// Expand mode (show full symbol definitions)
     pub expand: bool,
-    /// Exact match mode (no substring matching)
-    pub exact: bool,
     /// Contains mode (substring matching)
     pub contains: bool,
 }

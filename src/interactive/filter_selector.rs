@@ -1,4 +1,4 @@
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
@@ -24,6 +24,8 @@ pub struct FilterSelector {
     selected_index: usize,
     /// Available options
     options: Vec<String>,
+    /// Last rendered modal area (for mouse detection)
+    modal_area: Rect,
 }
 
 impl FilterSelector {
@@ -51,6 +53,7 @@ impl FilterSelector {
             selector_type: FilterSelectorType::Language,
             selected_index: 0,
             options,
+            modal_area: Rect::default(),
         }
     }
 
@@ -81,6 +84,7 @@ impl FilterSelector {
             selector_type: FilterSelectorType::Kind,
             selected_index: 0,
             options,
+            modal_area: Rect::default(),
         }
     }
 
@@ -126,8 +130,47 @@ impl FilterSelector {
         }
     }
 
+    /// Handle mouse input
+    /// Returns Some(selection) if an item was clicked, None otherwise
+    pub fn handle_mouse(&mut self, event: MouseEvent) -> Option<String> {
+        match event.kind {
+            MouseEventKind::Down(_) => {
+                // Check if click is within modal area
+                let col = event.column;
+                let row = event.row;
+
+                if col >= self.modal_area.x && col < self.modal_area.x + self.modal_area.width
+                    && row >= self.modal_area.y && row < self.modal_area.y + self.modal_area.height
+                {
+                    // Click is within modal
+                    // Calculate which option was clicked (accounting for border and title)
+                    let relative_row = row.saturating_sub(self.modal_area.y + 1) as usize; // +1 for top border
+
+                    if relative_row > 0 && relative_row <= self.options.len() {
+                        // Clicked on an option
+                        let option_index = relative_row - 1; // -1 because first row is title
+                        if option_index < self.options.len() {
+                            self.selected_index = option_index;
+                            return self.selected(); // Double-click behavior: select immediately
+                        }
+                    }
+                }
+                None
+            }
+            MouseEventKind::ScrollDown => {
+                self.next();
+                None
+            }
+            MouseEventKind::ScrollUp => {
+                self.prev();
+                None
+            }
+            _ => None,
+        }
+    }
+
     /// Render the selector modal
-    pub fn render(&self, f: &mut Frame, area: Rect, theme: &ThemeManager) {
+    pub fn render(&mut self, f: &mut Frame, area: Rect, theme: &ThemeManager) {
         let palette = &theme.palette;
 
         // Create centered modal
@@ -141,6 +184,9 @@ impl FilterSelector {
             modal_width,
             modal_height,
         );
+
+        // Store modal area for mouse detection
+        self.modal_area = modal_area;
 
         // Render background (dimmed)
         let background = Block::default()

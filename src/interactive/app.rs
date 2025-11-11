@@ -528,12 +528,6 @@ impl InteractiveApp {
                 Ok(None)
             }
 
-            KeyCommand::ToggleExact => {
-                self.filters.exact = !self.filters.exact;
-                self.filter_change_time = Some(Instant::now());
-                Ok(None)
-            }
-
             KeyCommand::ToggleContains => {
                 self.filters.contains = !self.filters.contains;
                 self.filter_change_time = Some(Instant::now());
@@ -649,6 +643,31 @@ impl InteractiveApp {
     }
 
     fn handle_mouse_event(&mut self, mouse: MouseEvent, terminal_size: (u16, u16)) {
+        // In filter selector mode, pass events to the selector
+        if self.mode == AppMode::FilterSelector {
+            if let Some(ref mut selector) = self.filter_selector {
+                if let Some(selection) = selector.handle_mouse(mouse) {
+                    // Selection was made
+                    let selection_lower = selection.to_lowercase();
+                    let is_language = matches!(selection_lower.as_str(),
+                        "rust" | "python" | "javascript" | "typescript" | "vue" | "svelte" |
+                        "go" | "java" | "php" | "c" | "cpp" | "csharp" | "ruby" | "kotlin" | "zig"
+                    );
+
+                    if is_language {
+                        self.filters.language = Some(selection);
+                    } else {
+                        self.filters.kind = Some(selection);
+                    }
+
+                    self.mode = AppMode::Normal;
+                    self.filter_selector = None;
+                    self.filter_change_time = Some(Instant::now());
+                }
+            }
+            return;
+        }
+
         // In preview mode, handle scroll events for file content
         if self.mode == AppMode::FilePreview {
             match mouse.kind {
@@ -708,10 +727,6 @@ impl InteractiveApp {
             }
             MouseAction::ToggleExpand => {
                 self.filters.expand = !self.filters.expand;
-                self.filter_change_time = Some(Instant::now());
-            }
-            MouseAction::ToggleExact => {
-                self.filters.exact = !self.filters.exact;
                 self.filter_change_time = Some(Instant::now());
             }
             MouseAction::ToggleContains => {
@@ -820,7 +835,7 @@ impl InteractiveApp {
             symbols_mode: self.filters.symbols_mode,
             expand: self.filters.expand,
             file_pattern: None,
-            exact: self.filters.exact,
+            exact: false, // Exact match is the default behavior
             use_contains: self.filters.contains,
             timeout_secs: 10,
             glob_patterns: self.filters.glob_patterns.clone(),
@@ -1025,6 +1040,10 @@ impl InteractiveApp {
 
     pub fn filter_selector(&self) -> Option<&super::filter_selector::FilterSelector> {
         self.filter_selector.as_ref()
+    }
+
+    pub fn filter_selector_mut(&mut self) -> Option<&mut super::filter_selector::FilterSelector> {
+        self.filter_selector.as_mut()
     }
 
     pub fn filter_badge_positions_mut(&mut self) -> &mut super::mouse::FilterBadgePositions {

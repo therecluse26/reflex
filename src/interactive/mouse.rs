@@ -10,7 +10,6 @@ pub struct FilterBadgePositions {
     pub language: (usize, usize),
     pub kind: (usize, usize),
     pub expand: (usize, usize),
-    pub exact: (usize, usize),
     pub contains: (usize, usize),
 }
 
@@ -132,9 +131,6 @@ impl MouseState {
                     if col >= badge_positions.expand.0 && col < badge_positions.expand.1 {
                         return MouseAction::ToggleExpand;
                     }
-                    if col >= badge_positions.exact.0 && col < badge_positions.exact.1 {
-                        return MouseAction::ToggleExact;
-                    }
                     if col >= badge_positions.contains.0 && col < badge_positions.contains.1 {
                         return MouseAction::ToggleContains;
                     }
@@ -217,8 +213,6 @@ pub enum MouseAction {
     PromptKind,
     /// Toggle expand filter
     ToggleExpand,
-    /// Toggle exact filter
-    ToggleExact,
     /// Toggle contains filter
     ToggleContains,
     /// Close file preview

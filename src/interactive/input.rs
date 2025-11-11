@@ -161,7 +161,6 @@ pub enum KeyCommand {
     PromptGlob,
     PromptExclude,
     ToggleExpand,
-    ToggleExact,
     ToggleContains,
     ClearLanguage,
     ClearKind,
@@ -234,7 +233,6 @@ impl KeyCommand {
             (KeyCode::Char('g'), KeyModifiers::NONE) => Self::PromptGlob,
             (KeyCode::Char('x'), KeyModifiers::NONE) => Self::PromptExclude,
             (KeyCode::Char('e'), KeyModifiers::NONE) => Self::ToggleExpand,
-            (KeyCode::Char('E'), KeyModifiers::SHIFT) => Self::ToggleExact,
             (KeyCode::Char('c'), KeyModifiers::NONE) => Self::ToggleContains,
 
             // Actions
