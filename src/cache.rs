@@ -151,6 +151,37 @@ impl CacheManager {
             [],
         )?;
 
+        // Create file dependencies table for tracking imports/includes
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS file_dependencies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id INTEGER NOT NULL,
+                imported_path TEXT NOT NULL,
+                resolved_file_id INTEGER,
+                import_type TEXT NOT NULL,
+                line_number INTEGER NOT NULL,
+                imported_symbols TEXT,
+                FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+                FOREIGN KEY (resolved_file_id) REFERENCES files(id) ON DELETE SET NULL
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_deps_file ON file_dependencies(file_id)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_deps_resolved ON file_dependencies(resolved_file_id)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_deps_type ON file_dependencies(import_type)",
+            [],
+        )?;
+
         log::debug!("Created meta.db with schema");
         Ok(())
     }
@@ -231,7 +262,7 @@ compression_level = 3  # zstd level
         match tables {
             Ok(table_list) => {
                 // Check for required tables
-                let required_tables = vec!["files", "statistics", "config", "file_branches", "branches"];
+                let required_tables = vec!["files", "statistics", "config", "file_branches", "branches", "file_dependencies"];
                 for table in &required_tables {
                     if !table_list.iter().any(|t| t == table) {
                         anyhow::bail!("Required table '{}' missing from database schema", table);
@@ -1644,6 +1675,7 @@ mod tests {
         assert!(tables.contains(&"config".to_string()));
         assert!(tables.contains(&"file_branches".to_string()));
         assert!(tables.contains(&"branches".to_string()));
+        assert!(tables.contains(&"file_dependencies".to_string()));
     }
 
     #[test]

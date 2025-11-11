@@ -904,6 +904,456 @@ Located in tests/performance_test.rs:
 
 ---
 
+## 11. Dependency Tracking Module (`src/dependency.rs`, `docs/DEPENDENCIES.md`)
+
+**Status:** ⚠️ NOT YET IMPLEMENTED (Specification Complete)
+**Spec Document:** [docs/DEPENDENCIES.md](../docs/DEPENDENCIES.md)
+
+### Overview
+
+Dependency tracking enables Reflex to understand and expose file relationships (imports, includes, usage) across all 18 supported languages. This provides:
+- **Impact Analysis**: What breaks if I change this file?
+- **Context Understanding**: What does this code depend on?
+- **Reverse Lookup**: What uses this file/module?
+- **Architecture Analysis**: Circular dependencies, hotspots, orphaned files
+
+**Key Architecture Decision:** **Index shallow, traverse deep**
+- Store only direct (depth-1) dependencies in SQLite
+- Compute deeper relationships on-demand via graph traversal
+- Provides O(n) storage instead of O(n²) while enabling any-depth queries
+
+### P1: Core Infrastructure (High Priority) ⚠️ NOT STARTED
+**Goal:** Basic dependency extraction and storage
+
+- [ ] **Add `file_dependencies` table to SQLite schema** (src/cache.rs)
+  - Columns: `id`, `file_id`, `imported_path`, `resolved_file_id`, `import_type`, `line_number`, `imported_symbols`
+  - Indexes: `idx_deps_file`, `idx_deps_resolved`, `idx_deps_type`
+  - Foreign keys to `files` table
+  - See docs/DEPENDENCIES.md for complete schema
+
+- [ ] **Create `DependencyExtractor` trait** (src/parsers/mod.rs)
+  - Define interface for extracting imports from AST
+  - Method: `extract_dependencies(path: &str, source: &str) -> Result<Vec<Dependency>>`
+  - Returns: import path, resolved path, type (internal/external/stdlib), line number
+
+- [ ] **Implement `DependencyIndex` struct** (src/dependency.rs, NEW FILE)
+  - Store dependencies: `insert_dependency(file_id, import, type, line)`
+  - Retrieve dependencies: `get_dependencies(file_id) -> Vec<Dependency>`
+  - Reverse lookup: `get_dependents(file_id) -> Vec<FileId>`
+  - Traversal: `get_transitive_deps(file_id, depth) -> Vec<Dependency>`
+
+- [ ] **Extend `SearchResult` model** (src/models.rs)
+  - Add optional `dependencies` field: `Option<Vec<DependencyInfo>>`
+  - DependencyInfo struct: `path`, `type` (internal/external/stdlib)
+  - Serialize to JSON for API output
+
+- [ ] **Add `--dependencies` flag to `rfx query` command** (src/cli.rs)
+  - CLI flag: `--dependencies` or `--deps`
+  - Enriches search results with immediate (depth-1) dependencies
+  - Example: `rfx query "ApiClient" --dependencies --json`
+
+- [ ] **Tests: Basic storage and retrieval**
+  - Test: Insert and retrieve dependencies
+  - Test: Reverse lookup (get dependents)
+  - Test: Handle non-existent files
+  - Test: Performance (<5ms per lookup)
+
+**Estimated Time:** 3-5 days
+
+### P1: Language Parser Updates (High Priority) ⚠️ NOT STARTED
+**Goal:** Extract imports for all 18 languages using Tree-sitter
+
+Each language parser (src/parsers/*.rs) needs to be extended with import extraction:
+
+#### Tier 1 - Simple Import Syntax (1-2 days each)
+- [ ] **Rust** (src/parsers/rust.rs)
+  - Extract: `use`, `mod`, `extern crate`
+  - Resolve: `crate::`, `super::`, `self::`
+  - Classify: stdlib (`std::`), internal (`crate::`), external (crates)
+  - Tree-sitter nodes: `use_declaration`, `mod_item`, `extern_crate_declaration`
+
+- [ ] **Python** (src/parsers/python.rs)
+  - Extract: `import`, `from...import`
+  - Resolve: relative (`.`, `..`), absolute
+  - Classify: stdlib, external (site-packages), internal (relative/local)
+  - Tree-sitter nodes: `import_statement`, `import_from_statement`
+
+- [ ] **JavaScript/TypeScript** (src/parsers/typescript.rs)
+  - Extract: `import`, `require()`, dynamic `import()`
+  - Resolve: relative (`./`, `../`), aliases (`@/`), node_modules
+  - Classify: stdlib (`fs`, `path`), external (node_modules), internal
+  - Tree-sitter nodes: `import_statement`, `import_clause`, `call_expression`
+
+- [ ] **Go** (src/parsers/go.rs)
+  - Extract: `import`
+  - Resolve: fully qualified paths (no ambiguity)
+  - Classify: stdlib, external (domain-based), internal (module-relative)
+  - Tree-sitter nodes: `import_declaration`, `import_spec`
+
+- [ ] **Java** (src/parsers/java.rs)
+  - Extract: `import`, `import static`
+  - Resolve: fully qualified package names (no ambiguity)
+  - Classify: stdlib (`java.*`, `javax.*`), external, internal (project packages)
+  - Tree-sitter nodes: `import_declaration`
+
+- [ ] **C#** (src/parsers/csharp.rs)
+  - Extract: `using`, `using static`
+  - Resolve: namespace paths (fully qualified)
+  - Classify: stdlib (`System.*`), external (NuGet), internal (project namespaces)
+  - Tree-sitter nodes: `using_directive`
+
+#### Tier 2 - Path Resolution Required (2-3 days each)
+- [ ] **Ruby** (src/parsers/ruby.rs)
+  - Extract: `require`, `require_relative`, `load`
+  - Resolve: gem paths, relative paths, `$LOAD_PATH`
+  - Classify: stdlib, gems, internal (relative)
+  - Tree-sitter nodes: `call` (require/require_relative/load)
+
+- [ ] **PHP** (src/parsers/php.rs)
+  - Extract: `use`, `require`, `include`, `require_once`, `include_once`
+  - Resolve: namespaces, relative paths, Composer autoload
+  - Classify: stdlib, external (vendor/), internal (project)
+  - Tree-sitter nodes: `namespace_use_declaration`, `require_expression`, `include_expression`
+
+- [ ] **C/C++** (src/parsers/c.rs, src/parsers/cpp.rs)
+  - Extract: `#include <...>`, `#include "..."`
+  - Resolve: header search paths, system includes vs local
+  - Classify: stdlib (angle brackets + system paths), internal (quotes)
+  - Tree-sitter nodes: `preproc_include`
+  - **Challenge:** Requires compiler search path configuration
+
+- [ ] **Kotlin** (src/parsers/kotlin.rs)
+  - Extract: `import`, `import ... as`
+  - Resolve: fully qualified package names, wildcards
+  - Classify: stdlib (`kotlin.*`), external (Maven/Gradle), internal (project)
+  - Tree-sitter nodes: `import_header`
+
+#### Tier 3 - Framework-Specific (2-3 days each)
+- [ ] **Vue** (src/parsers/vue.rs)
+  - Extract: `import` statements from `<script>` blocks
+  - Handle both Options API and Composition API
+  - Support `<script setup>` syntax
+  - Resolve: component imports, `@/` aliases
+  - **Note:** Use existing line-based parsing approach
+
+- [ ] **Svelte** (src/parsers/svelte.rs)
+  - Extract: `import` statements from `<script>` blocks
+  - Handle module context (`context="module"`)
+  - Resolve: component imports, relative paths
+  - **Note:** Use existing line-based parsing approach
+
+- [ ] **Zig** (src/parsers/zig.rs)
+  - Extract: `@import("...")`
+  - Resolve: stdlib (`std`), packages, relative paths
+  - Classify: stdlib, external, internal
+  - Tree-sitter nodes: `call_expression` (with `@import`)
+
+**Deliverables per Language:**
+- Import extraction function added to parser
+- Tree-sitter queries for import nodes
+- Path classification (internal/external/stdlib)
+- Unit tests (multiline imports, comments, edge cases)
+
+**Estimated Time:** 12-15 days total (can be parallelized)
+
+### P1: Query Engine Integration (High Priority) ⚠️ NOT STARTED
+**Goal:** Augment search results with dependency information
+
+- [ ] **Add dependency loading to `QueryEngine`** (src/query.rs)
+  - Load `DependencyIndex` alongside `TrigramIndex` and `ContentReader`
+  - Method: `load_dependencies() -> Result<DependencyIndex>`
+
+- [ ] **Implement `enrich_with_dependencies()` for results** (src/query.rs)
+  - After search results found, enrich each with dependencies
+  - Lookup dependencies by file_id
+  - Add to `SearchResult.dependencies` field
+  - Keep overhead minimal (<2ms per result)
+
+- [ ] **Add `--only-internal` / `--only-external` filters** (src/cli.rs)
+  - Filter dependency list to show only internal or external deps
+  - Example: `rfx query "Api" --dependencies --only-internal`
+
+- [ ] **Add `--imported-by` flag** (reverse lookup, src/cli.rs)
+  - Show what files import the matched results
+  - Example: `rfx query "config" --imported-by`
+  - Uses reverse index: `get_dependents(file_id)`
+
+- [ ] **Optimize queries with indexes** (src/cache.rs)
+  - Ensure `idx_deps_file` and `idx_deps_resolved` are used
+  - Benchmark: <5ms overhead per enriched result
+
+- [ ] **Tests: Query enrichment correctness**
+  - Test: Results include dependencies when flag set
+  - Test: Filtering (--only-internal, --only-external)
+  - Test: Reverse lookup (--imported-by)
+  - Test: Performance (query + enrichment <10ms)
+
+**Estimated Time:** 2-3 days
+
+### P2: Dependency Command (Medium Priority) ⚠️ NOT STARTED
+**Goal:** Dedicated `rfx deps` command for graph analysis
+
+- [ ] **Create `rfx deps` CLI command** (src/cli.rs)
+  - New subcommand: `rfx deps [FILE] [OPTIONS]`
+  - Operates on single files OR entire graph
+
+- [ ] **Implement single-file operations**
+  - `rfx deps <file>`: Show dependencies of file (default: depth 1)
+  - `rfx deps <file> --reverse`: Show what depends on this file
+  - `rfx deps <file> --depth N`: Traverse N levels deep
+  - Traversal algorithm: BFS/DFS with cycle detection
+
+- [ ] **Implement tree visualization format** (src/formatter.rs)
+  - ASCII tree rendering: `├──`, `└──`, `│`
+  - Indentation shows depth
+  - Example:
+    ```
+    src/main.rs
+    ├── src/config.rs
+    │   └── src/env.rs
+    ├── src/api.rs
+    │   ├── reqwest (external)
+    │   └── src/models/user.rs
+    └── std::collections (stdlib)
+    ```
+
+- [ ] **Add JSON output format** (src/formatter.rs)
+  - Structured JSON for programmatic use
+  - Schema: `{ path, dependencies: [{ path, type, line }] }`
+
+- [ ] **Implement filters** (src/cli.rs)
+  - `--only-internal`: Show only internal dependencies
+  - `--only-external`: Show only external dependencies
+  - `--only-stdlib`: Show only standard library imports
+
+- [ ] **Tests: Single-file operations**
+  - Test: Basic dependency listing
+  - Test: Reverse lookup
+  - Test: Depth traversal (1, 2, 3 levels)
+  - Test: Tree format rendering
+  - Test: JSON output structure
+
+**Estimated Time:** 3-4 days
+
+### P2: Graph Algorithms (Medium Priority) ⚠️ NOT STARTED
+**Goal:** Advanced graph analysis features
+
+- [ ] **Implement circular dependency detection** (src/dependency.rs)
+  - Algorithm: DFS with cycle detection
+  - Detect all cycles in the dependency graph
+  - Report cycle paths: A → B → C → A
+
+- [ ] **Implement `rfx deps --circular`** (src/cli.rs)
+  - Run cycle detection on entire graph
+  - Output: List of all circular dependencies found
+  - Format: `file_a.rs ↔ file_b.rs` or `A → B → C → A`
+
+- [ ] **Implement `rfx deps --hotspots`** (src/cli.rs)
+  - Find most imported files (high in-degree)
+  - SQL: `SELECT resolved_file_id, COUNT(*) FROM file_dependencies GROUP BY resolved_file_id ORDER BY count DESC`
+  - Output: Ranked list with import counts
+
+- [ ] **Implement `rfx deps --unused`** (src/cli.rs)
+  - Find files with no incoming dependencies
+  - Exclude entry points (main.rs, index.ts, etc.)
+  - Candidates for deletion
+
+- [ ] **Implement `rfx deps --islands`** (src/cli.rs)
+  - Find disconnected components (files that don't import each other)
+  - Algorithm: Connected components via BFS/DFS
+  - Output: List of component groups
+
+- [ ] **Implement `rfx deps --analyze`** (src/cli.rs)
+  - Run all analyses: circular, hotspots, unused, islands
+  - Generate comprehensive report
+  - Example output:
+    ```
+    Dependency Analysis Report:
+    ===========================
+    Total Files: 1,234
+    Total Dependencies: 5,678
+
+    Circular Dependencies: 2 cycles found
+      - src/user.rs ↔ src/profile.rs
+      - src/api.rs → src/db.rs → src/models.rs → src/api.rs
+
+    Hotspots (Top 5):
+      - src/config.rs (47 imports) ⚠️
+      - src/utils.rs (33 imports)
+      - src/types.rs (28 imports)
+
+    Unused Files: 5 found
+      - src/old/legacy.rs
+      - src/temp/test.rs
+
+    Islands: 1 disconnected component (3 files)
+    ```
+
+- [ ] **Tests: Graph algorithms correctness**
+  - Test: Cycle detection (simple, complex, no cycles)
+  - Test: Hotspot ranking
+  - Test: Unused file detection
+  - Test: Island detection
+  - Test: Performance on large graphs (10k files)
+
+**Estimated Time:** 3-4 days
+
+### P3: Advanced Features (Low Priority) ⚠️ NOT STARTED
+**Goal:** Visualization and advanced path resolution
+
+- [ ] **Implement `--format dot` (Graphviz)** (src/formatter.rs)
+  - Generate DOT format for visualization tools
+  - Example: `rfx deps src/main.rs --format dot | dot -Tpng > graph.png`
+  - Node styling: color by type (internal/external/stdlib)
+  - Edge labels: show imported symbols
+
+- [ ] **Advanced path resolution** (src/dependency.rs)
+  - JavaScript/TypeScript: Parse `package.json` for path aliases
+  - Python: Check virtual environment, `sys.path`
+  - Rust: Parse `Cargo.toml` for workspace members
+  - Ruby: Check `Gem` paths and `Bundler`
+
+- [ ] **Session caching for repeated queries** (src/query.rs)
+  - Cache transitive closures in memory during session
+  - First query at depth 3: 50ms (computes closure)
+  - Subsequent queries: 2ms (uses cache)
+  - Clear cache on index update
+
+- [ ] **Workspace/monorepo support** (src/dependency.rs)
+  - Handle multi-package projects (npm workspaces, Cargo workspaces)
+  - Resolve cross-package imports correctly
+  - Visualize package boundaries
+
+- [ ] **Tests: Advanced features**
+  - Test: DOT format generation
+  - Test: Path resolution accuracy
+  - Test: Cache correctness
+  - Test: Workspace import resolution
+
+**Estimated Time:** 5-7 days
+
+### Testing Strategy
+
+#### Unit Tests (per component)
+- [ ] **Dependency extraction** (per language parser)
+  - Extract imports correctly
+  - Handle multiline imports
+  - Classify internal vs external vs stdlib
+  - Resolve relative paths
+  - Edge cases (comments, strings, docstrings)
+
+- [ ] **DependencyIndex** (src/dependency.rs)
+  - Store and retrieve dependencies
+  - Reverse lookup (get dependents)
+  - Transitive closure computation
+  - Handle cycles gracefully
+  - Performance (<5ms per query)
+
+- [ ] **Graph algorithms** (src/dependency.rs)
+  - Circular dependency detection (cycles present, no cycles)
+  - Hotspot ranking (correct counts)
+  - Unused file detection (exclude entry points)
+  - Island detection (connected components)
+
+#### Integration Tests
+- [ ] **End-to-end workflow: Index with deps → Query with --dependencies**
+  - Index Rust project
+  - Query: `rfx query "ApiClient" --dependencies --json`
+  - Verify: Results include dependencies
+  - Verify: Dependencies are accurate
+
+- [ ] **End-to-end workflow: `rfx deps` traversal**
+  - Index multi-file project
+  - Run: `rfx deps src/main.rs --depth 3`
+  - Verify: Traversal is correct
+  - Verify: No false positives
+
+- [ ] **Incremental indexing with dependency updates**
+  - Index project
+  - Modify file (add/remove import)
+  - Reindex incrementally
+  - Verify: Dependency updates reflected
+
+- [ ] **Cross-language dependencies**
+  - TypeScript imports JavaScript
+  - Python imports C extension
+  - Verify: Dependencies tracked correctly
+
+#### Performance Tests
+- [ ] **Indexing overhead**
+  - Baseline: Index 10k files without deps
+  - With deps: Index 10k files with dep extraction
+  - Target: <20% slowdown
+
+- [ ] **Query enrichment performance**
+  - Search: Find 50 results
+  - Enrich: Add dependencies to each
+  - Target: <2ms overhead per result
+
+- [ ] **Reverse lookup performance**
+  - File with 50 dependents
+  - Query: `rfx deps file.rs --reverse`
+  - Target: <5ms for lookup
+
+- [ ] **Graph traversal performance**
+  - Depth 3 traversal (50 files)
+  - Target: <30ms
+  - Graph-wide cycle detection (10k files)
+  - Target: <200ms
+
+#### Real-World Validation
+- [ ] **Test on Reflex codebase** (Rust, ~5k LOC)
+  - Verify: All Rust imports extracted
+  - Verify: Cycle-free (or document intentional cycles)
+  - Verify: Query performance <10ms
+
+- [ ] **Test on Next.js project** (TypeScript/JavaScript, ~10k LOC)
+  - Verify: ES6 imports, CommonJS requires
+  - Verify: node_modules vs internal classification
+  - Verify: Path alias resolution (`@/`)
+
+- [ ] **Test on Django project** (Python, ~15k LOC)
+  - Verify: Relative imports (`.`, `..`)
+  - Verify: Django framework imports
+  - Verify: Virtual environment packages
+
+- [ ] **Test on mixed-language monorepo** (~50k LOC)
+  - Multiple languages in one project
+  - Verify: Cross-language imports (if applicable)
+  - Verify: Performance at scale
+
+### Documentation
+
+- [x] **Complete specification document** (docs/DEPENDENCIES.md) ✅ COMPLETED
+  - Architecture overview
+  - Command interface
+  - Language-specific import patterns
+  - Implementation phases
+  - Performance characteristics
+  - Use cases and examples
+
+- [ ] **Update CLAUDE.md** (project instructions)
+  - Add dependency tracking to feature list
+  - Document CLI commands
+  - Add to "Supported Features" section
+
+- [ ] **Update README.md** (user documentation)
+  - Add `rfx query --dependencies` examples
+  - Add `rfx deps` command documentation
+  - Add use cases (refactoring, debugging, etc.)
+
+- [ ] **Update ARCHITECTURE.md** (technical docs)
+  - Add DependencyIndex component
+  - Document depth-1 storage model
+  - Document graph traversal algorithms
+
+- [ ] **Rustdoc comments** (inline code documentation)
+  - Document `DependencyExtractor` trait
+  - Document `DependencyIndex` struct
+  - Document graph algorithms
+
+---
+
 ## 🔗 Dependency Graph
 
 ```

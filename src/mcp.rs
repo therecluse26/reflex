@@ -240,6 +240,10 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         "force": {
                             "type": "boolean",
                             "description": "Force execution of potentially expensive queries (bypasses broad query detection)"
+                        },
+                        "dependencies": {
+                            "type": "boolean",
+                            "description": "Include dependency information (imports) in results. Currently only available for Rust files."
                         }
                     },
                     "required": ["pattern"]
@@ -413,6 +417,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 offset: None,
                 force,
                 suppress_output: true,  // MCP always returns JSON
+                include_dependencies: false,  // TODO: Add MCP parameter to enable dependencies
             };
 
             let cache = CacheManager::new(".");
@@ -484,6 +489,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 offset: None,
                 force,
                 suppress_output: true,  // MCP always returns JSON
+                include_dependencies: false,  // TODO: Add MCP parameter to enable dependencies
             };
 
             let cache = CacheManager::new(".");
@@ -534,6 +540,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 .unwrap_or_default();
             let paths_only = arguments["paths"].as_bool().unwrap_or(false);
             let force = arguments["force"].as_bool().unwrap_or(false);
+            let dependencies = arguments["dependencies"].as_bool().unwrap_or(false);
 
             let language = parse_language(lang);
             let parsed_kind = parse_symbol_kind(kind);
@@ -571,6 +578,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 offset,
                 force,
                 suppress_output: true,  // MCP always returns JSON
+                include_dependencies: dependencies,
             };
 
             let cache = CacheManager::new(".");
@@ -654,6 +662,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 offset,
                 force,
                 suppress_output: true,  // MCP always returns JSON
+                include_dependencies: false,  // TODO: Add MCP parameter to enable dependencies
             };
 
             let cache = CacheManager::new(".");
@@ -750,6 +759,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 offset,
                 force,
                 suppress_output: true,  // MCP always returns JSON
+                include_dependencies: false,  // TODO: Add MCP parameter to enable dependencies
             };
 
             let cache = CacheManager::new(".");

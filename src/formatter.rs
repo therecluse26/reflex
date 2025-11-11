@@ -13,7 +13,7 @@ use syntect::highlighting::{Style as SyntectStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
 use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
 
-use crate::models::{Language, SearchResult, SymbolKind};
+use crate::models::{DependencyInfo, Language, SearchResult, SymbolKind};
 
 /// Lazy-loaded syntax highlighting resources
 struct SyntaxHighlighter {
@@ -218,6 +218,15 @@ impl OutputFormatter {
             let highlighted = self.highlight_code(&result.preview, &result.lang, pattern);
             println!("        {}", highlighted);
 
+            // Print internal dependencies if available
+            if let Some(deps_formatted) = self.format_internal_dependencies(&result.dependencies) {
+                println!();
+                println!("        {}", "Dependencies:".dimmed());
+                for dep in deps_formatted {
+                    println!("          {}", dep.bright_magenta());
+                }
+            }
+
             // Add separator line between results (except for the very last one)
             if !is_last {
                 let separator_width = self.terminal_width.saturating_sub(2) as usize;
@@ -228,6 +237,15 @@ impl OutputFormatter {
             println!("    {} {}", line_no, symbol_badge);
             println!("        {}", result.preview);
 
+            // Print internal dependencies if available
+            if let Some(deps_formatted) = self.format_internal_dependencies(&result.dependencies) {
+                println!();
+                println!("        Dependencies:");
+                for dep in deps_formatted {
+                    println!("          {}", dep);
+                }
+            }
+
             // Add separator line between results (except for the very last one)
             if !is_last {
                 let separator_width = self.terminal_width.saturating_sub(2) as usize;
@@ -236,6 +254,24 @@ impl OutputFormatter {
         }
 
         Ok(())
+    }
+
+    /// Format dependencies for display
+    /// Returns None if no dependencies exist
+    /// Note: Database only contains internal dependencies (external/stdlib filtered during indexing)
+    fn format_internal_dependencies(&self, dependencies: &Option<Vec<DependencyInfo>>) -> Option<Vec<String>> {
+        dependencies.as_ref().and_then(|deps| {
+            let dep_paths: Vec<String> = deps
+                .iter()
+                .map(|dep| dep.path.clone())
+                .collect();
+
+            if dep_paths.is_empty() {
+                None
+            } else {
+                Some(dep_paths)
+            }
+        })
     }
 
     /// Format symbol kind badge
@@ -385,6 +421,7 @@ mod tests {
                     end_line: 1,
                 },
                 preview: "fn foo() {}".to_string(),
+                dependencies: None,
             },
             SearchResult {
                 path: "a.rs".to_string(),
@@ -396,6 +433,7 @@ mod tests {
                     end_line: 2,
                 },
                 preview: "fn bar() {}".to_string(),
+                dependencies: None,
             },
             SearchResult {
                 path: "b.rs".to_string(),
@@ -407,6 +445,7 @@ mod tests {
                     end_line: 1,
                 },
                 preview: "fn baz() {}".to_string(),
+                dependencies: None,
             },
         ];
 

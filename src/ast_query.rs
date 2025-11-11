@@ -32,6 +32,7 @@
 //!     symbol: None,
 //!     kind: SymbolKind::Unknown("text_match".to_string()),
 //!     preview: String::new(),
+//!     dependencies: None,
 //! }];
 //!
 //! // File contents map
@@ -166,6 +167,7 @@ pub fn execute_ast_query(
                     symbol: symbol_name,
                     kind: symbol_kind.unwrap_or_else(|| SymbolKind::Unknown("ast_match".to_string())),
                     preview: matched_text.to_string(),
+                    dependencies: None,
                 });
             }
         }
@@ -310,6 +312,7 @@ fn sync_helper() {
             symbol: None,
             kind: SymbolKind::Unknown("text_match".to_string()),
             preview: String::new(),
+            dependencies: None,
         }];
 
         // Query for all functions - using capture syntax @fn
@@ -349,6 +352,7 @@ struct Config {
             symbol: None,
             kind: SymbolKind::Unknown("text_match".to_string()),
             preview: String::new(),
+            dependencies: None,
         }];
 
         // Query for all structs - using capture syntax @struct
@@ -377,6 +381,7 @@ struct Config {
             symbol: None,
             kind: SymbolKind::Unknown("text_match".to_string()),
             preview: String::new(),
+            dependencies: None,
         }];
 
         // Invalid S-expression syntax (missing closing paren)
@@ -402,6 +407,7 @@ struct Config {
             symbol: None,
             kind: SymbolKind::Unknown("text_match".to_string()),
             preview: String::new(),
+            dependencies: None,
         }];
 
         // Vue uses line-based parsing, not tree-sitter, so AST queries should fail
@@ -438,6 +444,7 @@ def process(x):
             symbol: None,
             kind: SymbolKind::Unknown("text_match".to_string()),
             preview: String::new(),
+            dependencies: None,
         }];
 
         // Query for all Python functions

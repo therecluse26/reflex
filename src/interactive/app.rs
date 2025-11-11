@@ -1036,6 +1036,7 @@ impl InteractiveApp {
             offset: None,
             force: false,
             suppress_output: false,
+            include_dependencies: false,  // Interactive mode doesn't support dependencies yet
         };
 
         // Spawn background thread for search

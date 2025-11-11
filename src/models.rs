@@ -129,6 +129,49 @@ impl Language {
     }
 }
 
+/// Type of import/dependency
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ImportType {
+    /// Internal project file
+    Internal,
+    /// External library/package
+    External,
+    /// Standard library
+    Stdlib,
+}
+
+/// Dependency information for API output (simplified, path-based)
+/// Note: Only internal dependencies are indexed (external/stdlib filtered during indexing)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DependencyInfo {
+    /// Import path as written in source (or resolved path for internal deps)
+    pub path: String,
+    /// Line number where import appears (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
+    /// Imported symbols (for selective imports like `from x import a, b`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbols: Option<Vec<String>>,
+}
+
+/// Full dependency record (internal representation with file IDs)
+#[derive(Debug, Clone)]
+pub struct Dependency {
+    /// Source file ID
+    pub file_id: i64,
+    /// Import path as written in source code
+    pub imported_path: String,
+    /// Resolved file ID (None if external or stdlib)
+    pub resolved_file_id: Option<i64>,
+    /// Import type classification
+    pub import_type: ImportType,
+    /// Line number where import appears
+    pub line_number: usize,
+    /// Imported symbols (for selective imports)
+    pub imported_symbols: Option<Vec<String>>,
+}
+
 /// Helper function to skip serializing "Unknown" symbol kinds
 fn is_unknown_kind(kind: &SymbolKind) -> bool {
     matches!(kind, SymbolKind::Unknown(_))
@@ -153,6 +196,9 @@ pub struct SearchResult {
     pub span: Span,
     /// Code preview (few lines around the match)
     pub preview: String,
+    /// File dependencies (only populated when --dependencies flag is used)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dependencies: Option<Vec<DependencyInfo>>,
 }
 
 impl SearchResult {
@@ -174,6 +220,7 @@ impl SearchResult {
             symbol,
             span,
             preview,
+            dependencies: None,
         }
     }
 }

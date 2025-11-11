@@ -263,6 +263,7 @@ fn extract_variables(
                     symbol: Some(name),
                     span,
                     preview,
+                    dependencies: None,
                 });
             }
         }
@@ -329,6 +330,7 @@ fn extract_reactive_declarations(
                     symbol: Some(name),
                     span,
                     preview,
+                    dependencies: None,
                 });
             }
         }
@@ -375,6 +377,7 @@ fn extract_symbols(
                 symbol: Some(name),
                 span,
                 preview,
+                dependencies: None,
             });
         }
     }

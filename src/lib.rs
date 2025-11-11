@@ -30,6 +30,7 @@ pub mod background_indexer;
 pub mod cache;
 pub mod cli;
 pub mod content_store;
+pub mod dependency;
 pub mod formatter;
 pub mod git;
 pub mod indexer;
@@ -49,8 +50,8 @@ pub mod watcher;
 pub use cache::CacheManager;
 pub use indexer::Indexer;
 pub use models::{
-    IndexConfig, IndexStats, IndexStatus, IndexWarning, IndexWarningDetails, IndexedFile,
-    Language, QueryResponse, SearchResult, Span, SymbolKind,
+    Dependency, DependencyInfo, ImportType, IndexConfig, IndexStats, IndexStatus, IndexWarning,
+    IndexWarningDetails, IndexedFile, Language, QueryResponse, SearchResult, Span, SymbolKind,
 };
 pub use query::{QueryEngine, QueryFilter};
 pub use watcher::{watch, WatchConfig};

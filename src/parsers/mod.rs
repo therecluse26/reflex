@@ -28,6 +28,39 @@ use crate::models::{Language, SearchResult};
 /// Parser factory that selects the appropriate parser based on language
 pub struct ParserFactory;
 
+/// Extracted import/dependency information (before file ID resolution)
+#[derive(Debug, Clone)]
+pub struct ImportInfo {
+    /// Import path as written in source code
+    pub imported_path: String,
+    /// Type classification hint (internal/external/stdlib)
+    pub import_type: crate::models::ImportType,
+    /// Line number where import appears
+    pub line_number: usize,
+    /// Imported symbols (for selective imports like `from x import a, b`)
+    pub imported_symbols: Option<Vec<String>>,
+}
+
+/// Trait for extracting dependencies from source code
+///
+/// Each language parser can implement this trait to extract import/include
+/// statements from source files.
+pub trait DependencyExtractor {
+    /// Extract all imports/dependencies from source code
+    ///
+    /// Returns a list of ImportInfo records (before file ID resolution).
+    /// The indexer will resolve these to file IDs and store in the database.
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - Source code content
+    ///
+    /// # Returns
+    ///
+    /// Vector of ImportInfo records, or an error if parsing fails
+    fn extract_dependencies(source: &str) -> Result<Vec<ImportInfo>>;
+}
+
 impl ParserFactory {
     /// Get the tree-sitter grammar for a language
     ///

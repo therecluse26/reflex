@@ -15,8 +15,11 @@ use std::time::Instant;
 
 use crate::cache::CacheManager;
 use crate::content_store::ContentWriter;
-use crate::models::{IndexConfig, IndexStats, Language};
+use crate::dependency::DependencyIndex;
+use crate::models::{Dependency, IndexConfig, IndexStats, Language, ImportType};
 use crate::output;
+use crate::parsers::{DependencyExtractor, ImportInfo};
+use crate::parsers::rust::RustDependencyExtractor;
 use crate::trigram::TrigramIndex;
 
 /// Progress callback type: (current_file_count, total_file_count, status_message)
@@ -31,6 +34,7 @@ struct FileProcessingResult {
     content: String,
     language: Language,
     line_count: usize,
+    dependencies: Vec<ImportInfo>,
 }
 
 /// Manages the indexing process
@@ -165,6 +169,7 @@ impl Indexer {
         let mut new_hashes = HashMap::new();
         let mut files_indexed = 0;
         let mut file_metadata: Vec<(String, String, String, usize)> = Vec::new(); // For batch SQLite update
+        let mut all_dependencies: Vec<(String, Vec<ImportInfo>)> = Vec::new(); // For batch dependency insertion
 
         // Initialize trigram index and content store
         let mut trigram_index = TrigramIndex::new();
@@ -291,6 +296,21 @@ impl Indexer {
                 // Count lines in the file
                 let line_count = content.lines().count();
 
+                // Extract dependencies for supported languages
+                let dependencies = match language {
+                    Language::Rust => {
+                        match RustDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    // Add other languages here as they're implemented
+                    _ => Vec::new(),
+                };
+
                 // Update progress atomically
                 counter_clone.fetch_add(1, Ordering::Relaxed);
 
@@ -301,6 +321,7 @@ impl Indexer {
                     content,
                     language,
                     line_count,
+                    dependencies,
                 })
                 })
                 .collect()
@@ -326,6 +347,11 @@ impl Indexer {
                     format!("{:?}", result.language),
                     result.line_count
                 ));
+
+                // Collect dependencies for batch insertion (if any)
+                if !result.dependencies.is_empty() {
+                    all_dependencies.push((result.path_str.clone(), result.dependencies));
+                }
 
                 new_hashes.insert(result.path_str, result.hash);
             }
@@ -411,6 +437,76 @@ impl Indexer {
         self.cache.checkpoint_wal()
             .context("Failed to checkpoint WAL")?;
         log::debug!("WAL checkpoint completed - database is fully synced");
+
+        // Step 2.5: Insert dependencies (after files are inserted and have IDs)
+        if !all_dependencies.is_empty() {
+            *progress_status.lock().unwrap() = "Extracting dependencies...".to_string();
+            if show_progress {
+                pb.set_message("Extracting dependencies...".to_string());
+            }
+
+            // Create dependency index to resolve paths and insert dependencies
+            let cache_for_deps = CacheManager::new(root);
+            let dep_index = DependencyIndex::new(cache_for_deps);
+
+            let mut total_deps_inserted = 0;
+
+            // Process each file's dependencies
+            for (file_path, import_infos) in all_dependencies {
+                // Get file ID from database
+                let file_id = match dep_index.get_file_id_by_path(&file_path)? {
+                    Some(id) => id,
+                    None => {
+                        log::warn!("File not found in database (skipping dependencies): {}", file_path);
+                        continue;
+                    }
+                };
+
+                // Resolve import paths to file IDs using our path resolution helpers
+                let mut resolved_deps = Vec::new();
+
+                for import_info in import_infos {
+                    // Skip external and stdlib dependencies - we only care about internal code structure
+                    if !matches!(import_info.import_type, ImportType::Internal) {
+                        continue;
+                    }
+
+                    // Try to resolve internal import to a file path
+                    let resolved_path = crate::dependency::resolve_rust_import(
+                        &import_info.imported_path,
+                        &file_path,
+                        root,
+                    );
+
+                    // Get target file ID if resolved
+                    let target_file_id = if let Some(ref path) = resolved_path {
+                        dep_index.get_file_id_by_path(path)?
+                    } else {
+                        None
+                    };
+
+                    resolved_deps.push(Dependency {
+                        file_id,
+                        imported_path: import_info.imported_path.clone(),
+                        resolved_file_id: target_file_id,
+                        import_type: ImportType::Internal,
+                        line_number: import_info.line_number,
+                        imported_symbols: import_info.imported_symbols.clone(),
+                    });
+                }
+
+                // Clear existing dependencies for this file (incremental reindex)
+                dep_index.clear_dependencies(file_id)?;
+
+                // Batch insert dependencies
+                if !resolved_deps.is_empty() {
+                    dep_index.batch_insert_dependencies(&resolved_deps)?;
+                    total_deps_inserted += resolved_deps.len();
+                }
+            }
+
+            log::info!("Extracted {} dependencies", total_deps_inserted);
+        }
 
         log::info!("Indexed {} files", files_indexed);
 
