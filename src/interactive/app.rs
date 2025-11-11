@@ -70,6 +70,10 @@ pub struct InteractiveApp {
     index_progress_rx: Option<mpsc::Receiver<(usize, usize, String)>>,
     /// Indexing start time (for elapsed time display)
     indexing_start_time: Option<Instant>,
+    /// Time when filters were last changed (for debounced auto-search)
+    filter_change_time: Option<Instant>,
+    /// Filter debounce duration in milliseconds
+    filter_debounce_ms: u64,
 }
 
 /// File preview state
@@ -175,6 +179,8 @@ impl InteractiveApp {
             index_rx: None,
             index_progress_rx: None,
             indexing_start_time: None,
+            filter_change_time: None,
+            filter_debounce_ms: 1000, // 1 second
         })
     }
 
@@ -218,12 +224,8 @@ impl InteractiveApp {
                 first_frame = false;
             }
 
-            // Update visible height for scroll calculations
+            // Get terminal size for event handling
             let terminal_size = terminal.size()?;
-            let terminal_height = terminal_size.height;
-            let visible_lines = terminal_height.saturating_sub(9) as usize; // header(3) + filters(3) + footer(1) + result_borders(2)
-            let visible_results_count = visible_lines / 2; // Each result takes 2 lines
-            self.results.set_visible_height(visible_results_count);
 
             // Render UI
             terminal.draw(|f| ui::render(f, self))?;
@@ -274,6 +276,17 @@ impl InteractiveApp {
                     }
                     self.searching = false;
                     self.search_rx = None;
+                }
+            }
+
+            // Check for debounced filter change (auto-search after 1.5s)
+            if let Some(change_time) = self.filter_change_time {
+                if change_time.elapsed() >= Duration::from_millis(self.filter_debounce_ms) {
+                    // Debounce period elapsed, trigger search if input is not empty
+                    if !self.input.value().trim().is_empty() && !self.searching {
+                        let _ = self.execute_search();
+                    }
+                    self.filter_change_time = None;
                 }
             }
 
@@ -434,11 +447,13 @@ impl InteractiveApp {
 
             KeyCommand::ToggleSymbols => {
                 self.filters.symbols_mode = !self.filters.symbols_mode;
+                self.filter_change_time = Some(Instant::now());
                 Ok(None)
             }
 
             KeyCommand::ToggleRegex => {
                 self.filters.regex_mode = !self.filters.regex_mode;
+                self.filter_change_time = Some(Instant::now());
                 Ok(None)
             }
 
@@ -582,18 +597,20 @@ impl InteractiveApp {
             }
             MouseAction::ToggleSymbols => {
                 self.filters.symbols_mode = !self.filters.symbols_mode;
+                self.filter_change_time = Some(Instant::now());
             }
             MouseAction::ToggleRegex => {
                 self.filters.regex_mode = !self.filters.regex_mode;
+                self.filter_change_time = Some(Instant::now());
             }
-            MouseAction::SelectResult(index) => {
-                // Convert line index to result index (each result is 2 lines)
-                let result_index = (index / 2) + self.results.scroll_offset();
+            MouseAction::SelectResult(line_index) => {
+                // Convert line index to result index (results have variable heights)
+                let result_index = self.line_index_to_result_index(line_index);
                 self.results.select(result_index);
             }
-            MouseAction::DoubleClick(index) => {
-                // Convert line index to result index (each result is 2 lines)
-                let result_index = (index / 2) + self.results.scroll_offset();
+            MouseAction::DoubleClick(line_index) => {
+                // Convert line index to result index (results have variable heights)
+                let result_index = self.line_index_to_result_index(line_index);
                 self.results.select(result_index);
                 if let Some(result) = self.results.selected().cloned() {
                     let _ = self.show_file_preview(&result);
@@ -609,6 +626,33 @@ impl InteractiveApp {
         }
     }
 
+
+    /// Convert a line index within the results area to a result index
+    /// Accounts for variable-height results (symbol line + path line + preview lines)
+    fn line_index_to_result_index(&self, line_index: usize) -> usize {
+        let mut current_line = 0;
+        let scroll_offset = self.results.scroll_offset();
+
+        for (idx, result) in self.results.results().iter().enumerate().skip(scroll_offset) {
+            // Calculate lines for this result
+            let has_symbol = !matches!(result.kind, crate::models::SymbolKind::Unknown(_))
+                && result.symbol.is_some();
+            let symbol_lines = if has_symbol { 1 } else { 0 };
+            let path_lines = 1;
+            let preview_lines = result.preview.lines().count();
+            let total_lines = symbol_lines + path_lines + preview_lines;
+
+            // Check if click was in this result's range
+            if line_index < current_line + total_lines {
+                return idx;
+            }
+
+            current_line += total_lines;
+        }
+
+        // If we get here, click was beyond all results - return last result
+        self.results.len().saturating_sub(1)
+    }
 
     fn execute_search(&mut self) -> Result<()> {
         // Reset history cursor when executing a new search
@@ -772,6 +816,10 @@ impl InteractiveApp {
 
     pub fn results(&self) -> &ResultList {
         &self.results
+    }
+
+    pub fn results_mut(&mut self) -> &mut ResultList {
+        &mut self.results
     }
 
     pub fn mode(&self) -> &AppMode {

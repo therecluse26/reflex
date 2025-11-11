@@ -1,7 +1,8 @@
 use crate::models::SearchResult;
+use std::cell::Cell;
 
 /// Result list manager with navigation and display state
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ResultList {
     /// All search results
     results: Vec<SearchResult>,
@@ -12,7 +13,8 @@ pub struct ResultList {
     /// Maximum number of results to display
     max_results: usize,
     /// Last visible height (for automatic scroll updates)
-    last_visible_height: usize,
+    /// Uses Cell for interior mutability so it can be updated during rendering
+    last_visible_height: Cell<usize>,
 }
 
 impl ResultList {
@@ -22,7 +24,7 @@ impl ResultList {
             selected_index: 0,
             scroll_offset: 0,
             max_results,
-            last_visible_height: 20, // Default estimate
+            last_visible_height: Cell::new(20), // Default estimate
         }
     }
 
@@ -72,7 +74,7 @@ impl ResultList {
 
         if self.selected_index < self.results.len() - 1 {
             self.selected_index += 1;
-            self.update_scroll(self.last_visible_height);
+            self.update_scroll(self.last_visible_height.get());
         }
     }
 
@@ -80,7 +82,7 @@ impl ResultList {
     pub fn prev(&mut self) {
         if self.selected_index > 0 {
             self.selected_index -= 1;
-            self.update_scroll(self.last_visible_height);
+            self.update_scroll(self.last_visible_height.get());
         }
     }
 
@@ -91,26 +93,26 @@ impl ResultList {
         }
 
         self.selected_index = (self.selected_index + n).min(self.results.len() - 1);
-        self.update_scroll(self.last_visible_height);
+        self.update_scroll(self.last_visible_height.get());
     }
 
     /// Jump up by n results
     pub fn jump_up(&mut self, n: usize) {
         self.selected_index = self.selected_index.saturating_sub(n);
-        self.update_scroll(self.last_visible_height);
+        self.update_scroll(self.last_visible_height.get());
     }
 
     /// Move to first result
     pub fn first(&mut self) {
         self.selected_index = 0;
-        self.update_scroll(self.last_visible_height);
+        self.update_scroll(self.last_visible_height.get());
     }
 
     /// Move to last result
     pub fn last(&mut self) {
         if !self.results.is_empty() {
             self.selected_index = self.results.len() - 1;
-            self.update_scroll(self.last_visible_height);
+            self.update_scroll(self.last_visible_height.get());
         }
     }
 
@@ -118,7 +120,7 @@ impl ResultList {
     pub fn select(&mut self, index: usize) {
         if index < self.results.len() {
             self.selected_index = index;
-            self.update_scroll(self.last_visible_height);
+            self.update_scroll(self.last_visible_height.get());
         }
     }
 
@@ -145,8 +147,9 @@ impl ResultList {
     }
 
     /// Set the visible height (called during rendering)
-    pub fn set_visible_height(&mut self, height: usize) {
-        self.last_visible_height = height;
+    /// Uses interior mutability to allow updates during immutable rendering
+    pub fn set_visible_height(&self, height: usize) {
+        self.last_visible_height.set(height);
     }
 
     /// Get the visible results for rendering

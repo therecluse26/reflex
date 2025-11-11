@@ -494,10 +494,35 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
         .style(Style::default().bg(Color::Black));
     f.render_widget(clear_block, area);
 
-    // Render result list (2 lines per result)
-    // Calculate how many results fit (each result takes 2 lines)
+    // Render result list with variable-height items
+    // Load theme for syntax highlighting
+    let theme = app.theme().load_syntect_theme();
+
+    // First pass: calculate how many results fit in visible area
     let visible_lines = area.height.saturating_sub(2) as usize;
-    let visible_results_count = visible_lines / 2;
+    let mut lines_used = 0;
+    let mut visible_results_count = 0;
+
+    for result in results.results().iter().skip(results.scroll_offset()) {
+        // Calculate lines for this result
+        let has_symbol = !matches!(result.kind, crate::models::SymbolKind::Unknown(_))
+            && result.symbol.is_some();
+        let symbol_lines = if has_symbol { 1 } else { 0 };
+        let path_lines = 1;
+        let preview_lines = result.preview.lines().count();
+        let total_lines = symbol_lines + path_lines + preview_lines;
+
+        if lines_used + total_lines <= visible_lines {
+            lines_used += total_lines;
+            visible_results_count += 1;
+        } else {
+            break;
+        }
+    }
+
+    // Update the results list visible height for scroll calculations
+    // This uses interior mutability (Cell) to update during rendering
+    results.set_visible_height(visible_results_count);
 
     let items: Vec<ListItem> = results
         .visible_results(visible_results_count)
@@ -515,39 +540,79 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
                 .map(|p| format!("./{}", p))
                 .unwrap_or_else(|| result.path.clone());
 
-            // When selected: both lines get highlighted background
-            // When not selected: file path is cyan, code snippet is normal foreground
-            if is_selected {
-                let file_line = format!("{}:{}", relative_path, result.span.start_line);
-                let match_line = format!("    {}", result.preview.trim()); // 4 spaces indent
+            let mut lines = Vec::new();
 
+            // Check if result has symbol information
+            let has_symbol = !matches!(result.kind, crate::models::SymbolKind::Unknown(_))
+                && result.symbol.is_some();
+
+            // Add symbol line if present (before file path)
+            if has_symbol {
+                let symbol_text = format!("[{}] {}",
+                    result.kind,
+                    result.symbol.as_ref().unwrap()
+                );
+
+                if is_selected {
+                    lines.push(Line::from(symbol_text));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            symbol_text,
+                            Style::default().fg(Color::Rgb(200, 150, 255)) // Purple/magenta
+                        )
+                    ]));
+                }
+            }
+
+            // Add file path line
+            let file_line_text = format!("{}:{}", relative_path, result.span.start_line);
+            if is_selected {
+                lines.push(Line::from(file_line_text));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        file_line_text,
+                        Style::default().fg(palette.info) // Cyan for file path
+                    )
+                ]));
+            }
+
+            // Split preview into lines and apply syntax highlighting
+            let preview_lines_vec: Vec<String> = result.preview
+                .lines()
+                .map(|s| s.to_string())
+                .collect();
+
+            if is_selected {
+                // When selected, use simple formatting (background will be applied)
+                for line in preview_lines_vec {
+                    lines.push(Line::from(format!("    {}", line)));
+                }
+            } else {
+                // Apply syntax highlighting to preview lines
+                let highlighted = super::syntax::highlight_code_lines(
+                    &preview_lines_vec,
+                    result.lang,
+                    &theme
+                );
+
+                for highlighted_line in highlighted {
+                    // Add indentation and prepend to highlighted spans
+                    let mut line_spans = vec![Span::raw("    ")];
+                    line_spans.extend(highlighted_line.spans);
+                    lines.push(Line::from(line_spans));
+                }
+            }
+
+            // Apply selection style if selected
+            if is_selected {
                 let style = Style::default()
                     .fg(Color::Black)
                     .bg(palette.highlight)
                     .add_modifier(Modifier::BOLD);
-
-                let lines = vec![
-                    Line::from(file_line),
-                    Line::from(match_line),
-                ];
                 ListItem::new(lines).style(style)
             } else {
-                // Use Span for different colors per line
-                let file_line = Line::from(vec![
-                    Span::styled(
-                        format!("{}:{}", relative_path, result.span.start_line),
-                        Style::default().fg(palette.info) // Cyan for file path
-                    )
-                ]);
-
-                let match_line = Line::from(vec![
-                    Span::styled(
-                        format!("    {}", result.preview.trim()), // 4 spaces indent
-                        Style::default().fg(palette.foreground) // Normal color for code
-                    )
-                ]);
-
-                let lines = vec![file_line, match_line];
                 ListItem::new(lines)
             }
         })
@@ -566,7 +631,6 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     f.render_widget(list, area);
 
     // Render scrollbar if there are more results than visible
-    // (each result takes 2 lines, so we divide visible height by 2)
     if result_count > visible_results_count {
         let mut scrollbar_state = ScrollbarState::new(result_count)
             .position(results.selected_index());

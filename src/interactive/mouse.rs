@@ -106,11 +106,15 @@ impl MouseState {
                 // Check results area (click to select)
                 if self.is_in_area(result_area) {
                     if let Some(row) = self.row_in_area(result_area) {
-                        return if is_double_click {
-                            MouseAction::DoubleClick(row)
-                        } else {
-                            MouseAction::SelectResult(row)
-                        };
+                        // Subtract 1 to account for top border of the List widget
+                        if row > 0 {
+                            let content_row = row - 1;
+                            return if is_double_click {
+                                MouseAction::DoubleClick(content_row)
+                            } else {
+                                MouseAction::SelectResult(content_row)
+                            };
+                        }
                     }
                 }
 
