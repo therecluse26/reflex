@@ -28,29 +28,49 @@ impl SyntaxHighlighter {
         }
     }
 
-    /// Get syntax reference for a language
+    /// Get syntax reference for a language using extension-based lookup (most reliable)
+    ///
+    /// This uses file extensions to find syntaxes, which is more reliable than name-based
+    /// lookup because syntect (based on Sublime Text) primarily uses extension matching.
+    ///
+    /// For languages not in the default syntect set (TypeScript, Vue, Svelte), we fall back
+    /// to related syntaxes (JavaScript for TypeScript, HTML for Vue/Svelte).
     fn get_syntax(&self, lang: &Language) -> Option<&SyntaxReference> {
-        let name = match lang {
-            Language::Rust => "Rust",
-            Language::Python => "Python",
-            Language::JavaScript => "JavaScript",
-            Language::TypeScript => "TypeScript",
-            Language::Go => "Go",
-            Language::Java => "Java",
-            Language::C => "C",
-            Language::Cpp => "C++",
-            Language::CSharp => "C#",
-            Language::PHP => "PHP",
-            Language::Ruby => "Ruby",
-            Language::Kotlin => "Kotlin",
-            Language::Swift => "Swift",
-            Language::Zig => "Zig",
-            Language::Vue => "Vue Component",
-            Language::Svelte => "Svelte",
+        let (extension, fallback_extension) = match lang {
+            Language::Rust => ("rs", None),
+            Language::Python => ("py", None),
+            Language::JavaScript => ("js", None),
+            Language::TypeScript => ("ts", Some("js")),  // Fallback to JavaScript
+            Language::Go => ("go", None),
+            Language::Java => ("java", None),
+            Language::C => ("c", None),
+            Language::Cpp => ("cpp", None),
+            Language::CSharp => ("cs", None),
+            Language::PHP => ("php", None),
+            Language::Ruby => ("rb", None),
+            Language::Kotlin => ("kt", None),
+            Language::Swift => ("swift", None),
+            Language::Zig => ("zig", None),
+            Language::Vue => ("vue", Some("html")),      // Fallback to HTML
+            Language::Svelte => ("svelte", Some("html")), // Fallback to HTML
             Language::Unknown => return None,
         };
 
-        self.syntax_set.find_syntax_by_name(name)
+        // Try extension-based lookup first (most reliable)
+        self.syntax_set
+            .find_syntax_by_extension(extension)
+            .or_else(|| {
+                // Try token-based search (searches by extension then name)
+                self.syntax_set.find_syntax_by_token(extension)
+            })
+            .or_else(|| {
+                // If we have a fallback extension (for TypeScript, Vue, Svelte), try it
+                fallback_extension.and_then(|fallback| {
+                    self.syntax_set
+                        .find_syntax_by_extension(fallback)
+                        .or_else(|| self.syntax_set.find_syntax_by_token(fallback))
+                })
+            })
     }
 }
 
@@ -159,8 +179,18 @@ mod tests {
     #[test]
     fn test_highlighter_initialization() {
         let highlighter = get_syntax_highlighter();
+
+        // Core languages that should work
         assert!(highlighter.get_syntax(&Language::Rust).is_some());
         assert!(highlighter.get_syntax(&Language::Python).is_some());
+        assert!(highlighter.get_syntax(&Language::JavaScript).is_some());
+
+        // Languages with fallbacks
+        assert!(highlighter.get_syntax(&Language::TypeScript).is_some(), "TypeScript should fallback to JavaScript");
+        assert!(highlighter.get_syntax(&Language::Vue).is_some(), "Vue should fallback to HTML");
+        assert!(highlighter.get_syntax(&Language::Svelte).is_some(), "Svelte should fallback to HTML");
+
+        // Unknown should return None
         assert!(highlighter.get_syntax(&Language::Unknown).is_none());
     }
 
@@ -241,5 +271,39 @@ mod tests {
 
         // Themes should be different
         assert_ne!(dark_theme.name.as_ref(), light_theme.name.as_ref());
+    }
+
+    #[test]
+    fn test_all_supported_languages_have_syntax() {
+        let highlighter = get_syntax_highlighter();
+        let theme = get_default_theme(true);
+
+        // Test ALL supported languages (except Swift which is temporarily disabled)
+        let all_languages = vec![
+            (Language::Rust, "fn main() {}"),
+            (Language::Python, "def main():"),
+            (Language::JavaScript, "function main() {}"),
+            (Language::TypeScript, "const x: string = '';"),
+            (Language::Go, "func main() {}"),
+            (Language::Java, "public class Main {}"),
+            (Language::C, "int main() {}"),
+            (Language::Cpp, "int main() {}"),
+            (Language::CSharp, "public class Main {}"),
+            (Language::PHP, "<?php function main() {}"),
+            (Language::Ruby, "def main; end"),
+            (Language::Kotlin, "fun main() {}"),
+            (Language::Zig, "pub fn main() void {}"),
+            (Language::Vue, "<template></template>"),
+            (Language::Svelte, "<script></script>"),
+        ];
+
+        for (lang, code) in all_languages {
+            let lines = vec![code.to_string()];
+            let highlighted = highlight_code_lines(&lines, lang, &theme);
+
+            // Should return highlighted content (not plain text fallback)
+            assert_eq!(highlighted.len(), 1, "Failed for {:?}", lang);
+            assert!(!highlighted[0].spans.is_empty(), "{:?} has no syntax highlighting", lang);
+        }
     }
 }
