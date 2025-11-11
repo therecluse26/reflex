@@ -1075,6 +1075,7 @@ impl InteractiveApp {
         let (result_tx, result_rx) = mpsc::channel();
         let (progress_tx, progress_rx) = mpsc::channel();
         let cwd = self.cwd.clone();
+        let cache_path = self.cache.path().to_path_buf();
 
         // Spawn background thread for indexing with progress callback
         std::thread::spawn(move || {
@@ -1088,6 +1089,45 @@ impl InteractiveApp {
             });
 
             let result = indexer.index_with_callback(&cwd, false, Some(callback));
+
+            // If indexing succeeded, spawn background symbol indexer
+            if result.is_ok() {
+                log::debug!("Main indexing completed, spawning background symbol indexer");
+
+                // Spawn detached background process for symbol indexing
+                // (Same approach as CLI: use index-symbols-internal hidden command)
+                let current_exe = std::env::current_exe();
+                if let Ok(exe_path) = current_exe {
+                    #[cfg(unix)]
+                    {
+                        let _ = std::process::Command::new(&exe_path)
+                            .arg("index-symbols-internal")
+                            .arg(&cwd)
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn();
+                    }
+
+                    #[cfg(windows)]
+                    {
+                        use std::os::windows::process::CommandExt;
+                        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+                        let _ = std::process::Command::new(&exe_path)
+                            .arg("index-symbols-internal")
+                            .arg(&cwd)
+                            .creation_flags(CREATE_NO_WINDOW)
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn();
+                    }
+
+                    log::debug!("Background symbol indexing process spawned");
+                }
+            }
+
             result_tx.send(result).ok();
         });
 

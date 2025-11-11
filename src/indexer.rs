@@ -406,6 +406,12 @@ impl Indexer {
             git_state.as_ref().map(|s| s.dirty).unwrap_or(false),
         )?;
 
+        // Force WAL checkpoint to ensure background processes see all committed data
+        // This is critical when spawning background symbol indexer immediately after
+        self.cache.checkpoint_wal()
+            .context("Failed to checkpoint WAL")?;
+        log::debug!("WAL checkpoint completed - database is fully synced");
+
         log::info!("Indexed {} files", files_indexed);
 
         // Step 3: Write trigram index

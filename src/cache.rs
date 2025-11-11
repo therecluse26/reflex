@@ -325,6 +325,42 @@ compression_level = 3  # zstd level
         Ok(())
     }
 
+    /// Force SQLite WAL (Write-Ahead Log) checkpoint
+    ///
+    /// Ensures all data written in transactions is flushed to the main database file.
+    /// This is critical when spawning background processes that open new connections,
+    /// as they need to see the committed data immediately.
+    ///
+    /// Uses TRUNCATE mode to completely flush and reset the WAL file.
+    pub fn checkpoint_wal(&self) -> Result<()> {
+        let db_path = self.cache_path.join(META_DB);
+
+        if !db_path.exists() {
+            // No database to checkpoint
+            return Ok(());
+        }
+
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for WAL checkpoint")?;
+
+        // PRAGMA wal_checkpoint(TRUNCATE) forces a full checkpoint and truncates the WAL
+        // This ensures background processes see all committed data
+        // Note: Returns (busy, log_pages, checkpointed_pages) - use query instead of execute
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            let busy: i64 = row.get(0)?;
+            let log_pages: i64 = row.get(1)?;
+            let checkpointed: i64 = row.get(2)?;
+            log::debug!(
+                "WAL checkpoint completed: busy={}, log_pages={}, checkpointed_pages={}",
+                busy, log_pages, checkpointed
+            );
+            Ok(())
+        }).context("Failed to execute WAL checkpoint")?;
+
+        log::debug!("Executed WAL checkpoint (TRUNCATE) on meta.db");
+        Ok(())
+    }
+
     /// Load all file hashes across all branches from SQLite
     ///
     /// Used by background indexer to get hashes for all indexed files.
@@ -504,6 +540,54 @@ compression_level = 3  # zstd level
         // Commit the entire transaction atomically
         tx.commit()?;
         log::info!("Transaction committed successfully (files + file_branches)");
+
+        // DIAGNOSTIC: Verify data was actually persisted after commit
+        // This helps diagnose WAL synchronization issues where commits succeed but data isn't visible
+        let verify_conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for verification")?;
+
+        // Count actual files in database
+        let actual_file_count: i64 = verify_conn.query_row(
+            "SELECT COUNT(*) FROM files WHERE path IN (SELECT path FROM files ORDER BY id DESC LIMIT ?)",
+            [files.len()],
+            |row| row.get(0)
+        ).unwrap_or(0);
+
+        // Count actual file_branches entries for this branch
+        let actual_fb_count: i64 = verify_conn.query_row(
+            "SELECT COUNT(*) FROM file_branches fb
+             JOIN branches b ON fb.branch_id = b.id
+             WHERE b.name = ?",
+            [branch],
+            |row| row.get(0)
+        ).unwrap_or(0);
+
+        log::info!(
+            "Post-commit verification: {} files in files table (expected {}), {} file_branches entries for '{}' (expected {})",
+            actual_file_count,
+            files.len(),
+            actual_fb_count,
+            branch,
+            inserted
+        );
+
+        // DEFENSIVE: Warn if counts don't match expectations
+        if actual_file_count < files.len() as i64 {
+            log::warn!(
+                "MISMATCH: Expected {} files in database, but only found {}! Data may not have persisted.",
+                files.len(),
+                actual_file_count
+            );
+        }
+        if actual_fb_count < inserted as i64 {
+            log::warn!(
+                "MISMATCH: Expected {} file_branches entries for branch '{}', but only found {}! Data may not have persisted.",
+                inserted,
+                branch,
+                actual_fb_count
+            );
+        }
+
         Ok(())
     }
 
