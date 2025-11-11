@@ -103,14 +103,45 @@ impl MouseState {
                 if self.is_in_area(filters_area) {
                     let col = event.column.saturating_sub(filters_area.x + 1);
 
-                    // Symbols badge is at positions 0-14: " [s] Symbols "
+                    // Calculate positions based on filter layout:
+                    // " [s] Symbols " + "  " + " [r] Regex " + "  " + " [l] Lang " + "  " + ...
+
+                    // Symbols badge: positions 0-14
                     if col < 14 {
                         return MouseAction::ToggleSymbols;
                     }
-                    // Regex badge is at positions 16-28: " [r] Regex "
+
+                    // Regex badge: positions 16-28 (after 2-space gap)
                     if col >= 16 && col < 28 {
                         return MouseAction::ToggleRegex;
                     }
+
+                    // Language badge: positions 30-42 (approximate - depends on content)
+                    // We'll use a wider range to account for " [l] Lang: rust " etc
+                    if col >= 30 && col < 60 {
+                        return MouseAction::PromptLanguage;
+                    }
+
+                    // Kind badge: positions 62-90 (approximate - depends on content)
+                    if col >= 62 && col < 100 {
+                        return MouseAction::PromptKind;
+                    }
+
+                    // Expand badge: positions 102-115 (approximate)
+                    if col >= 102 && col < 125 {
+                        return MouseAction::ToggleExpand;
+                    }
+
+                    // Exact badge: positions 127-140 (approximate)
+                    if col >= 127 && col < 150 {
+                        return MouseAction::ToggleExact;
+                    }
+
+                    // Contains badge: positions 152-170 (approximate)
+                    if col >= 152 && col < 180 {
+                        return MouseAction::ToggleContains;
+                    }
+
                     return MouseAction::None;
                 }
 
@@ -183,6 +214,16 @@ pub enum MouseAction {
     ToggleSymbols,
     /// Toggle regex filter
     ToggleRegex,
+    /// Prompt for language filter
+    PromptLanguage,
+    /// Prompt for kind filter
+    PromptKind,
+    /// Toggle expand filter
+    ToggleExpand,
+    /// Toggle exact filter
+    ToggleExact,
+    /// Toggle contains filter
+    ToggleContains,
     /// Close file preview
     ClosePreview,
     /// Trigger reindexing (click on index status)

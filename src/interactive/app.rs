@@ -695,6 +695,26 @@ impl InteractiveApp {
                 self.filters.regex_mode = !self.filters.regex_mode;
                 self.filter_change_time = Some(Instant::now());
             }
+            MouseAction::PromptLanguage => {
+                self.filter_selector = Some(super::filter_selector::FilterSelector::new_language());
+                self.mode = AppMode::FilterSelector;
+            }
+            MouseAction::PromptKind => {
+                self.filter_selector = Some(super::filter_selector::FilterSelector::new_kind());
+                self.mode = AppMode::FilterSelector;
+            }
+            MouseAction::ToggleExpand => {
+                self.filters.expand = !self.filters.expand;
+                self.filter_change_time = Some(Instant::now());
+            }
+            MouseAction::ToggleExact => {
+                self.filters.exact = !self.filters.exact;
+                self.filter_change_time = Some(Instant::now());
+            }
+            MouseAction::ToggleContains => {
+                self.filters.contains = !self.filters.contains;
+                self.filter_change_time = Some(Instant::now());
+            }
             MouseAction::SelectResult(line_index) => {
                 // Convert line index to result index (results have variable heights)
                 let result_index = self.line_index_to_result_index(line_index);
