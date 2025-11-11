@@ -120,6 +120,10 @@ fn render_header(f: &mut Frame, area: Rect, app: &InteractiveApp) {
 }
 
 fn render_filters(f: &mut Frame, area: Rect, app: &mut InteractiveApp) {
+    // Clear the area completely to prevent rendering artifacts
+    // This is especially important when filter text length changes (e.g., "Lang" → "Lang: Rust")
+    f.render_widget(Clear, area);
+
     // Clone what we need upfront to avoid borrow checker issues
     let filters = app.filters().clone();
     let palette = app.theme().palette.clone();

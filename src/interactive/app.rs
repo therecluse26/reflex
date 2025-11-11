@@ -78,6 +78,8 @@ pub struct InteractiveApp {
     filter_debounce_ms: u64,
     /// Current filter selector (if open)
     filter_selector: Option<super::filter_selector::FilterSelector>,
+    /// Time when info message was shown (for auto-dismissal)
+    info_message_time: Option<Instant>,
 }
 
 /// File preview state
@@ -189,6 +191,7 @@ impl InteractiveApp {
             filter_change_time: None,
             filter_debounce_ms: 500, // 500ms
             filter_selector: None,
+            info_message_time: None,
         })
     }
 
@@ -298,6 +301,14 @@ impl InteractiveApp {
                 }
             }
 
+            // Auto-clear info messages after 3 seconds
+            if let Some(info_time) = self.info_message_time {
+                if info_time.elapsed() >= Duration::from_secs(3) {
+                    self.info_message = None;
+                    self.info_message_time = None;
+                }
+            }
+
             // Check for indexing progress updates
             if let Some(ref rx) = self.index_progress_rx {
                 if let Ok((current, total, status)) = rx.try_recv() {
@@ -374,6 +385,7 @@ impl InteractiveApp {
                     self.mode = AppMode::Normal;
                     self.filter_selector = None;
                     self.filter_change_time = Some(Instant::now());
+                    self.info_message = None;
                 }
                 return Ok(None);
             }
@@ -489,12 +501,14 @@ impl InteractiveApp {
             KeyCommand::ToggleSymbols => {
                 self.filters.symbols_mode = !self.filters.symbols_mode;
                 self.filter_change_time = Some(Instant::now());
+                self.info_message = None;
                 Ok(None)
             }
 
             KeyCommand::ToggleRegex => {
                 self.filters.regex_mode = !self.filters.regex_mode;
                 self.filter_change_time = Some(Instant::now());
+                self.info_message = None;
                 Ok(None)
             }
 
@@ -513,36 +527,42 @@ impl InteractiveApp {
             KeyCommand::PromptGlob => {
                 // For now, set a simple info message. In future, could add text input modal
                 self.info_message = Some("Glob patterns: Use CLI for now (--glob flag)".to_string());
+                self.info_message_time = Some(Instant::now());
                 Ok(None)
             }
 
             KeyCommand::PromptExclude => {
                 // For now, set a simple info message. In future, could add text input modal
                 self.info_message = Some("Exclude patterns: Use CLI for now (--exclude flag)".to_string());
+                self.info_message_time = Some(Instant::now());
                 Ok(None)
             }
 
             KeyCommand::ToggleExpand => {
                 self.filters.expand = !self.filters.expand;
                 self.filter_change_time = Some(Instant::now());
+                self.info_message = None;
                 Ok(None)
             }
 
             KeyCommand::ToggleContains => {
                 self.filters.contains = !self.filters.contains;
                 self.filter_change_time = Some(Instant::now());
+                self.info_message = None;
                 Ok(None)
             }
 
             KeyCommand::ClearLanguage => {
                 self.filters.language = None;
                 self.filter_change_time = Some(Instant::now());
+                self.info_message = None;
                 Ok(None)
             }
 
             KeyCommand::ClearKind => {
                 self.filters.kind = None;
                 self.filter_change_time = Some(Instant::now());
+                self.info_message = None;
                 Ok(None)
             }
 
@@ -663,6 +683,7 @@ impl InteractiveApp {
                     self.mode = AppMode::Normal;
                     self.filter_selector = None;
                     self.filter_change_time = Some(Instant::now());
+                    self.info_message = None;
                 }
             }
             return;
@@ -712,10 +733,12 @@ impl InteractiveApp {
             MouseAction::ToggleSymbols => {
                 self.filters.symbols_mode = !self.filters.symbols_mode;
                 self.filter_change_time = Some(Instant::now());
+                self.info_message = None;
             }
             MouseAction::ToggleRegex => {
                 self.filters.regex_mode = !self.filters.regex_mode;
                 self.filter_change_time = Some(Instant::now());
+                self.info_message = None;
             }
             MouseAction::PromptLanguage => {
                 self.filter_selector = Some(super::filter_selector::FilterSelector::new_language());
@@ -728,10 +751,12 @@ impl InteractiveApp {
             MouseAction::ToggleExpand => {
                 self.filters.expand = !self.filters.expand;
                 self.filter_change_time = Some(Instant::now());
+                self.info_message = None;
             }
             MouseAction::ToggleContains => {
                 self.filters.contains = !self.filters.contains;
                 self.filter_change_time = Some(Instant::now());
+                self.info_message = None;
             }
             MouseAction::SelectResult(line_index) => {
                 // Convert line index to result index (results have variable heights)
