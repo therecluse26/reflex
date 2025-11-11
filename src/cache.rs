@@ -600,37 +600,60 @@ compression_level = 3  # zstd level
             Some("_default".to_string())
         };
 
-        // Read total files (branch-aware or from statistics table as fallback)
+        log::debug!("stats(): current_branch = {:?}", current_branch);
+
+        // Read total files (branch-aware)
         let total_files: usize = if let Some(ref branch) = current_branch {
+            log::debug!("stats(): Counting files for branch '{}'", branch);
+
+            // Debug: Check all branches
+            let branches: Vec<(i64, String, i64)> = conn.prepare(
+                "SELECT id, name, file_count FROM branches"
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                    .map(|rows| rows.collect())
+            })
+            .and_then(|result| result)
+            .unwrap_or_default();
+
+            for (id, name, count) in &branches {
+                log::debug!("stats(): Branch ID={}, Name='{}', FileCount={}", id, name, count);
+            }
+
+            // Debug: Count file_branches per branch
+            let fb_counts: Vec<(String, i64)> = conn.prepare(
+                "SELECT b.name, COUNT(*) FROM file_branches fb
+                 JOIN branches b ON fb.branch_id = b.id
+                 GROUP BY b.name"
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .map(|rows| rows.collect())
+            })
+            .and_then(|result| result)
+            .unwrap_or_default();
+
+            for (name, count) in &fb_counts {
+                log::debug!("stats(): file_branches count for branch '{}': {}", name, count);
+            }
+
             // Count files for current branch only
-            conn.query_row(
+            let count: usize = conn.query_row(
                 "SELECT COUNT(DISTINCT fb.file_id)
                  FROM file_branches fb
                  JOIN branches b ON fb.branch_id = b.id
                  WHERE b.name = ?",
                 [branch],
                 |row| row.get(0),
-            ).unwrap_or_else(|_| {
-                // Fallback to statistics table if branch query fails
-                conn.query_row(
-                    "SELECT value FROM statistics WHERE key = 'total_files'",
-                    [],
-                    |row| {
-                        let value: String = row.get(0)?;
-                        Ok(value.parse().unwrap_or(0))
-                    },
-                ).unwrap_or(0)
-            })
+            ).unwrap_or(0);
+
+            log::debug!("stats(): Query returned total_files = {}", count);
+            count
         } else {
-            // No branch info - use statistics table
-            conn.query_row(
-                "SELECT value FROM statistics WHERE key = 'total_files'",
-                [],
-                |row| {
-                    let value: String = row.get(0)?;
-                    Ok(value.parse().unwrap_or(0))
-                },
-            ).unwrap_or(0)
+            // No branch info - should not happen, but return 0
+            log::warn!("stats(): No current_branch detected!");
+            0
         };
 
         // Read last updated timestamp

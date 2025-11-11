@@ -117,10 +117,18 @@ impl Indexer {
             let mut any_changed = false;
 
             for file_path in &files {
+                // Normalize path to be relative to root (handles both ./ prefix and absolute paths)
                 let path_str = file_path.to_string_lossy().to_string();
+                let normalized_path = if let Ok(rel_path) = file_path.strip_prefix(root) {
+                    // Convert absolute path to relative
+                    rel_path.to_string_lossy().to_string()
+                } else {
+                    // Already relative, just strip ./ prefix
+                    path_str.trim_start_matches("./").to_string()
+                };
 
                 // Check if file exists in cache
-                if let Some(existing_hash) = existing_hashes.get(&path_str) {
+                if let Some(existing_hash) = existing_hashes.get(&normalized_path) {
                     // Read and hash file to check if changed
                     match std::fs::read_to_string(file_path) {
                         Ok(content) => {
@@ -250,7 +258,15 @@ impl Indexer {
                 batch_files
                     .par_iter()
                     .map(|file_path| {
+                // Normalize path to be relative to root (handles both ./ prefix and absolute paths)
                 let path_str = file_path.to_string_lossy().to_string();
+                let normalized_path = if let Ok(rel_path) = file_path.strip_prefix(root) {
+                    // Convert absolute path to relative
+                    rel_path.to_string_lossy().to_string()
+                } else {
+                    // Already relative, just strip ./ prefix
+                    path_str.trim_start_matches("./").to_string()
+                };
 
                 // Read file content once (used for hashing, trigrams, and parsing)
                 let content = match std::fs::read_to_string(&file_path) {
@@ -280,7 +296,7 @@ impl Indexer {
 
                 Some(FileProcessingResult {
                     path: file_path.clone(),
-                    path_str,
+                    path_str: normalized_path.to_string(),
                     hash,
                     content,
                     language,
