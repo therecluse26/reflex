@@ -5,7 +5,7 @@
 Reflex is a blazingly fast, trigram-based code search engine designed for developers and AI coding assistants. Unlike symbol-only tools, Reflex finds **every occurrence** of patterns—function calls, variable usage, comments, and more—with sub-100ms query times on large codebases.
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![Tests](https://img.shields.io/badge/tests-330%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-347%20passing-brightgreen)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
 
 ## ✨ Features
@@ -41,6 +41,9 @@ cargo build --release
 # Index your codebase
 rfx index
 
+# Check background symbol indexing status
+rfx index --status
+
 # Full-text search (finds all occurrences)
 rfx query "extract_symbols"
 # → Finds: function definitions + all call sites
@@ -54,6 +57,16 @@ rfx query "fn.*test" --regex
 
 # Filter by language and symbol kind
 rfx query "parse" --lang rust --kind function --symbols
+
+# Paths-only mode (open matching files in editor)
+vim $(rfx query "TODO" --paths)
+
+# Pagination
+rfx query "extract" --limit 10 --offset 0   # First 10 results
+rfx query "extract" --limit 10 --offset 10  # Next 10 results
+
+# Glob and exclude patterns
+rfx query "config" --glob "src/**/*.rs" --exclude "target/**"
 
 # Export as JSON for AI agents
 rfx query "unwrap" --json --limit 10
@@ -587,13 +600,13 @@ rfx query "parse_tree" --json --symbols
 
 ## 🧪 Testing
 
-Reflex has **330 comprehensive tests** covering all functionality:
+Reflex has **347 comprehensive tests** covering all functionality:
 
 ### Test Breakdown
-- **261 unit tests**: Core modules (cache, indexer, query, parsers, trigrams, AST)
-- **42 corpus tests**: Real-world code samples across all supported languages
-- **17 integration tests**: End-to-end workflows, multi-language support, error handling
-- **10 performance tests**: Indexing speed, query latency, scalability benchmarks
+- **261+ unit tests**: Core modules (cache, indexer, query, parsers, trigrams, AST, symbol cache)
+- **42+ corpus tests**: Real-world code samples across all supported languages
+- **17+ integration tests**: End-to-end workflows, multi-language support, error handling
+- **10+ performance tests**: Indexing speed, query latency, scalability benchmarks
 
 ### Test Categories
 - **Language parsers**: 18 languages × 5-15 tests each = ~150 tests
@@ -659,11 +672,12 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for implementation details.
 - [x] **Core Features**
   - [x] Trigram-based full-text search
   - [x] Runtime symbol detection (tree-sitter)
+  - [x] Background symbol indexing (daemonized process with caching)
   - [x] AST pattern matching
   - [x] Regex support with trigram optimization
   - [x] 18 language parsers (Rust, TS/JS, Vue, Svelte, PHP, Python, Go, Java, C, C++, C#, Ruby, Kotlin, Zig)
 - [x] **Production Readiness**
-  - [x] Comprehensive testing (330 tests: 261 unit + 42 corpus + 17 integration + 10 performance)
+  - [x] Comprehensive testing (347 tests: 261+ unit + 42+ corpus + 17+ integration + 10+ performance)
   - [x] Disk space validation before indexing
   - [x] Corrupted cache detection and recovery
   - [x] Enhanced error messages with actionable guidance
@@ -674,6 +688,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for implementation details.
   - [x] MCP server for AI agents (`rfx mcp`)
   - [x] File watcher with auto-reindex (`rfx watch`)
   - [x] JSON output for automation
+  - [x] Pagination support (--offset, --limit, --all)
+  - [x] Paths-only mode (--paths for file list output)
+  - [x] Glob/exclude patterns (--glob, --exclude)
 - [x] **Documentation**
   - [x] Comprehensive README.md with examples
   - [x] ARCHITECTURE.md with system design
@@ -681,7 +698,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for implementation details.
   - [x] Rustdoc comments for all public APIs
 
 ### Next Phase: Advanced Features
-- [ ] Interactive mode (`rfx interactive`)
+- [ ] Interactive mode (TUI) - **In Development** on feature/interactive-mode branch
 - [ ] Semantic query building (natural language to Reflex query translation)
 - [ ] Graph queries (imports/exports, call graph)
 - [ ] Pre-built binaries for all platforms (cargo-dist)

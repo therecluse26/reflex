@@ -266,6 +266,27 @@ impl BackgroundIndexer {
         let total_files = content_reader.file_count();
         self.status.total_files = total_files;
         log::info!("Found {} indexed files to process", total_files);
+        log::debug!("Loaded {} file hashes from file_branches table", file_hashes.len());
+
+        // DEFENSIVE CHECK: If file_hashes is empty but we have files, this indicates a problem
+        if file_hashes.is_empty() && total_files > 0 {
+            log::error!(
+                "CRITICAL: No file hashes found in file_branches table, but {} files exist in content.bin!",
+                total_files
+            );
+            log::error!("This likely means:");
+            log::error!("  1. The main indexer failed to populate file_branches table");
+            log::error!("  2. WAL checkpoint didn't flush data before background indexer started");
+            log::error!("  3. Database transaction was rolled back");
+
+            // Try to diagnose by checking database directly
+            log::error!("Attempting diagnostic query to check file_branches table...");
+            anyhow::bail!(
+                "No file hashes available - cannot index symbols. \
+                 This is a database synchronization issue. \
+                 Try running 'rfx index' again or clearing the cache with 'rfx clear'."
+            );
+        }
 
         // Write initial status
         self.write_status()?;
@@ -280,13 +301,38 @@ impl BackgroundIndexer {
         // Iterate through all files in content.bin
         let file_ids: Vec<u32> = (0..total_files as u32).collect();
 
+        // DIAGNOSTIC: Log sample paths to debug hash lookup failures
+        if !file_ids.is_empty() && !file_hashes.is_empty() {
+            // Log first 3 paths from content.bin
+            log::debug!("=== Path Comparison Diagnostic ===");
+            for sample_id in file_ids.iter().take(3) {
+                if let Some(path) = content_reader.get_file_path(*sample_id) {
+                    log::debug!("  content.bin path[{}]: '{}'", sample_id, path.to_string_lossy());
+                }
+            }
+            // Log first 3 keys from file_hashes HashMap
+            let sample_keys: Vec<_> = file_hashes.keys().take(3).collect();
+            for key in sample_keys {
+                log::debug!("  file_hashes key: '{}'", key);
+            }
+            log::debug!("=================================");
+        }
+
         for chunk in file_ids.chunks(batch_size) {
             // Build list of files to parse (with cache check)
             let files_to_parse: Vec<_> = chunk
                 .iter()
                 .filter_map(|&file_id| {
                     let path = content_reader.get_file_path(file_id)?;
-                    let path_str = path.to_string_lossy().to_string();
+                    let mut path_str = path.to_string_lossy().to_string();
+
+                    // NORMALIZE: Strip "./" prefix to match database paths
+                    // content.bin stores paths like "./src/main.rs"
+                    // but database stores paths like "src/main.rs"
+                    if path_str.starts_with("./") {
+                        path_str = path_str[2..].to_string();
+                    }
+
                     let file_hash = file_hashes.get(&path_str)?;
 
                     // Check if already cached

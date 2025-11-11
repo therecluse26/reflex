@@ -1,6 +1,6 @@
 [package]
 name = "reflex-search"
-version = "0.5.2"
+version = "0.6.0"
 edition = "2024"
 authors = ["Reflex Contributors"]
 description = "A local-first, structure-aware code search engine for AI agents"
@@ -80,6 +80,7 @@ globset = "0.4"
 
 # Date/time utilities
 chrono = "0.4"
+dirs = "5.0"
 
 # Lock and cleanup utilities
 scopeguard = "1.2"
@@ -89,6 +90,7 @@ indicatif = "0.17"
 
 # Terminal UI and formatting
 ratatui = "0.29"
+tachyonfx = "0.8"
 crossterm = "0.28"
 syntect = "5.2"
 unicode-width = "0.2"

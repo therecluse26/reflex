@@ -325,6 +325,42 @@ compression_level = 3  # zstd level
         Ok(())
     }
 
+    /// Force SQLite WAL (Write-Ahead Log) checkpoint
+    ///
+    /// Ensures all data written in transactions is flushed to the main database file.
+    /// This is critical when spawning background processes that open new connections,
+    /// as they need to see the committed data immediately.
+    ///
+    /// Uses TRUNCATE mode to completely flush and reset the WAL file.
+    pub fn checkpoint_wal(&self) -> Result<()> {
+        let db_path = self.cache_path.join(META_DB);
+
+        if !db_path.exists() {
+            // No database to checkpoint
+            return Ok(());
+        }
+
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for WAL checkpoint")?;
+
+        // PRAGMA wal_checkpoint(TRUNCATE) forces a full checkpoint and truncates the WAL
+        // This ensures background processes see all committed data
+        // Note: Returns (busy, log_pages, checkpointed_pages) - use query instead of execute
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            let busy: i64 = row.get(0)?;
+            let log_pages: i64 = row.get(1)?;
+            let checkpointed: i64 = row.get(2)?;
+            log::debug!(
+                "WAL checkpoint completed: busy={}, log_pages={}, checkpointed_pages={}",
+                busy, log_pages, checkpointed
+            );
+            Ok(())
+        }).context("Failed to execute WAL checkpoint")?;
+
+        log::debug!("Executed WAL checkpoint (TRUNCATE) on meta.db");
+        Ok(())
+    }
+
     /// Load all file hashes across all branches from SQLite
     ///
     /// Used by background indexer to get hashes for all indexed files.
@@ -504,19 +540,72 @@ compression_level = 3  # zstd level
         // Commit the entire transaction atomically
         tx.commit()?;
         log::info!("Transaction committed successfully (files + file_branches)");
+
+        // DIAGNOSTIC: Verify data was actually persisted after commit
+        // This helps diagnose WAL synchronization issues where commits succeed but data isn't visible
+        let verify_conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for verification")?;
+
+        // Count actual files in database
+        let actual_file_count: i64 = verify_conn.query_row(
+            "SELECT COUNT(*) FROM files WHERE path IN (SELECT path FROM files ORDER BY id DESC LIMIT ?)",
+            [files.len()],
+            |row| row.get(0)
+        ).unwrap_or(0);
+
+        // Count actual file_branches entries for this branch
+        let actual_fb_count: i64 = verify_conn.query_row(
+            "SELECT COUNT(*) FROM file_branches fb
+             JOIN branches b ON fb.branch_id = b.id
+             WHERE b.name = ?",
+            [branch],
+            |row| row.get(0)
+        ).unwrap_or(0);
+
+        log::info!(
+            "Post-commit verification: {} files in files table (expected {}), {} file_branches entries for '{}' (expected {})",
+            actual_file_count,
+            files.len(),
+            actual_fb_count,
+            branch,
+            inserted
+        );
+
+        // DEFENSIVE: Warn if counts don't match expectations
+        if actual_file_count < files.len() as i64 {
+            log::warn!(
+                "MISMATCH: Expected {} files in database, but only found {}! Data may not have persisted.",
+                files.len(),
+                actual_file_count
+            );
+        }
+        if actual_fb_count < inserted as i64 {
+            log::warn!(
+                "MISMATCH: Expected {} file_branches entries for branch '{}', but only found {}! Data may not have persisted.",
+                inserted,
+                branch,
+                actual_fb_count
+            );
+        }
+
         Ok(())
     }
 
-    /// Update statistics after indexing by calculating totals from database
-    pub fn update_stats(&self) -> Result<()> {
+    /// Update statistics after indexing by calculating totals from database for a specific branch
+    ///
+    /// Counts only files indexed for the given branch, not all files across all branches.
+    pub fn update_stats(&self, branch: &str) -> Result<()> {
         let db_path = self.cache_path.join(META_DB);
         let conn = Connection::open(&db_path)
             .context("Failed to open meta.db for stats update")?;
 
-        // Count total files from files table
+        // Count files for specific branch only (branch-aware statistics)
         let total_files: usize = conn.query_row(
-            "SELECT COUNT(*) FROM files",
-            [],
+            "SELECT COUNT(DISTINCT fb.file_id)
+             FROM file_branches fb
+             JOIN branches b ON fb.branch_id = b.id
+             WHERE b.name = ?",
+            [branch],
             |row| row.get(0),
         ).unwrap_or(0);
 
@@ -527,7 +616,7 @@ compression_level = 3  # zstd level
             ["total_files", &total_files.to_string(), &now.to_string()],
         )?;
 
-        log::debug!("Updated statistics: {} files", total_files);
+        log::debug!("Updated statistics for branch '{}': {} files", branch, total_files);
         Ok(())
     }
 
@@ -565,6 +654,9 @@ compression_level = 3  # zstd level
     }
 
     /// Get statistics about the current cache
+    ///
+    /// Returns statistics for the current git branch if in a git repo,
+    /// or global statistics if not in a git repo.
     pub fn stats(&self) -> Result<crate::models::IndexStats> {
         let db_path = self.cache_path.join(META_DB);
 
@@ -582,15 +674,71 @@ compression_level = 3  # zstd level
         let conn = Connection::open(&db_path)
             .context("Failed to open meta.db")?;
 
-        // Read total files
-        let total_files: usize = conn.query_row(
-            "SELECT value FROM statistics WHERE key = 'total_files'",
-            [],
-            |row| {
-                let value: String = row.get(0)?;
-                Ok(value.parse().unwrap_or(0))
-            },
-        ).unwrap_or(0);
+        // Determine current branch for branch-aware statistics
+        let workspace_root = self.workspace_root();
+        let current_branch = if crate::git::is_git_repo(&workspace_root) {
+            crate::git::get_git_state(&workspace_root)
+                .ok()
+                .map(|state| state.branch)
+        } else {
+            Some("_default".to_string())
+        };
+
+        log::debug!("stats(): current_branch = {:?}", current_branch);
+
+        // Read total files (branch-aware)
+        let total_files: usize = if let Some(ref branch) = current_branch {
+            log::debug!("stats(): Counting files for branch '{}'", branch);
+
+            // Debug: Check all branches
+            let branches: Vec<(i64, String, i64)> = conn.prepare(
+                "SELECT id, name, file_count FROM branches"
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                    .map(|rows| rows.collect())
+            })
+            .and_then(|result| result)
+            .unwrap_or_default();
+
+            for (id, name, count) in &branches {
+                log::debug!("stats(): Branch ID={}, Name='{}', FileCount={}", id, name, count);
+            }
+
+            // Debug: Count file_branches per branch
+            let fb_counts: Vec<(String, i64)> = conn.prepare(
+                "SELECT b.name, COUNT(*) FROM file_branches fb
+                 JOIN branches b ON fb.branch_id = b.id
+                 GROUP BY b.name"
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .map(|rows| rows.collect())
+            })
+            .and_then(|result| result)
+            .unwrap_or_default();
+
+            for (name, count) in &fb_counts {
+                log::debug!("stats(): file_branches count for branch '{}': {}", name, count);
+            }
+
+            // Count files for current branch only
+            let count: usize = conn.query_row(
+                "SELECT COUNT(DISTINCT fb.file_id)
+                 FROM file_branches fb
+                 JOIN branches b ON fb.branch_id = b.id
+                 WHERE b.name = ?",
+                [branch],
+                |row| row.get(0),
+            ).unwrap_or(0);
+
+            log::debug!("stats(): Query returned total_files = {}", count);
+            count
+        } else {
+            // No branch info - should not happen, but return 0
+            log::warn!("stats(): No current_branch detected!");
+            0
+        };
 
         // Read last updated timestamp
         let last_updated: String = conn.query_row(
@@ -614,32 +762,78 @@ compression_level = 3  # zstd level
             }
         }
 
-        // Get file count breakdown by language
+        // Get file count breakdown by language (branch-aware if possible)
         let mut files_by_language = std::collections::HashMap::new();
-        let mut stmt = conn.prepare("SELECT language, COUNT(*) FROM files GROUP BY language")?;
-        let lang_counts = stmt.query_map([], |row| {
-            let language: String = row.get(0)?;
-            let count: i64 = row.get(1)?;
-            Ok((language, count as usize))
-        })?;
+        if let Some(ref branch) = current_branch {
+            // Query files for current branch only
+            let mut stmt = conn.prepare(
+                "SELECT f.language, COUNT(DISTINCT f.id)
+                 FROM files f
+                 JOIN file_branches fb ON f.id = fb.file_id
+                 JOIN branches b ON fb.branch_id = b.id
+                 WHERE b.name = ?
+                 GROUP BY f.language"
+            )?;
+            let lang_counts = stmt.query_map([branch], |row| {
+                let language: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                Ok((language, count as usize))
+            })?;
 
-        for result in lang_counts {
-            let (language, count) = result?;
-            files_by_language.insert(language, count);
+            for result in lang_counts {
+                let (language, count) = result?;
+                files_by_language.insert(language, count);
+            }
+        } else {
+            // Fallback: query all files
+            let mut stmt = conn.prepare("SELECT language, COUNT(*) FROM files GROUP BY language")?;
+            let lang_counts = stmt.query_map([], |row| {
+                let language: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                Ok((language, count as usize))
+            })?;
+
+            for result in lang_counts {
+                let (language, count) = result?;
+                files_by_language.insert(language, count);
+            }
         }
 
-        // Get line count breakdown by language
+        // Get line count breakdown by language (branch-aware if possible)
         let mut lines_by_language = std::collections::HashMap::new();
-        let mut stmt = conn.prepare("SELECT language, SUM(line_count) FROM files GROUP BY language")?;
-        let line_counts = stmt.query_map([], |row| {
-            let language: String = row.get(0)?;
-            let count: i64 = row.get(1)?;
-            Ok((language, count as usize))
-        })?;
+        if let Some(ref branch) = current_branch {
+            // Query lines for current branch only
+            let mut stmt = conn.prepare(
+                "SELECT f.language, SUM(f.line_count)
+                 FROM files f
+                 JOIN file_branches fb ON f.id = fb.file_id
+                 JOIN branches b ON fb.branch_id = b.id
+                 WHERE b.name = ?
+                 GROUP BY f.language"
+            )?;
+            let line_counts = stmt.query_map([branch], |row| {
+                let language: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                Ok((language, count as usize))
+            })?;
 
-        for result in line_counts {
-            let (language, count) = result?;
-            lines_by_language.insert(language, count);
+            for result in line_counts {
+                let (language, count) = result?;
+                lines_by_language.insert(language, count);
+            }
+        } else {
+            // Fallback: query all files
+            let mut stmt = conn.prepare("SELECT language, SUM(line_count) FROM files GROUP BY language")?;
+            let line_counts = stmt.query_map([], |row| {
+                let language: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                Ok((language, count as usize))
+            })?;
+
+            for result in line_counts {
+                let (language, count) = result?;
+                lines_by_language.insert(language, count);
+            }
         }
 
         Ok(crate::models::IndexStats {
@@ -1188,7 +1382,11 @@ mod tests {
         cache.init().unwrap();
         cache.update_file("src/main.rs", "rust", 100).unwrap();
         cache.update_file("src/lib.rs", "rust", 200).unwrap();
-        cache.update_stats().unwrap();
+
+        // Record files for a test branch
+        cache.record_branch_file("src/main.rs", "_default", "hash1", None).unwrap();
+        cache.record_branch_file("src/lib.rs", "_default", "hash2", None).unwrap();
+        cache.update_stats("_default").unwrap();
 
         let stats = cache.stats().unwrap();
         assert_eq!(stats.total_files, 2);
@@ -1222,17 +1420,23 @@ mod tests {
         let cache = CacheManager::new(temp.path());
 
         cache.init().unwrap();
-        cache.update_file("main.rs", "rust", 100).unwrap();
-        cache.update_file("lib.rs", "rust", 200).unwrap();
-        cache.update_file("script.py", "python", 50).unwrap();
-        cache.update_file("test.py", "python", 80).unwrap();
-        cache.update_stats().unwrap();
+        cache.update_file("main.rs", "Rust", 100).unwrap();
+        cache.update_file("lib.rs", "Rust", 200).unwrap();
+        cache.update_file("script.py", "Python", 50).unwrap();
+        cache.update_file("test.py", "Python", 80).unwrap();
+
+        // Record files for a test branch
+        cache.record_branch_file("main.rs", "_default", "hash1", None).unwrap();
+        cache.record_branch_file("lib.rs", "_default", "hash2", None).unwrap();
+        cache.record_branch_file("script.py", "_default", "hash3", None).unwrap();
+        cache.record_branch_file("test.py", "_default", "hash4", None).unwrap();
+        cache.update_stats("_default").unwrap();
 
         let stats = cache.stats().unwrap();
-        assert_eq!(stats.files_by_language.get("rust"), Some(&2));
-        assert_eq!(stats.files_by_language.get("python"), Some(&2));
-        assert_eq!(stats.lines_by_language.get("rust"), Some(&300)); // 100 + 200
-        assert_eq!(stats.lines_by_language.get("python"), Some(&130)); // 50 + 80
+        assert_eq!(stats.files_by_language.get("Rust"), Some(&2));
+        assert_eq!(stats.files_by_language.get("Python"), Some(&2));
+        assert_eq!(stats.lines_by_language.get("Rust"), Some(&300)); // 100 + 200
+        assert_eq!(stats.lines_by_language.get("Python"), Some(&130)); // 50 + 80
     }
 
     #[test]

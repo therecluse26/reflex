@@ -26,6 +26,8 @@ Reflex uses **trigram-based indexing** to enable sub-100ms full-text search acro
 | **Content Store** | Stores full file contents (memory-mapped); enables context extraction around matches |
 | **Query Engine** | Intersects trigram posting lists; verifies matches; returns line-by-line results with context |
 | **Runtime Symbol Parser** | Uses Tree-sitter to parse candidate files at query time (only files matching trigrams) |
+| **Background Symbol Indexer** | Daemonized process that pre-caches symbols for faster queries on large codebases |
+| **Symbol Cache** | Persistent storage of parsed symbols (803-line caching system for instant symbol lookups) |
 | **CLI / API Layer** | Single binary for human and programmatic use (CLI and optional HTTP/MCP) |
 | **Watcher (optional)** | Incrementally updates index on file changes |
 
@@ -42,6 +44,9 @@ Reflex uses **trigram-based indexing** to enable sub-100ms full-text search acro
 
     # Build or update the local cache
     rfx index
+
+    # Check background symbol indexing status
+    rfx index --status
 
     # Full-text search (default - finds all occurrences)
     rfx query "extract_symbols"
@@ -86,6 +91,11 @@ Reflex uses **trigram-based indexing** to enable sub-100ms full-text search acro
     rfx query "TODO" --paths                     # One path per line (plain text)
     rfx query "extract" --paths --json           # JSON array of paths: ["file1.rs", "file2.rs"]
     vim $(rfx query "TODO" --paths)              # Open all files with TODOs in vim
+
+    # Pagination (windowed results)
+    rfx query "extract" --limit 10 --offset 0    # First 10 results
+    rfx query "extract" --limit 10 --offset 10   # Next 10 results
+    rfx query "extract" --all                    # All results (no limit)
 
     # Watch for file changes and auto-reindex
     rfx watch                    # 15s debounce (default)

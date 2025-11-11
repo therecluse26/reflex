@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::cache::CacheManager;
@@ -18,6 +18,10 @@ use crate::content_store::ContentWriter;
 use crate::models::{IndexConfig, IndexStats, Language};
 use crate::output;
 use crate::trigram::TrigramIndex;
+
+/// Progress callback type: (current_file_count, total_file_count, status_message)
+/// Uses Arc to allow cloning for multi-threaded progress updates
+pub type ProgressCallback = Arc<dyn Fn(usize, usize, String) + Send + Sync>;
 
 /// Result of processing a single file (used for parallel processing)
 struct FileProcessingResult {
@@ -43,6 +47,16 @@ impl Indexer {
 
     /// Build or update the index for the given root directory
     pub fn index(&self, root: impl AsRef<Path>, show_progress: bool) -> Result<IndexStats> {
+        self.index_with_callback(root, show_progress, None)
+    }
+
+    /// Build or update the index with progress callback support
+    pub fn index_with_callback(
+        &self,
+        root: impl AsRef<Path>,
+        show_progress: bool,
+        progress_callback: Option<ProgressCallback>,
+    ) -> Result<IndexStats> {
         let root = root.as_ref();
         log::info!("Indexing directory: {:?}", root);
 
@@ -103,10 +117,18 @@ impl Indexer {
             let mut any_changed = false;
 
             for file_path in &files {
+                // Normalize path to be relative to root (handles both ./ prefix and absolute paths)
                 let path_str = file_path.to_string_lossy().to_string();
+                let normalized_path = if let Ok(rel_path) = file_path.strip_prefix(root) {
+                    // Convert absolute path to relative
+                    rel_path.to_string_lossy().to_string()
+                } else {
+                    // Already relative, just strip ./ prefix
+                    path_str.trim_start_matches("./").to_string()
+                };
 
                 // Check if file exists in cache
-                if let Some(existing_hash) = existing_hashes.get(&path_str) {
+                if let Some(existing_hash) = existing_hashes.get(&normalized_path) {
                     // Read and hash file to check if changed
                     match std::fs::read_to_string(file_path) {
                         Ok(content) => {
@@ -180,18 +202,30 @@ impl Indexer {
 
         // Atomic counter for thread-safe progress updates
         let progress_counter = Arc::new(AtomicU64::new(0));
+        // Shared status message for progress callback
+        let progress_status = Arc::new(Mutex::new("Indexing files...".to_string()));
 
         let _start_time = Instant::now();
 
-        // Spawn a background thread to update progress bar during parallel processing
+        // Spawn a background thread to update progress bar and call callback during parallel processing
         let counter_for_thread = Arc::clone(&progress_counter);
+        let status_for_thread = Arc::clone(&progress_status);
         let pb_clone = pb.clone();
-        let progress_thread = if show_progress {
+        let callback_for_thread = progress_callback.clone();
+        let total_files_for_thread = total_files;
+        let progress_thread = if show_progress || callback_for_thread.is_some() {
             Some(std::thread::spawn(move || {
                 loop {
                     let count = counter_for_thread.load(Ordering::Relaxed);
                     pb_clone.set_position(count);
-                    if count >= total_files as u64 {
+
+                    // Call progress callback if provided
+                    if let Some(ref callback) = callback_for_thread {
+                        let status = status_for_thread.lock().unwrap().clone();
+                        callback(count as usize, total_files_for_thread, status);
+                    }
+
+                    if count >= total_files_for_thread as u64 {
                         break;
                     }
                     std::thread::sleep(std::time::Duration::from_millis(50));
@@ -224,7 +258,15 @@ impl Indexer {
                 batch_files
                     .par_iter()
                     .map(|file_path| {
+                // Normalize path to be relative to root (handles both ./ prefix and absolute paths)
                 let path_str = file_path.to_string_lossy().to_string();
+                let normalized_path = if let Ok(rel_path) = file_path.strip_prefix(root) {
+                    // Convert absolute path to relative
+                    rel_path.to_string_lossy().to_string()
+                } else {
+                    // Already relative, just strip ./ prefix
+                    path_str.trim_start_matches("./").to_string()
+                };
 
                 // Read file content once (used for hashing, trigrams, and parsing)
                 let content = match std::fs::read_to_string(&file_path) {
@@ -254,7 +296,7 @@ impl Indexer {
 
                 Some(FileProcessingResult {
                     path: file_path.clone(),
-                    path_str,
+                    path_str: normalized_path.to_string(),
                     hash,
                     content,
                     language,
@@ -290,9 +332,11 @@ impl Indexer {
 
             // Flush trigram index batch to disk if batch-flush mode is enabled
             if total_files > 10000 {
+                let flush_msg = format!("Flushing batch {}/{}...", batch_idx + 1, num_batches);
                 if show_progress {
-                    pb.set_message(format!("Flushing batch {}/{}...", batch_idx + 1, num_batches));
+                    pb.set_message(flush_msg.clone());
                 }
+                *progress_status.lock().unwrap() = flush_msg;
                 trigram_index.flush_batch()
                     .context("Failed to flush trigram batch")?;
             }
@@ -310,12 +354,14 @@ impl Indexer {
         }
 
         // Finalize trigram index (sort and deduplicate posting lists)
+        *progress_status.lock().unwrap() = "Finalizing trigram index...".to_string();
         if show_progress {
             pb.set_message("Finalizing trigram index...".to_string());
         }
         trigram_index.finalize();
 
         // Update progress bar message for post-processing
+        *progress_status.lock().unwrap() = "Writing file metadata to database...".to_string();
         if show_progress {
             pb.set_message("Writing file metadata to database...".to_string());
         }
@@ -328,6 +374,12 @@ impl Indexer {
                 .iter()
                 .map(|(path, _hash, lang, lines)| (path.clone(), lang.clone(), *lines))
                 .collect();
+
+        // Record files for this branch (for branch-aware indexing)
+        *progress_status.lock().unwrap() = "Recording branch files...".to_string();
+        if show_progress {
+            pb.set_message("Recording branch files...".to_string());
+        }
 
             // Prepare branch files data (path, hash)
             let branch_files: Vec<(String, String)> = file_metadata
@@ -354,9 +406,16 @@ impl Indexer {
             git_state.as_ref().map(|s| s.dirty).unwrap_or(false),
         )?;
 
+        // Force WAL checkpoint to ensure background processes see all committed data
+        // This is critical when spawning background symbol indexer immediately after
+        self.cache.checkpoint_wal()
+            .context("Failed to checkpoint WAL")?;
+        log::debug!("WAL checkpoint completed - database is fully synced");
+
         log::info!("Indexed {} files", files_indexed);
 
         // Step 3: Write trigram index
+        *progress_status.lock().unwrap() = "Writing trigram index...".to_string();
         if show_progress {
             pb.set_message("Writing trigram index...".to_string());
         }
@@ -364,14 +423,12 @@ impl Indexer {
         log::info!("Writing trigram index with {} trigrams to trigrams.bin",
                    trigram_index.trigram_count());
 
-        if show_progress {
-            pb.set_message("Writing trigram index...".to_string());
-        }
         trigram_index.write(&trigrams_path)
             .context("Failed to write trigram index")?;
         log::info!("Wrote {} files to trigrams.bin", trigram_index.file_count());
 
         // Step 4: Finalize content store (already been writing incrementally)
+        *progress_status.lock().unwrap() = "Finalizing content store...".to_string();
         if show_progress {
             pb.set_message("Finalizing content store...".to_string());
         }
@@ -380,12 +437,13 @@ impl Indexer {
         log::info!("Wrote {} files ({} bytes) to content.bin",
                    content_writer.file_count(), content_writer.content_size());
 
-        // Step 5: Update SQLite statistics from database totals
+        // Step 5: Update SQLite statistics from database totals (branch-aware)
+        *progress_status.lock().unwrap() = "Updating statistics...".to_string();
         if show_progress {
             pb.set_message("Updating statistics...".to_string());
         }
-        // Note: Hashes are already persisted to SQLite via cache.update_file() in the loop above
-        self.cache.update_stats()?;
+        // Update stats for current branch only
+        self.cache.update_stats(&branch)?;
 
         pb.finish_with_message("Indexing complete");
 
