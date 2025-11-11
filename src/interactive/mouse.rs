@@ -1,16 +1,18 @@
 use crossterm::event::{MouseEvent, MouseEventKind, MouseButton};
 use ratatui::layout::Rect;
+use std::cell::Cell;
 use std::time::Instant;
 
 /// Filter badge positions for accurate mouse click detection
-#[derive(Debug, Clone, Default)]
+/// Uses interior mutability to allow updates during rendering
+#[derive(Debug, Default)]
 pub struct FilterBadgePositions {
-    pub symbols: (usize, usize),    // (start, end) column positions
-    pub regex: (usize, usize),
-    pub language: (usize, usize),
-    pub kind: (usize, usize),
-    pub expand: (usize, usize),
-    pub contains: (usize, usize),
+    pub symbols: Cell<(usize, usize)>,    // (start, end) column positions
+    pub regex: Cell<(usize, usize)>,
+    pub language: Cell<(usize, usize)>,
+    pub kind: Cell<(usize, usize)>,
+    pub expand: Cell<(usize, usize)>,
+    pub contains: Cell<(usize, usize)>,
 }
 
 /// Mouse interaction state and event handling
@@ -97,13 +99,19 @@ impl MouseState {
                 if self.is_in_area(input_area) {
                     // Index status is in the top-right corner of input area
                     // It appears after significant spacing from the left title
-                    // Check if click is in the right portion of the header (last 20 chars)
+                    // Check if click is in the right portion of the header (last 30 chars to accommodate symbol status)
                     let col = event.column.saturating_sub(input_area.x);
                     let row = event.row.saturating_sub(input_area.y);
 
                     // If clicking in the title bar (row 0) and in the right portion
-                    if row == 0 && col > input_area.width.saturating_sub(22) {
-                        return MouseAction::TriggerIndex;
+                    if row == 0 && col > input_area.width.saturating_sub(35) {
+                        // Check if Shift is held for clear+reindex
+                        use crossterm::event::KeyModifiers;
+                        if event.modifiers.contains(KeyModifiers::SHIFT) {
+                            return MouseAction::ClearAndReindex;
+                        } else {
+                            return MouseAction::TriggerIndex;
+                        }
                     }
 
                     // Otherwise, calculate cursor position for input focus (subtract 1 for left border)
@@ -116,22 +124,28 @@ impl MouseState {
                     let col = event.column.saturating_sub(filters_area.x + 1) as usize;
 
                     // Use the actual badge positions calculated during rendering
-                    if col >= badge_positions.symbols.0 && col < badge_positions.symbols.1 {
+                    let symbols_pos = badge_positions.symbols.get();
+                    if col >= symbols_pos.0 && col < symbols_pos.1 {
                         return MouseAction::ToggleSymbols;
                     }
-                    if col >= badge_positions.regex.0 && col < badge_positions.regex.1 {
+                    let regex_pos = badge_positions.regex.get();
+                    if col >= regex_pos.0 && col < regex_pos.1 {
                         return MouseAction::ToggleRegex;
                     }
-                    if col >= badge_positions.language.0 && col < badge_positions.language.1 {
+                    let lang_pos = badge_positions.language.get();
+                    if col >= lang_pos.0 && col < lang_pos.1 {
                         return MouseAction::PromptLanguage;
                     }
-                    if col >= badge_positions.kind.0 && col < badge_positions.kind.1 {
+                    let kind_pos = badge_positions.kind.get();
+                    if col >= kind_pos.0 && col < kind_pos.1 {
                         return MouseAction::PromptKind;
                     }
-                    if col >= badge_positions.expand.0 && col < badge_positions.expand.1 {
+                    let expand_pos = badge_positions.expand.get();
+                    if col >= expand_pos.0 && col < expand_pos.1 {
                         return MouseAction::ToggleExpand;
                     }
-                    if col >= badge_positions.contains.0 && col < badge_positions.contains.1 {
+                    let contains_pos = badge_positions.contains.get();
+                    if col >= contains_pos.0 && col < contains_pos.1 {
                         return MouseAction::ToggleContains;
                     }
 
@@ -219,6 +233,8 @@ pub enum MouseAction {
     ClosePreview,
     /// Trigger reindexing (click on index status)
     TriggerIndex,
+    /// Clear cache and trigger full reindex (Shift+click on index status)
+    ClearAndReindex,
 }
 
 #[cfg(test)]

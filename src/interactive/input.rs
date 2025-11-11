@@ -168,6 +168,7 @@ pub enum KeyCommand {
     // Actions
     OpenInEditor,
     Reindex,
+    ClearAndReindex,
     ShowHelp,
     Quit,
 
@@ -238,6 +239,7 @@ impl KeyCommand {
             // Actions
             (KeyCode::Char('o'), KeyModifiers::NONE) | (KeyCode::Enter, _) => Self::OpenInEditor,
             (KeyCode::Char('i'), KeyModifiers::NONE) => Self::Reindex,
+            (KeyCode::Char('I'), KeyModifiers::SHIFT) => Self::ClearAndReindex,
             (KeyCode::Char('?'), KeyModifiers::NONE) => Self::ShowHelp,
             (KeyCode::Char('q'), KeyModifiers::NONE) => Self::Quit,
 

@@ -80,6 +80,8 @@ pub struct InteractiveApp {
     filter_selector: Option<super::filter_selector::FilterSelector>,
     /// Time when info message was shown (for auto-dismissal)
     info_message_time: Option<Instant>,
+    /// Force full terminal clear on next render (to fix rendering artifacts)
+    needs_full_clear: bool,
 }
 
 /// File preview state
@@ -115,6 +117,19 @@ pub enum FocusState {
     Results,
 }
 
+/// Background symbol indexing state
+#[derive(Debug, Clone)]
+pub enum SymbolIndexingState {
+    /// Symbol indexing is running
+    Running { processed: usize, total: usize },
+    /// Symbol indexing completed successfully
+    Completed,
+    /// Symbol indexing failed
+    Failed,
+    /// Symbol indexing not started yet
+    NotStarted,
+}
+
 /// Index status state
 #[derive(Debug, Clone)]
 pub enum IndexStatusState {
@@ -122,18 +137,21 @@ pub enum IndexStatusState {
     Ready {
         file_count: usize,
         last_updated: String,
+        symbol_status: SymbolIndexingState,
     },
     /// Index doesn't exist
     Missing,
     /// Index is stale (files changed)
     Stale {
         files_changed: usize,
+        symbol_status: SymbolIndexingState,
     },
     /// Currently indexing
     Indexing {
         current: usize,
         total: usize,
         status: String,
+        symbol_status: SymbolIndexingState,
     },
 }
 
@@ -152,9 +170,31 @@ impl InteractiveApp {
         let index_status = if cache.exists() {
             // Get actual file count from cache stats
             match cache.stats() {
-                Ok(stats) => IndexStatusState::Ready {
-                    file_count: stats.total_files,
-                    last_updated: stats.last_updated,
+                Ok(stats) => {
+                    // Check background symbol indexer status
+                    let symbol_status = match crate::background_indexer::BackgroundIndexer::get_status(cache.path()) {
+                        Ok(Some(status)) => match status.state {
+                            crate::background_indexer::IndexerState::Running => {
+                                SymbolIndexingState::Running {
+                                    processed: status.processed_files,
+                                    total: status.total_files,
+                                }
+                            }
+                            crate::background_indexer::IndexerState::Completed => {
+                                SymbolIndexingState::Completed
+                            }
+                            crate::background_indexer::IndexerState::Failed => {
+                                SymbolIndexingState::Failed
+                            }
+                        },
+                        _ => SymbolIndexingState::NotStarted,
+                    };
+
+                    IndexStatusState::Ready {
+                        file_count: stats.total_files,
+                        last_updated: stats.last_updated,
+                        symbol_status,
+                    }
                 },
                 Err(_) => IndexStatusState::Missing,
             }
@@ -192,6 +232,7 @@ impl InteractiveApp {
             filter_debounce_ms: 500, // 500ms
             filter_selector: None,
             info_message_time: None,
+            needs_full_clear: false,
         })
     }
 
@@ -239,7 +280,14 @@ impl InteractiveApp {
             let terminal_size = terminal.size()?;
 
             // Render UI
-            terminal.draw(|f| ui::render(f, self))?;
+            terminal.draw(|f| {
+                // Force backend clear if needed (BEFORE rendering to reset ratatui's buffer)
+                if self.needs_full_clear {
+                    f.render_widget(ratatui::widgets::Clear, f.area());
+                    self.needs_full_clear = false;
+                }
+                ui::render(f, self)
+            })?;
 
             // Handle deferred editor opening (after rendering)
             if let Some(result) = need_editor_open.take() {
@@ -276,7 +324,11 @@ impl InteractiveApp {
                             self.history.add(pattern, self.filters.clone());
 
                             // Auto-move to results after search
-                            if !self.results.is_empty() {
+                            // BUT: don't auto-focus if regex/contains filters are active during typing
+                            // to prevent rendering corruption
+                            let should_auto_focus = !self.results.is_empty()
+                                && self.focus_state != FocusState::Input;
+                            if should_auto_focus {
                                 self.focus_state = FocusState::Results;
                             }
                         }
@@ -312,11 +364,18 @@ impl InteractiveApp {
             // Check for indexing progress updates
             if let Some(ref rx) = self.index_progress_rx {
                 if let Ok((current, total, status)) = rx.try_recv() {
-                    // Update progress state
+                    // Update progress state (preserve symbol status)
+                    let symbol_status = match &self.index_status {
+                        IndexStatusState::Indexing { symbol_status, .. } => symbol_status.clone(),
+                        IndexStatusState::Ready { symbol_status, .. } => symbol_status.clone(),
+                        IndexStatusState::Stale { symbol_status, .. } => symbol_status.clone(),
+                        IndexStatusState::Missing => SymbolIndexingState::NotStarted,
+                    };
                     self.index_status = IndexStatusState::Indexing {
                         current,
                         total,
                         status,
+                        symbol_status,
                     };
                 }
             }
@@ -327,9 +386,17 @@ impl InteractiveApp {
                     // Indexing completed
                     match result {
                         Ok(stats) => {
+                            // Preserve or check symbol status
+                            let symbol_status = match &self.index_status {
+                                IndexStatusState::Indexing { symbol_status, .. } => symbol_status.clone(),
+                                IndexStatusState::Ready { symbol_status, .. } => symbol_status.clone(),
+                                IndexStatusState::Stale { symbol_status, .. } => symbol_status.clone(),
+                                IndexStatusState::Missing => SymbolIndexingState::NotStarted,
+                            };
                             self.index_status = IndexStatusState::Ready {
                                 file_count: stats.total_files,
                                 last_updated: "just now".to_string(),
+                                symbol_status,
                             };
                             // Don't re-trigger search - keep current results
                         }
@@ -341,6 +408,71 @@ impl InteractiveApp {
                     self.indexing_start_time = None;
                     self.index_rx = None;
                     self.index_progress_rx = None;
+                }
+            }
+
+            // Poll background symbol indexer status (every few frames to reduce overhead)
+            if self.effects.frame() % 30 == 0 {  // Every ~0.5s at 60fps
+                log::trace!("Polling background symbol indexer status (frame {})", self.effects.frame());
+                match crate::background_indexer::BackgroundIndexer::get_status(self.cache.path()) {
+                    Ok(Some(bg_status)) => {
+                        log::debug!("Background symbol indexer status: {:?} - {}/{} files",
+                            bg_status.state, bg_status.processed_files, bg_status.total_files);
+
+                        let new_symbol_status = match bg_status.state {
+                            crate::background_indexer::IndexerState::Running => {
+                                log::debug!("Symbol indexing is RUNNING: {}/{} ({}%)",
+                                    bg_status.processed_files, bg_status.total_files,
+                                    if bg_status.total_files > 0 {
+                                        (bg_status.processed_files as f64 / bg_status.total_files as f64 * 100.0) as u32
+                                    } else { 0 });
+                                SymbolIndexingState::Running {
+                                    processed: bg_status.processed_files,
+                                    total: bg_status.total_files,
+                                }
+                            }
+                            crate::background_indexer::IndexerState::Completed => {
+                                log::debug!("Symbol indexing COMPLETED");
+                                SymbolIndexingState::Completed
+                            }
+                            crate::background_indexer::IndexerState::Failed => {
+                                log::warn!("Symbol indexing FAILED: {:?}", bg_status.error);
+                                SymbolIndexingState::Failed
+                            }
+                        };
+
+                        // Update symbol status in current index state
+                        self.index_status = match &self.index_status {
+                            IndexStatusState::Ready { file_count, last_updated, .. } => {
+                                IndexStatusState::Ready {
+                                    file_count: *file_count,
+                                    last_updated: last_updated.clone(),
+                                    symbol_status: new_symbol_status,
+                                }
+                            }
+                            IndexStatusState::Stale { files_changed, .. } => {
+                                IndexStatusState::Stale {
+                                    files_changed: *files_changed,
+                                    symbol_status: new_symbol_status,
+                                }
+                            }
+                            IndexStatusState::Indexing { current, total, status, .. } => {
+                                IndexStatusState::Indexing {
+                                    current: *current,
+                                    total: *total,
+                                    status: status.clone(),
+                                    symbol_status: new_symbol_status,
+                                }
+                            }
+                            IndexStatusState::Missing => IndexStatusState::Missing,
+                        };
+                    }
+                    Ok(None) => {
+                        log::trace!("No background symbol indexer status file found");
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to read background symbol indexer status: {}", e);
+                    }
                 }
             }
 
@@ -384,6 +516,7 @@ impl InteractiveApp {
 
                     self.mode = AppMode::Normal;
                     self.filter_selector = None;
+                    self.cancel_ongoing_search(); // Cancel old search immediately
                     self.filter_change_time = Some(Instant::now());
                     self.info_message = None;
                 }
@@ -500,6 +633,7 @@ impl InteractiveApp {
 
             KeyCommand::ToggleSymbols => {
                 self.filters.symbols_mode = !self.filters.symbols_mode;
+                self.cancel_ongoing_search(); // Cancel old search immediately
                 self.filter_change_time = Some(Instant::now());
                 self.info_message = None;
                 Ok(None)
@@ -507,8 +641,10 @@ impl InteractiveApp {
 
             KeyCommand::ToggleRegex => {
                 self.filters.regex_mode = !self.filters.regex_mode;
+                self.cancel_ongoing_search(); // Cancel old search immediately
                 self.filter_change_time = Some(Instant::now());
                 self.info_message = None;
+                self.needs_full_clear = true; // Force full redraw to prevent artifacts
                 Ok(None)
             }
 
@@ -540,6 +676,7 @@ impl InteractiveApp {
 
             KeyCommand::ToggleExpand => {
                 self.filters.expand = !self.filters.expand;
+                self.cancel_ongoing_search(); // Cancel old search immediately
                 self.filter_change_time = Some(Instant::now());
                 self.info_message = None;
                 Ok(None)
@@ -547,13 +684,16 @@ impl InteractiveApp {
 
             KeyCommand::ToggleContains => {
                 self.filters.contains = !self.filters.contains;
+                self.cancel_ongoing_search(); // Cancel old search immediately
                 self.filter_change_time = Some(Instant::now());
                 self.info_message = None;
+                self.needs_full_clear = true; // Force full redraw to prevent artifacts
                 Ok(None)
             }
 
             KeyCommand::ClearLanguage => {
                 self.filters.language = None;
+                self.cancel_ongoing_search(); // Cancel old search immediately
                 self.filter_change_time = Some(Instant::now());
                 self.info_message = None;
                 Ok(None)
@@ -561,6 +701,7 @@ impl InteractiveApp {
 
             KeyCommand::ClearKind => {
                 self.filters.kind = None;
+                self.cancel_ongoing_search(); // Cancel old search immediately
                 self.filter_change_time = Some(Instant::now());
                 self.info_message = None;
                 Ok(None)
@@ -573,6 +714,11 @@ impl InteractiveApp {
 
             KeyCommand::Reindex => {
                 self.trigger_index()?;
+                Ok(None)
+            }
+
+            KeyCommand::ClearAndReindex => {
+                self.trigger_clear_and_reindex()?;
                 Ok(None)
             }
 
@@ -682,6 +828,7 @@ impl InteractiveApp {
 
                     self.mode = AppMode::Normal;
                     self.filter_selector = None;
+                    self.cancel_ongoing_search(); // Cancel old search immediately
                     self.filter_change_time = Some(Instant::now());
                     self.info_message = None;
                 }
@@ -732,31 +879,39 @@ impl InteractiveApp {
             }
             MouseAction::ToggleSymbols => {
                 self.filters.symbols_mode = !self.filters.symbols_mode;
+                self.cancel_ongoing_search(); // Cancel old search immediately
                 self.filter_change_time = Some(Instant::now());
                 self.info_message = None;
             }
             MouseAction::ToggleRegex => {
                 self.filters.regex_mode = !self.filters.regex_mode;
+                self.cancel_ongoing_search(); // Cancel old search immediately
                 self.filter_change_time = Some(Instant::now());
                 self.info_message = None;
+                self.needs_full_clear = true; // Force full redraw to prevent artifacts
             }
             MouseAction::PromptLanguage => {
+                self.cancel_ongoing_search(); // Cancel old search immediately
                 self.filter_selector = Some(super::filter_selector::FilterSelector::new_language());
                 self.mode = AppMode::FilterSelector;
             }
             MouseAction::PromptKind => {
+                self.cancel_ongoing_search(); // Cancel old search immediately
                 self.filter_selector = Some(super::filter_selector::FilterSelector::new_kind());
                 self.mode = AppMode::FilterSelector;
             }
             MouseAction::ToggleExpand => {
                 self.filters.expand = !self.filters.expand;
+                self.cancel_ongoing_search(); // Cancel old search immediately
                 self.filter_change_time = Some(Instant::now());
                 self.info_message = None;
             }
             MouseAction::ToggleContains => {
                 self.filters.contains = !self.filters.contains;
+                self.cancel_ongoing_search(); // Cancel old search immediately
                 self.filter_change_time = Some(Instant::now());
                 self.info_message = None;
+                self.needs_full_clear = true; // Force full redraw to prevent artifacts
             }
             MouseAction::SelectResult(line_index) => {
                 // Convert line index to result index (results have variable heights)
@@ -779,6 +934,9 @@ impl InteractiveApp {
             }
             MouseAction::TriggerIndex => {
                 let _ = self.trigger_index();
+            }
+            MouseAction::ClearAndReindex => {
+                let _ = self.trigger_clear_and_reindex();
             }
             _ => {}
         }
@@ -812,6 +970,13 @@ impl InteractiveApp {
 
         // If we get here, click was beyond all results - return last result
         self.results.len().saturating_sub(1)
+    }
+
+    /// Cancel any ongoing search immediately
+    /// This prevents race conditions when filters change while a search is running
+    fn cancel_ongoing_search(&mut self) {
+        self.searching = false;
+        self.search_rx = None;
     }
 
     fn execute_search(&mut self) -> Result<()> {
@@ -891,10 +1056,19 @@ impl InteractiveApp {
     }
 
     fn trigger_index(&mut self) -> Result<()> {
+        // Preserve symbol status when starting new index
+        let symbol_status = match &self.index_status {
+            IndexStatusState::Indexing { symbol_status, .. } => symbol_status.clone(),
+            IndexStatusState::Ready { symbol_status, .. } => symbol_status.clone(),
+            IndexStatusState::Stale { symbol_status, .. } => symbol_status.clone(),
+            IndexStatusState::Missing => SymbolIndexingState::NotStarted,
+        };
+
         self.index_status = IndexStatusState::Indexing {
             current: 0,
             total: 0,
             status: "Starting...".to_string(),
+            symbol_status,
         };
 
         // Create channels for results and progress
@@ -923,6 +1097,38 @@ impl InteractiveApp {
         self.index_progress_rx = Some(progress_rx);
 
         Ok(())
+    }
+
+    /// Clear the entire index cache and trigger a full rebuild
+    fn trigger_clear_and_reindex(&mut self) -> Result<()> {
+        // Get cache directory path
+        let cache_dir = self.cache.path();
+
+        // Clear all cache files (but preserve the directory structure)
+        // Be careful not to delete the entire directory as it might be recreated immediately
+        let files_to_remove = [
+            "meta.db",
+            "trigrams.bin",
+            "content.bin",
+            "symbols.db",
+            "indexing.lock",
+            "indexing.status",
+        ];
+
+        for file_name in &files_to_remove {
+            let file_path = cache_dir.join(file_name);
+            if file_path.exists() {
+                if let Err(e) = std::fs::remove_file(&file_path) {
+                    log::warn!("Failed to remove {}: {}", file_name, e);
+                }
+            }
+        }
+
+        // Set status to Missing to indicate we need a fresh index
+        self.index_status = IndexStatusState::Missing;
+
+        // Trigger fresh index
+        self.trigger_index()
     }
 
     fn open_in_editor_suspended(
@@ -1073,8 +1279,8 @@ impl InteractiveApp {
         self.filter_selector.as_mut()
     }
 
-    pub fn filter_badge_positions_mut(&mut self) -> &mut super::mouse::FilterBadgePositions {
-        &mut self.filter_badge_positions
+    pub fn filter_badge_positions(&self) -> &super::mouse::FilterBadgePositions {
+        &self.filter_badge_positions
     }
 }
 

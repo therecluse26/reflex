@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
     Frame,
 };
 
@@ -20,8 +20,8 @@ pub fn render(f: &mut Frame, app: &mut InteractiveApp) {
         ])
         .split(f.area());
 
-    render_header(f, chunks[0], app);
-    render_filters(f, chunks[1], app);
+    render_header(f, chunks[0], &*app);
+    render_filters(f, chunks[1], &*app);
 
     match app.mode() {
         AppMode::Help => render_help_screen(f, chunks[2], app),
@@ -52,21 +52,54 @@ fn render_header(f: &mut Frame, area: Rect, app: &InteractiveApp) {
         " Search [Press Tab to focus, / to type] "
     };
 
-    // Build status indicator for title right
-    let status_indicator = match app.index_status() {
+    // Build status indicators for title right
+    let main_status = match app.index_status() {
         IndexStatusState::Ready { file_count, .. } => {
-            format!("✓ {} files ", file_count)
+            format!("✓ {} files", file_count)
         }
         IndexStatusState::Missing => {
-            "⚠ No index ".to_string()
+            "⚠ No index".to_string()
         }
-        IndexStatusState::Stale { files_changed } => {
-            format!("⚠ {} changed ", files_changed)
+        IndexStatusState::Stale { files_changed, .. } => {
+            format!("⚠ {} changed", files_changed)
         }
         IndexStatusState::Indexing { current, total, .. } => {
-            format!("⏳ {}/{} ", current, total)
+            format!("⏳ {}/{}", current, total)
         }
     };
+
+    // Get animated spinner for running symbol indexing
+    let spinner_frames = ['◐', '◓', '◑', '◒'];
+    let frame_idx = (app.effects().frame() / 3) as usize % spinner_frames.len();
+    let spinner = spinner_frames[frame_idx];
+
+    // Build symbol indexing status indicator (ALWAYS VISIBLE)
+    let symbol_status = match app.index_status() {
+        IndexStatusState::Ready { symbol_status, .. }
+        | IndexStatusState::Stale { symbol_status, .. }
+        | IndexStatusState::Indexing { symbol_status, .. } => match symbol_status {
+            super::app::SymbolIndexingState::Running { processed, total } => {
+                let percent = if *total > 0 {
+                    (*processed as f64 / *total as f64 * 100.0) as u32
+                } else {
+                    0
+                };
+                format!(" │ {} {}% [Shift+I: clear]", spinner, percent)
+            }
+            super::app::SymbolIndexingState::Completed => {
+                " │ ✓ symbols [Shift+I: clear]".to_string()
+            }
+            super::app::SymbolIndexingState::Failed => {
+                " │ ⚠ symbols [Shift+I: clear]".to_string()
+            }
+            super::app::SymbolIndexingState::NotStarted => {
+                " │ ⏳ symbols... [Shift+I: clear]".to_string()
+            }
+        },
+        IndexStatusState::Missing => String::new(),
+    };
+
+    let status_indicator = format!("{}{} ", main_status, symbol_status);
 
     // Calculate spacing to push status to the right
     let available_width = area.width.saturating_sub(2) as usize; // Subtract borders
@@ -102,12 +135,15 @@ fn render_header(f: &mut Frame, area: Rect, app: &InteractiveApp) {
             .fg(palette.foreground)
             .bg(Color::Rgb(40, 40, 40)) // Subtle background highlight when focused
     } else {
-        Style::default().fg(palette.foreground)
+        Style::default()
+            .fg(palette.foreground)
+            .bg(Color::Black) // Explicit background to prevent rendering artifacts
     };
 
     let input_paragraph = Paragraph::new(input_text)
         .block(input_block)
-        .style(input_style);
+        .style(input_style)
+        .wrap(Wrap { trim: false }); // Ensure text doesn't overflow the widget bounds
 
     f.render_widget(input_paragraph, area);
 
@@ -119,10 +155,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     }
 }
 
-fn render_filters(f: &mut Frame, area: Rect, app: &mut InteractiveApp) {
-    // Clear area to prevent artifacts when filter text changes
-    f.render_widget(Clear, area);
-
+fn render_filters(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     // Clone what we need upfront to avoid borrow checker issues
     let filters = app.filters().clone();
     let palette = app.theme().palette.clone();
@@ -257,26 +290,26 @@ fn render_filters(f: &mut Frame, area: Rect, app: &mut InteractiveApp) {
     pos += contains_text.len();
     let contains_end = pos;
 
-    // Store badge positions for mouse click detection
-    let badge_positions = app.filter_badge_positions_mut();
-    badge_positions.symbols = (symbols_start, symbols_end);
-    badge_positions.regex = (regex_start, regex_end);
-    badge_positions.language = (lang_start, lang_end);
-    badge_positions.kind = (kind_start, kind_end);
-    badge_positions.expand = (expand_start, expand_end);
-    badge_positions.contains = (contains_start, contains_end);
+    // Store badge positions for mouse click detection (using interior mutability)
+    let badge_positions = app.filter_badge_positions();
+    badge_positions.symbols.set((symbols_start, symbols_end));
+    badge_positions.regex.set((regex_start, regex_end));
+    badge_positions.language.set((lang_start, lang_end));
+    badge_positions.kind.set((kind_start, kind_end));
+    badge_positions.expand.set((expand_start, expand_end));
+    badge_positions.contains.set((contains_start, contains_end));
 
     let paragraph = Paragraph::new(Line::from(filter_spans))
         .block(block)
-        .style(Style::default().fg(palette.foreground));
+        .style(Style::default()
+            .fg(palette.foreground)
+            .bg(Color::Black)) // Explicit background to prevent content bleeding through
+        .wrap(Wrap { trim: false }); // Ensure badges don't overflow the widget bounds
 
     f.render_widget(paragraph, area);
 }
 
 fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
-    // Clear entire results area to prevent artifacts when content changes
-    f.render_widget(Clear, area);
-
     let palette = &app.theme().palette;
 
     // Show animated indexing modal (takes priority over search)
@@ -293,12 +326,16 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
             modal_height,
         );
 
-        // Render background (dimmed results area)
-        let background = Block::default()
-            .borders(Borders::ALL)
-            .title(" Results ")
-            .border_style(Style::default().fg(palette.muted));
-        f.render_widget(background, area);
+        // Render background (dimmed results area) - fill entire area to prevent artifacts
+        let background_paragraph = Paragraph::new("")
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Results ")
+                    .border_style(Style::default().fg(palette.muted))
+            )
+            .style(Style::default().bg(Color::Black));
+        f.render_widget(background_paragraph, area);
 
         // Animate the spinner character based on frame count
         let spinner_frames = ['◐', '◓', '◑', '◒'];
@@ -315,7 +352,7 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
 
         // Get progress info from index status
         let (current, total, percent, status_msg) = match app.index_status() {
-            crate::interactive::app::IndexStatusState::Indexing { current, total, status } => {
+            crate::interactive::app::IndexStatusState::Indexing { current, total, status, .. } => {
                 let pct = if *total > 0 {
                     (*current as f64 / *total as f64 * 100.0) as u32
                 } else {
@@ -438,12 +475,16 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
             modal_height,
         );
 
-        // Render background (dimmed results area)
-        let background = Block::default()
-            .borders(Borders::ALL)
-            .title(" Results ")
-            .border_style(Style::default().fg(palette.muted));
-        f.render_widget(background, area);
+        // Render background (dimmed results area) - fill entire area to prevent artifacts
+        let background_paragraph = Paragraph::new("")
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Results ")
+                    .border_style(Style::default().fg(palette.muted))
+            )
+            .style(Style::default().bg(Color::Black));
+        f.render_widget(background_paragraph, area);
 
         // Animate the spinner character based on frame count
         let spinner_frames = ['◐', '◓', '◑', '◒'];
@@ -729,9 +770,6 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
 }
 
 fn render_help_screen(f: &mut Frame, area: Rect, app: &InteractiveApp) {
-    // Clear area to prevent artifacts when switching to help screen
-    f.render_widget(Clear, area);
-
     let palette = &app.theme().palette;
 
     let help_text = vec![
@@ -795,9 +833,6 @@ fn render_help_screen(f: &mut Frame, area: Rect, app: &InteractiveApp) {
 }
 
 fn render_file_preview(f: &mut Frame, area: Rect, app: &InteractiveApp) {
-    // Clear area to prevent artifacts when switching to file preview
-    f.render_widget(Clear, area);
-
     let palette = &app.theme().palette;
 
     if let Some(preview) = app.preview_content() {
@@ -960,7 +995,9 @@ fn render_footer(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     };
 
     let footer = Paragraph::new(Line::from(footer_spans))
-        .style(Style::default().fg(palette.foreground));
+        .style(Style::default()
+            .fg(palette.foreground)
+            .bg(Color::Black)); // Explicit background to prevent rendering artifacts
 
     f.render_widget(footer, area);
 }
