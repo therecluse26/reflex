@@ -187,7 +187,7 @@ impl InteractiveApp {
             index_progress_rx: None,
             indexing_start_time: None,
             filter_change_time: None,
-            filter_debounce_ms: 1000, // 1 second
+            filter_debounce_ms: 500, // 500ms
             filter_selector: None,
         })
     }
@@ -768,11 +768,13 @@ impl InteractiveApp {
 
         for (idx, result) in self.results.results().iter().enumerate().skip(scroll_offset) {
             // Calculate lines for this result
+            // Must match the MAX_PREVIEW_LINES limit used in ui.rs
+            const MAX_PREVIEW_LINES: usize = 20;
             let has_symbol = !matches!(result.kind, crate::models::SymbolKind::Unknown(_))
                 && result.symbol.is_some();
             let symbol_lines = if has_symbol { 1 } else { 0 };
             let path_lines = 1;
-            let preview_lines = result.preview.lines().count();
+            let preview_lines = result.preview.lines().count().min(MAX_PREVIEW_LINES);
             let total_lines = symbol_lines + path_lines + preview_lines;
 
             // Check if click was in this result's range

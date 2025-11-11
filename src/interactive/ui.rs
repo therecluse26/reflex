@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
     Frame,
 };
 
@@ -562,10 +562,9 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
         return;
     }
 
-    // Clear the background first to prevent rendering artifacts
-    let clear_block = Block::default()
-        .style(Style::default().bg(Color::Black));
-    f.render_widget(clear_block, area);
+    // Clear the area completely to prevent rendering artifacts
+    // Fill entire area with blank cells using ratatui's built-in Clear widget
+    f.render_widget(Clear, area);
 
     // Render result list with variable-height items
     // Load theme for syntax highlighting
@@ -575,6 +574,7 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     let visible_lines = area.height.saturating_sub(2) as usize;
     let mut lines_used = 0;
     let mut visible_results_count = 0;
+    const MAX_PREVIEW_LINES: usize = 20; // Limit preview to 20 lines max to prevent expand mode breakage
 
     for result in results.results().iter().skip(results.scroll_offset()) {
         // Calculate lines for this result
@@ -582,7 +582,8 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
             && result.symbol.is_some();
         let symbol_lines = if has_symbol { 1 } else { 0 };
         let path_lines = 1;
-        let preview_lines = result.preview.lines().count();
+        // Limit preview lines to prevent expand mode from breaking scroll window
+        let preview_lines = result.preview.lines().count().min(MAX_PREVIEW_LINES);
         let total_lines = symbol_lines + path_lines + preview_lines;
 
         if lines_used + total_lines <= visible_lines {
@@ -652,8 +653,10 @@ fn render_results_area(f: &mut Frame, area: Rect, app: &InteractiveApp) {
             }
 
             // Split preview into lines and apply syntax highlighting
+            // Limit to MAX_PREVIEW_LINES to prevent expand mode from breaking scroll window
             let preview_lines_vec: Vec<String> = result.preview
                 .lines()
+                .take(MAX_PREVIEW_LINES)
                 .map(|s| s.to_string())
                 .collect();
 
@@ -790,10 +793,9 @@ fn render_file_preview(f: &mut Frame, area: Rect, app: &InteractiveApp) {
     let palette = &app.theme().palette;
 
     if let Some(preview) = app.preview_content() {
-        // Clear the background first to prevent rendering artifacts
-        let clear_block = Block::default()
-            .style(Style::default().bg(Color::Black));
-        f.render_widget(clear_block, area);
+        // Clear the area completely to prevent rendering artifacts
+        // Fill entire area with blank cells using ratatui's built-in Clear widget
+        f.render_widget(Clear, area);
 
         let visible_height = area.height.saturating_sub(2) as usize;
         let start = preview.scroll_offset();
