@@ -1124,17 +1124,16 @@ impl QueryEngine {
 
     /// Enrich text match candidates with symbol information by parsing files
     ///
-    /// Takes a list of text match candidates and replaces them with actual symbol
-    /// definitions where the symbol name matches the pattern.
+    /// Takes a list of text match candidates and extracts symbol information at those locations.
     ///
     /// # Algorithm
     /// 1. Group candidates by file_id for efficient processing
-    /// 2. Parse each file with tree-sitter to extract symbols
-    /// 3. For each symbol, check if its name matches the pattern
-    ///    - If use_regex=true: match symbol name against regex pattern
-    ///    - If use_contains=true: substring match (contains)
-    ///    - Default: exact match
-    /// 4. Return symbol results (not the original text matches)
+    /// 2. Parse each file with tree-sitter to extract ALL symbols
+    /// 3. Filter symbols based on matching strategy:
+    ///    - If use_regex=true: Extract symbols whose line spans overlap with candidate locations
+    ///    - If use_contains=true: Filter symbols by substring match on symbol name
+    ///    - Default: Filter symbols by exact name match
+    /// 4. Return filtered symbol results
     ///
     /// # Performance
     /// Only parses files that have text matches, so typically 10-100 files
@@ -1460,14 +1459,35 @@ impl QueryEngine {
             log::info!("Pattern '{}' is a language keyword - listing all symbols (kind filtering will be applied in Phase 3)", pattern);
             all_symbols
         } else if filter.use_regex {
-            // Compile regex for symbol name matching
-            let regex = Regex::new(pattern)
-                .with_context(|| format!("Invalid regex pattern: {}", pattern))?;
+            // For regex queries, candidates already matched content via regex in Phase 1.
+            // Extract symbols whose line spans overlap with the candidate locations.
+            // This ensures symbols are found at the locations where the regex matched.
 
+            // Build a map of (file_path, line_no) from candidates
+            use std::collections::{HashMap, HashSet};
+            let mut candidate_lines: HashMap<String, HashSet<usize>> = HashMap::new();
+            for candidate in &files_by_path {
+                for cand in candidate.1 {
+                    candidate_lines
+                        .entry(candidate.0.clone())
+                        .or_insert_with(HashSet::new)
+                        .insert(cand.span.start_line);
+                }
+            }
+
+            // Filter symbols whose spans overlap with candidate lines
             all_symbols
                 .into_iter()
                 .filter(|sym| {
-                    sym.symbol.as_deref().map_or(false, |s| regex.is_match(s))
+                    if let Some(lines) = candidate_lines.get(&sym.path) {
+                        // Check if symbol's line span overlaps with any candidate line
+                        for line in sym.span.start_line..=sym.span.end_line {
+                            if lines.contains(&line) {
+                                return true;
+                            }
+                        }
+                    }
+                    false
                 })
                 .collect()
         } else if filter.use_contains {
@@ -1770,6 +1790,19 @@ impl QueryEngine {
         // Clone pattern to owned String for thread safety
         let pattern_owned = pattern.to_string();
 
+        // Compile regex once if in regex mode (before parallel processing for efficiency)
+        let compiled_regex = if filter.use_regex {
+            match Regex::new(&pattern_owned) {
+                Ok(re) => Some(re),
+                Err(e) => {
+                    log::error!("Invalid regex pattern '{}': {}", pattern_owned, e);
+                    anyhow::bail!("Invalid regex pattern '{}': {}", pattern_owned, e);
+                }
+            }
+        } else {
+            None
+        };
+
         // Group candidates by file for efficient processing
         use std::collections::HashMap;
         let mut candidates_by_file: HashMap<u32, Vec<crate::trigram::FileLocation>> = HashMap::new();
@@ -1831,10 +1864,17 @@ impl QueryEngine {
 
                     let line = lines[line_no - 1];
 
-                    // Apply word-boundary or substring matching based on filter
-                    // - Default (not contains, not regex): Word-boundary matching (restrictive)
-                    // - --contains or --regex: Substring matching (expansive)
-                    let line_matches = if filter.use_contains || filter.use_regex {
+                    // Apply matching strategy based on filter mode:
+                    // - Default: Word-boundary matching (restrictive - finds whole identifiers)
+                    // - --contains: Substring matching (expansive - finds pattern anywhere)
+                    // - --regex: Actual regex matching (controlled by pattern itself)
+                    let line_matches = if filter.use_regex {
+                        // Regex matching - use pre-compiled regex for efficiency
+                        // The regex was compiled once outside the parallel loop
+                        compiled_regex.as_ref()
+                            .map(|re| re.is_match(line))
+                            .unwrap_or(false)
+                    } else if filter.use_contains {
                         // Substring matching (expansive)
                         line.contains(&pattern_owned)
                     } else {
