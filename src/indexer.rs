@@ -20,6 +20,14 @@ use crate::models::{Dependency, IndexConfig, IndexStats, Language, ImportType};
 use crate::output;
 use crate::parsers::{DependencyExtractor, ImportInfo};
 use crate::parsers::rust::RustDependencyExtractor;
+use crate::parsers::python::PythonDependencyExtractor;
+use crate::parsers::typescript::TypeScriptDependencyExtractor;
+use crate::parsers::go::GoDependencyExtractor;
+use crate::parsers::java::JavaDependencyExtractor;
+use crate::parsers::c::CDependencyExtractor;
+use crate::parsers::cpp::CppDependencyExtractor;
+use crate::parsers::csharp::CSharpDependencyExtractor;
+use crate::parsers::php::PhpDependencyExtractor;
 use crate::trigram::TrigramIndex;
 
 /// Progress callback type: (current_file_count, total_file_count, status_message)
@@ -307,7 +315,79 @@ impl Indexer {
                             }
                         }
                     }
-                    // Add other languages here as they're implemented
+                    Language::Python => {
+                        match PythonDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::TypeScript | Language::JavaScript => {
+                        match TypeScriptDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::Go => {
+                        match GoDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::Java => {
+                        match JavaDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::C => {
+                        match CDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::Cpp => {
+                        match CppDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::CSharp => {
+                        match CSharpDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::PHP => {
+                        match PhpDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    // Other languages not yet implemented
                     _ => Vec::new(),
                 };
 

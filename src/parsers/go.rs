@@ -608,3 +608,139 @@ func calculate(x int) int {
         assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("anotherLocal")));
     }
 }
+
+// ============================================================================
+// Dependency Extraction
+// ============================================================================
+
+use crate::models::ImportType;
+use crate::parsers::{DependencyExtractor, ImportInfo};
+
+/// Go dependency extractor
+pub struct GoDependencyExtractor;
+
+impl DependencyExtractor for GoDependencyExtractor {
+    fn extract_dependencies(source: &str) -> Result<Vec<ImportInfo>> {
+        let mut parser = Parser::new();
+        let language = tree_sitter_go::LANGUAGE;
+
+        parser
+            .set_language(&language.into())
+            .context("Failed to set Go language")?;
+
+        let tree = parser
+            .parse(source, None)
+            .context("Failed to parse Go source")?;
+
+        let root_node = tree.root_node();
+
+        let mut imports = Vec::new();
+
+        // Extract import statements
+        imports.extend(extract_go_imports(source, &root_node)?);
+
+        Ok(imports)
+    }
+}
+
+/// Extract Go import statements
+fn extract_go_imports(
+    source: &str,
+    root: &tree_sitter::Node,
+) -> Result<Vec<ImportInfo>> {
+    let language = tree_sitter_go::LANGUAGE;
+
+    // Go imports can be single or in groups
+    let query_str = r#"
+        (import_declaration
+            (import_spec
+                path: (interpreted_string_literal) @import_path)) @import
+
+        (import_declaration
+            (import_spec_list
+                (import_spec
+                    path: (interpreted_string_literal) @import_path))) @import
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create Go import query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut imports = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut import_path = None;
+        let mut import_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "import_path" => {
+                    // Remove quotes from string literal
+                    let raw_path = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
+                    import_path = Some(raw_path.trim_matches('"').to_string());
+                }
+                "import" => {
+                    import_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(path), Some(node)) = (import_path, import_node) {
+            let import_type = classify_go_import(&path);
+            let line_number = node.start_position().row + 1;
+
+            imports.push(ImportInfo {
+                imported_path: path,
+                import_type,
+                line_number,
+                imported_symbols: None, // Go imports entire packages, not selective symbols
+            });
+        }
+    }
+
+    Ok(imports)
+}
+
+/// Classify a Go import as internal, external, or stdlib
+fn classify_go_import(import_path: &str) -> ImportType {
+    // Relative imports (./ or ../) - rare in Go but possible
+    if import_path.starts_with("./") || import_path.starts_with("../") {
+        return ImportType::Internal;
+    }
+
+    // Internal imports often start with company domain or project path
+    // Check for common patterns like github.com/your-org/project
+    // For now, we'll consider anything that looks like a full URL path as external
+    // and short stdlib-like paths as stdlib
+
+    // Go standard library modules (common ones)
+    const STDLIB_MODULES: &[&str] = &[
+        "fmt", "io", "os", "path", "strings", "bytes", "bufio", "errors",
+        "context", "sync", "time", "encoding/json", "encoding/xml", "encoding/csv",
+        "net/http", "net/url", "net", "crypto", "crypto/tls", "crypto/sha256",
+        "database/sql", "log", "math", "regexp", "strconv", "sort", "reflect",
+        "runtime", "testing", "flag", "filepath", "unicode", "html", "text/template",
+    ];
+
+    // Check if it's a stdlib module
+    if STDLIB_MODULES.contains(&import_path) {
+        return ImportType::Stdlib;
+    }
+
+    // If it contains a domain (has dots and slashes), it's external
+    if import_path.contains('/') && import_path.split('/').next().unwrap_or("").contains('.') {
+        return ImportType::External;
+    }
+
+    // Short paths without domains are likely stdlib
+    if !import_path.contains('/') || import_path.split('/').count() <= 2 {
+        return ImportType::Stdlib;
+    }
+
+    // Everything else is external
+    ImportType::External
+}

@@ -526,3 +526,127 @@ int main() {
         assert!(macro_symbols.iter().any(|s| s.symbol.as_deref() == Some("DEBUG_PRINT")));
     }
 }
+
+// ============================================================================
+// Dependency Extraction
+// ============================================================================
+
+use crate::models::ImportType;
+use crate::parsers::{DependencyExtractor, ImportInfo};
+
+/// C dependency extractor
+pub struct CDependencyExtractor;
+
+impl DependencyExtractor for CDependencyExtractor {
+    fn extract_dependencies(source: &str) -> Result<Vec<ImportInfo>> {
+        let mut parser = Parser::new();
+        let language = tree_sitter_c::LANGUAGE;
+
+        parser
+            .set_language(&language.into())
+            .context("Failed to set C language")?;
+
+        let tree = parser
+            .parse(source, None)
+            .context("Failed to parse C source")?;
+
+        let root_node = tree.root_node();
+
+        let mut imports = Vec::new();
+
+        // Extract #include directives
+        imports.extend(extract_c_includes(source, &root_node)?);
+
+        Ok(imports)
+    }
+}
+
+/// Extract C #include directives
+fn extract_c_includes(
+    source: &str,
+    root: &tree_sitter::Node,
+) -> Result<Vec<ImportInfo>> {
+    let language = tree_sitter_c::LANGUAGE;
+
+    let query_str = r#"
+        (preproc_include
+            path: (string_literal) @include_path) @include
+
+        (preproc_include
+            path: (system_lib_string) @include_path) @include
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create C include query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut imports = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut include_path = None;
+        let mut include_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "include_path" => {
+                    // Remove quotes or angle brackets from path
+                    let raw_path = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
+                    include_path = Some(raw_path.trim_matches(|c| c == '"' || c == '<' || c == '>').to_string());
+                }
+                "include" => {
+                    include_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(path), Some(node)) = (include_path, include_node) {
+            let import_type = classify_c_include(&path, source, &node);
+            let line_number = node.start_position().row + 1;
+
+            imports.push(ImportInfo {
+                imported_path: path,
+                import_type,
+                line_number,
+                imported_symbols: None, // C includes entire header
+            });
+        }
+    }
+
+    Ok(imports)
+}
+
+/// Classify a C include as internal, external, or stdlib
+fn classify_c_include(include_path: &str, source: &str, node: &tree_sitter::Node) -> ImportType {
+    // Get the actual #include line to check if it uses quotes or angle brackets
+    let line_start = node.start_position();
+    let lines: Vec<&str> = source.lines().collect();
+
+    if line_start.row < lines.len() {
+        let line = lines[line_start.row];
+
+        // Internal: #include "..." (quotes = local project files)
+        if line.contains(&format!("\"{}\"", include_path)) {
+            return ImportType::Internal;
+        }
+    }
+
+    // C standard library headers (angle brackets)
+    const STDLIB_HEADERS: &[&str] = &[
+        "stdio.h", "stdlib.h", "string.h", "math.h", "time.h",
+        "ctype.h", "assert.h", "errno.h", "limits.h", "float.h",
+        "stddef.h", "stdint.h", "stdbool.h", "stdarg.h", "setjmp.h",
+        "signal.h", "locale.h", "wchar.h", "wctype.h", "complex.h",
+        "fenv.h", "inttypes.h", "iso646.h", "tgmath.h", "threads.h",
+    ];
+
+    if STDLIB_HEADERS.contains(&include_path) {
+        return ImportType::Stdlib;
+    }
+
+    // Everything else with angle brackets is external (third-party libraries)
+    ImportType::External
+}

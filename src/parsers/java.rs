@@ -982,3 +982,129 @@ public class MyClass {
         assert_eq!(test_count, 2);
     }
 }
+
+// ============================================================================
+// Dependency Extraction
+// ============================================================================
+
+use crate::models::ImportType;
+use crate::parsers::{DependencyExtractor, ImportInfo};
+
+/// Java dependency extractor
+pub struct JavaDependencyExtractor;
+
+impl DependencyExtractor for JavaDependencyExtractor {
+    fn extract_dependencies(source: &str) -> Result<Vec<ImportInfo>> {
+        let mut parser = Parser::new();
+        let language = tree_sitter_java::LANGUAGE;
+
+        parser
+            .set_language(&language.into())
+            .context("Failed to set Java language")?;
+
+        let tree = parser
+            .parse(source, None)
+            .context("Failed to parse Java source")?;
+
+        let root_node = tree.root_node();
+
+        let mut imports = Vec::new();
+
+        // Extract import statements
+        imports.extend(extract_java_imports(source, &root_node)?);
+
+        Ok(imports)
+    }
+}
+
+/// Extract Java import statements
+fn extract_java_imports(
+    source: &str,
+    root: &tree_sitter::Node,
+) -> Result<Vec<ImportInfo>> {
+    let language = tree_sitter_java::LANGUAGE;
+
+    let query_str = r#"
+        (import_declaration
+            (scoped_identifier) @import_path) @import
+
+        (import_declaration
+            (identifier) @import_path) @import
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create Java import query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut imports = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut import_path = None;
+        let mut import_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "import_path" => {
+                    let raw_path = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
+                    import_path = Some(raw_path.to_string());
+                }
+                "import" => {
+                    import_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(path), Some(node)) = (import_path, import_node) {
+            let import_type = classify_java_import(&path);
+            let line_number = node.start_position().row + 1;
+
+            imports.push(ImportInfo {
+                imported_path: path,
+                import_type,
+                line_number,
+                imported_symbols: None, // Java imports are package-level
+            });
+        }
+    }
+
+    Ok(imports)
+}
+
+/// Classify a Java import as internal, external, or stdlib
+fn classify_java_import(import_path: &str) -> ImportType {
+    // Relative/internal imports typically start with the project package
+    // For now, we'll detect based on common Java stdlib packages
+
+    // Java standard library packages (common ones)
+    const STDLIB_PACKAGES: &[&str] = &[
+        "java.lang", "java.util", "java.io", "java.nio", "java.net",
+        "java.text", "java.math", "java.time", "java.sql", "java.security",
+        "java.awt", "java.swing", "javax.swing", "javax.sql", "javax.crypto",
+        "javax.net", "javax.xml", "javax.annotation", "javax.servlet",
+        "org.w3c.dom", "org.xml.sax",
+    ];
+
+    // Check if it starts with any stdlib package
+    for stdlib_pkg in STDLIB_PACKAGES {
+        if import_path.starts_with(stdlib_pkg) {
+            return ImportType::Stdlib;
+        }
+    }
+
+    // Common external package patterns (third-party)
+    if import_path.starts_with("org.")
+        || import_path.starts_with("com.")
+        || import_path.starts_with("net.")
+        || import_path.starts_with("io.") {
+        // This could be internal or external - we'll assume external for now
+        // A more sophisticated approach would check against the project's package name
+        return ImportType::External;
+    }
+
+    // Default to external
+    ImportType::External
+}

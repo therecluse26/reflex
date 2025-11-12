@@ -455,6 +455,217 @@ fn extract_preview(source: &str, span: &Span) -> String {
     lines[start_idx..end_idx].join("\n")
 }
 
+// ============================================================================
+// Dependency Extraction
+// ============================================================================
+
+use crate::models::ImportType;
+use crate::parsers::{DependencyExtractor, ImportInfo};
+
+/// Python dependency extractor
+pub struct PythonDependencyExtractor;
+
+impl DependencyExtractor for PythonDependencyExtractor {
+    fn extract_dependencies(source: &str) -> Result<Vec<ImportInfo>> {
+        let mut parser = Parser::new();
+        let language = tree_sitter_python::LANGUAGE;
+
+        parser
+            .set_language(&language.into())
+            .context("Failed to set Python language")?;
+
+        let tree = parser
+            .parse(source, None)
+            .context("Failed to parse Python source")?;
+
+        let root_node = tree.root_node();
+
+        let mut imports = Vec::new();
+
+        // Extract import statements (import os, sys)
+        imports.extend(extract_import_statements(source, &root_node)?);
+
+        // Extract from-import statements (from os import path)
+        imports.extend(extract_from_imports(source, &root_node)?);
+
+        Ok(imports)
+    }
+}
+
+/// Extract regular import statements: import os, import sys
+fn extract_import_statements(
+    source: &str,
+    root: &tree_sitter::Node,
+) -> Result<Vec<ImportInfo>> {
+    let language = tree_sitter_python::LANGUAGE;
+
+    let query_str = r#"
+        (import_statement
+            name: (dotted_name) @import_path) @import
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create import statement query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut imports = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut import_path = None;
+        let mut import_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "import_path" => {
+                    import_path = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                }
+                "import" => {
+                    import_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(path), Some(node)) = (import_path, import_node) {
+            let import_type = classify_python_import(&path);
+            let line_number = node.start_position().row + 1;
+
+            imports.push(ImportInfo {
+                imported_path: path,
+                import_type,
+                line_number,
+                imported_symbols: None,
+            });
+        }
+    }
+
+    Ok(imports)
+}
+
+/// Extract from-import statements: from os import path, from . import module
+fn extract_from_imports(
+    source: &str,
+    root: &tree_sitter::Node,
+) -> Result<Vec<ImportInfo>> {
+    let language = tree_sitter_python::LANGUAGE;
+
+    let query_str = r#"
+        (import_from_statement
+            module_name: (dotted_name) @module_path) @import
+
+        (import_from_statement
+            module_name: (relative_import) @module_path) @import
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create from-import query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut imports = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut module_path = None;
+        let mut import_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "module_path" => {
+                    module_path = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                }
+                "import" => {
+                    import_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(path), Some(node)) = (module_path, import_node) {
+            let import_type = classify_python_import(&path);
+            let line_number = node.start_position().row + 1;
+
+            // Extract imported symbols if present
+            let imported_symbols = extract_imported_symbols(source, &node);
+
+            imports.push(ImportInfo {
+                imported_path: path,
+                import_type,
+                line_number,
+                imported_symbols,
+            });
+        }
+    }
+
+    Ok(imports)
+}
+
+/// Extract the list of imported symbols from a from-import statement
+fn extract_imported_symbols(source: &str, import_node: &tree_sitter::Node) -> Option<Vec<String>> {
+    let mut symbols = Vec::new();
+
+    // Walk children to find aliased_import or dotted_name nodes
+    let mut cursor = import_node.walk();
+    for child in import_node.children(&mut cursor) {
+        match child.kind() {
+            "aliased_import" | "dotted_name" => {
+                // Get the first identifier
+                let mut child_cursor = child.walk();
+                for grandchild in child.children(&mut child_cursor) {
+                    if grandchild.kind() == "identifier" || grandchild.kind() == "dotted_name" {
+                        if let Ok(text) = grandchild.utf8_text(source.as_bytes()) {
+                            symbols.push(text.to_string());
+                            break; // Only get the first one for aliased imports
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if symbols.is_empty() {
+        None
+    } else {
+        Some(symbols)
+    }
+}
+
+/// Classify a Python import as internal, external, or stdlib
+fn classify_python_import(import_path: &str) -> ImportType {
+    // Relative imports (. or ..)
+    if import_path.starts_with('.') {
+        return ImportType::Internal;
+    }
+
+    // Python standard library (common modules)
+    const STDLIB_MODULES: &[&str] = &[
+        "os", "sys", "io", "re", "json", "csv", "xml", "html", "http", "urllib",
+        "collections", "itertools", "functools", "operator", "pathlib", "glob",
+        "tempfile", "shutil", "pickle", "shelve", "sqlite3", "zlib", "gzip",
+        "time", "datetime", "calendar", "logging", "argparse", "configparser",
+        "typing", "dataclasses", "enum", "abc", "contextlib", "weakref",
+        "threading", "multiprocessing", "subprocess", "queue", "asyncio",
+        "socket", "email", "base64", "hashlib", "hmac", "secrets", "uuid",
+        "math", "random", "statistics", "decimal", "fractions",
+        "unittest", "doctest", "pdb", "trace", "timeit",
+    ];
+
+    // Extract first component of the path
+    let first_component = import_path.split('.').next().unwrap_or("");
+
+    if STDLIB_MODULES.contains(&first_component) {
+        ImportType::Stdlib
+    } else {
+        // Everything else is external (third-party packages)
+        ImportType::External
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

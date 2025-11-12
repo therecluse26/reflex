@@ -811,3 +811,239 @@ export class CentralUsersModule extends HttpFactory<WatchHookMap, WatchEvents> {
         assert!(matches!(global_let.kind, SymbolKind::Variable));
     }
 }
+
+// ============================================================================
+// Dependency Extraction
+// ============================================================================
+
+use crate::models::ImportType;
+use crate::parsers::{DependencyExtractor, ImportInfo};
+
+/// TypeScript/JavaScript dependency extractor
+pub struct TypeScriptDependencyExtractor;
+
+impl DependencyExtractor for TypeScriptDependencyExtractor {
+    fn extract_dependencies(source: &str) -> Result<Vec<ImportInfo>> {
+        let mut parser = Parser::new();
+        let language = tree_sitter_typescript::LANGUAGE_TSX; // Use TSX for JS/TS compatibility
+
+        parser
+            .set_language(&language.into())
+            .context("Failed to set TypeScript/JavaScript language")?;
+
+        let tree = parser
+            .parse(source, None)
+            .context("Failed to parse TypeScript/JavaScript source")?;
+
+        let root_node = tree.root_node();
+
+        let mut imports = Vec::new();
+
+        // Extract ES6 import statements
+        imports.extend(extract_import_declarations(source, &root_node)?);
+
+        // Extract require() statements
+        imports.extend(extract_require_statements(source, &root_node)?);
+
+        Ok(imports)
+    }
+}
+
+/// Extract ES6 import declarations: import { foo } from 'module'
+fn extract_import_declarations(
+    source: &str,
+    root: &tree_sitter::Node,
+) -> Result<Vec<ImportInfo>> {
+    let language = tree_sitter_typescript::LANGUAGE_TSX;
+
+    let query_str = r#"
+        (import_statement
+            source: (string) @import_path) @import
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create import declaration query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut imports = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut import_path = None;
+        let mut import_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "import_path" => {
+                    // Remove quotes from string literal
+                    let raw_path = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
+                    import_path = Some(raw_path.trim_matches(|c| c == '"' || c == '\'' || c == '`').to_string());
+                }
+                "import" => {
+                    import_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(path), Some(node)) = (import_path, import_node) {
+            let import_type = classify_js_import(&path);
+            let line_number = node.start_position().row + 1;
+
+            // Extract imported symbols
+            let imported_symbols = extract_imported_symbols_js(source, &node);
+
+            imports.push(ImportInfo {
+                imported_path: path,
+                import_type,
+                line_number,
+                imported_symbols,
+            });
+        }
+    }
+
+    Ok(imports)
+}
+
+/// Extract require() statements: const foo = require('module')
+fn extract_require_statements(
+    source: &str,
+    root: &tree_sitter::Node,
+) -> Result<Vec<ImportInfo>> {
+    let language = tree_sitter_typescript::LANGUAGE_TSX;
+
+    let query_str = r#"
+        (call_expression
+            function: (identifier) @func_name
+            arguments: (arguments (string) @require_path)) @require_call
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create require query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut imports = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut func_name = None;
+        let mut require_path = None;
+        let mut require_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "func_name" => {
+                    func_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or(""));
+                }
+                "require_path" => {
+                    // Remove quotes from string literal
+                    let raw_path = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
+                    require_path = Some(raw_path.trim_matches(|c| c == '"' || c == '\'' || c == '`').to_string());
+                }
+                "require_call" => {
+                    require_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        // Only process if it's actually a require() call
+        if func_name == Some("require") {
+            if let (Some(path), Some(node)) = (require_path, require_node) {
+                let import_type = classify_js_import(&path);
+                let line_number = node.start_position().row + 1;
+
+                imports.push(ImportInfo {
+                    imported_path: path,
+                    import_type,
+                    line_number,
+                    imported_symbols: None, // require doesn't have selective imports
+                });
+            }
+        }
+    }
+
+    Ok(imports)
+}
+
+/// Extract the list of imported symbols from an import statement
+fn extract_imported_symbols_js(source: &str, import_node: &tree_sitter::Node) -> Option<Vec<String>> {
+    let mut symbols = Vec::new();
+
+    // Walk children to find import_clause nodes
+    let mut cursor = import_node.walk();
+    for child in import_node.children(&mut cursor) {
+        if child.kind() == "import_clause" {
+            // Look for named_imports or namespace_import
+            let mut clause_cursor = child.walk();
+            for grandchild in child.children(&mut clause_cursor) {
+                match grandchild.kind() {
+                    "named_imports" => {
+                        // Extract individual import specifiers
+                        let mut specifier_cursor = grandchild.walk();
+                        for specifier in grandchild.children(&mut specifier_cursor) {
+                            if specifier.kind() == "import_specifier" {
+                                // Get the name (could be aliased)
+                                if let Ok(text) = specifier.utf8_text(source.as_bytes()) {
+                                    // Parse "foo as bar" or just "foo"
+                                    let name = text.split_whitespace().next().unwrap_or(text);
+                                    symbols.push(name.to_string());
+                                }
+                            }
+                        }
+                    }
+                    "identifier" => {
+                        // Default import: import Foo from 'module'
+                        if let Ok(text) = grandchild.utf8_text(source.as_bytes()) {
+                            symbols.push(text.to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    if symbols.is_empty() {
+        None
+    } else {
+        Some(symbols)
+    }
+}
+
+/// Classify a JavaScript/TypeScript import as internal, external, or stdlib
+fn classify_js_import(import_path: &str) -> ImportType {
+    // Relative imports (./ or ../)
+    if import_path.starts_with("./") || import_path.starts_with("../") {
+        return ImportType::Internal;
+    }
+
+    // Absolute imports starting with / or @ (monorepo paths like @company/package)
+    if import_path.starts_with("/") {
+        return ImportType::Internal;
+    }
+
+    // Node.js built-in modules (stdlib)
+    const STDLIB_MODULES: &[&str] = &[
+        "fs", "path", "os", "crypto", "util", "events", "stream", "buffer",
+        "http", "https", "net", "tls", "url", "querystring", "dns",
+        "child_process", "cluster", "worker_threads", "readline",
+        "zlib", "assert", "console", "module", "process", "timers",
+        "vm", "string_decoder", "dgram", "v8", "perf_hooks",
+        // Node.js prefixed imports (node:fs, etc.)
+        "node:fs", "node:path", "node:os", "node:crypto", "node:util", "node:events",
+        "node:stream", "node:buffer", "node:http", "node:https", "node:net",
+    ];
+
+    // Check if it's a stdlib module
+    if STDLIB_MODULES.contains(&import_path) {
+        return ImportType::Stdlib;
+    }
+
+    // Everything else is external (third-party packages from npm)
+    ImportType::External
+}
