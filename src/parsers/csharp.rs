@@ -1235,6 +1235,42 @@ public class LegacyClass
         // Should find Obsolete/ObsoleteAttribute at least 3 times (1 definition + 2 uses)
         assert!(obsolete_count >= 3);
     }
+
+    #[test]
+    fn test_extract_csharp_usings() {
+        let source = r#"
+            using System;
+            using System.Collections.Generic;
+            using System.Linq;
+            using Microsoft.AspNetCore.Mvc;
+
+            namespace MyApp.Controllers
+            {
+                public class HomeController : Controller
+                {
+                    public IActionResult Index()
+                    {
+                        return View();
+                    }
+                }
+            }
+        "#;
+
+        use crate::parsers::{DependencyExtractor, ImportInfo};
+
+        let deps = CSharpDependencyExtractor::extract_dependencies(source).unwrap();
+
+        assert_eq!(deps.len(), 4, "Should extract 4 using directives");
+        assert!(deps.iter().any(|d| d.imported_path == "System"));
+        assert!(deps.iter().any(|d| d.imported_path == "System.Collections.Generic"));
+        assert!(deps.iter().any(|d| d.imported_path == "System.Linq"));
+        assert!(deps.iter().any(|d| d.imported_path == "Microsoft.AspNetCore.Mvc"));
+
+        for dep in &deps {
+            assert!(matches!(dep.import_type, ImportType::Stdlib),
+                    "System and Microsoft namespaces should be classified as Stdlib");
+        }
+    }
 }
 
 // ============================================================================
@@ -1280,10 +1316,10 @@ fn extract_csharp_usings(
 
     let query_str = r#"
         (using_directive
-            (qualified_name) @using_path) @using
-
-        (using_directive
-            (identifier) @using_path) @using
+            [
+                (qualified_name) @using_path
+                (identifier) @using_path
+            ])
     "#;
 
     let query = Query::new(&language.into(), query_str)
@@ -1295,32 +1331,20 @@ fn extract_csharp_usings(
     let mut imports = Vec::new();
 
     while let Some(match_) = matches.next() {
-        let mut using_path = None;
-        let mut using_node = None;
-
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
-            match capture_name {
-                "using_path" => {
-                    using_path = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
-                }
-                "using" => {
-                    using_node = Some(capture.node);
-                }
-                _ => {}
+            if capture_name == "using_path" {
+                let path = capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                let import_type = classify_csharp_using(&path);
+                let line_number = capture.node.start_position().row + 1;
+
+                imports.push(ImportInfo {
+                    imported_path: path,
+                    import_type,
+                    line_number,
+                    imported_symbols: None, // C# imports entire namespace
+                });
             }
-        }
-
-        if let (Some(path), Some(node)) = (using_path, using_node) {
-            let import_type = classify_csharp_using(&path);
-            let line_number = node.start_position().row + 1;
-
-            imports.push(ImportInfo {
-                imported_path: path,
-                import_type,
-                line_number,
-                imported_symbols: None, // C# imports entire namespace
-            });
         }
     }
 

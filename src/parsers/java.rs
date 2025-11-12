@@ -981,6 +981,45 @@ public class MyClass {
         let test_count = annotation_symbols.iter().filter(|s| s.symbol.as_deref() == Some("Test")).count();
         assert_eq!(test_count, 2);
     }
+
+    #[test]
+    fn test_extract_java_imports() {
+        let source = r#"
+            import java.util.List;
+            import java.util.ArrayList;
+            import java.io.IOException;
+            import org.springframework.stereotype.Service;
+
+            @Service
+            public class UserService {
+                private List<String> users = new ArrayList<>();
+
+                public void addUser(String name) throws IOException {
+                    users.add(name);
+                }
+            }
+        "#;
+
+        use crate::parsers::{DependencyExtractor, ImportInfo};
+
+        let deps = JavaDependencyExtractor::extract_dependencies(source).unwrap();
+
+        assert_eq!(deps.len(), 4, "Should extract 4 import statements");
+        assert!(deps.iter().any(|d| d.imported_path == "java.util.List"));
+        assert!(deps.iter().any(|d| d.imported_path == "java.util.ArrayList"));
+        assert!(deps.iter().any(|d| d.imported_path == "java.io.IOException"));
+        assert!(deps.iter().any(|d| d.imported_path == "org.springframework.stereotype.Service"));
+
+        // Check stdlib classification
+        let java_util_list = deps.iter().find(|d| d.imported_path == "java.util.List").unwrap();
+        assert!(matches!(java_util_list.import_type, ImportType::Stdlib),
+                "java.util imports should be classified as Stdlib");
+
+        // Check external classification
+        let spring_service = deps.iter().find(|d| d.imported_path == "org.springframework.stereotype.Service").unwrap();
+        assert!(matches!(spring_service.import_type, ImportType::External),
+                "org.springframework imports should be classified as External");
+    }
 }
 
 // ============================================================================
@@ -1026,10 +1065,10 @@ fn extract_java_imports(
 
     let query_str = r#"
         (import_declaration
-            (scoped_identifier) @import_path) @import
-
-        (import_declaration
-            (identifier) @import_path) @import
+            [
+                (scoped_identifier) @import_path
+                (identifier) @import_path
+            ])
     "#;
 
     let query = Query::new(&language.into(), query_str)
@@ -1041,33 +1080,20 @@ fn extract_java_imports(
     let mut imports = Vec::new();
 
     while let Some(match_) = matches.next() {
-        let mut import_path = None;
-        let mut import_node = None;
-
         for capture in match_.captures {
             let capture_name: &str = &query.capture_names()[capture.index as usize];
-            match capture_name {
-                "import_path" => {
-                    let raw_path = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
-                    import_path = Some(raw_path.to_string());
-                }
-                "import" => {
-                    import_node = Some(capture.node);
-                }
-                _ => {}
+            if capture_name == "import_path" {
+                let path = capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                let import_type = classify_java_import(&path);
+                let line_number = capture.node.start_position().row + 1;
+
+                imports.push(ImportInfo {
+                    imported_path: path,
+                    import_type,
+                    line_number,
+                    imported_symbols: None, // Java imports are package-level
+                });
             }
-        }
-
-        if let (Some(path), Some(node)) = (import_path, import_node) {
-            let import_type = classify_java_import(&path);
-            let line_number = node.start_position().row + 1;
-
-            imports.push(ImportInfo {
-                imported_path: path,
-                import_type,
-                line_number,
-                imported_symbols: None, // Java imports are package-level
-            });
         }
     }
 
@@ -1076,8 +1102,150 @@ fn extract_java_imports(
 
 /// Classify a Java import as internal, external, or stdlib
 fn classify_java_import(import_path: &str) -> ImportType {
-    // Relative/internal imports typically start with the project package
-    // For now, we'll detect based on common Java stdlib packages
+    classify_java_import_impl(import_path, None)
+}
+
+/// Parse pom.xml or build.gradle to find Java package name
+/// Similar to find_go_module_name() for Go projects
+pub fn find_java_package_name(root: &std::path::Path) -> Option<String> {
+    // Try Maven first (pom.xml)
+    if let Some(package) = find_maven_package(root) {
+        return Some(package);
+    }
+
+    // Try Gradle second (build.gradle or build.gradle.kts)
+    if let Some(package) = find_gradle_package(root) {
+        return Some(package);
+    }
+
+    // Fallback: scan package declarations in .java files
+    find_package_from_sources(root)
+}
+
+/// Parse pom.xml to extract <groupId>
+fn find_maven_package(root: &std::path::Path) -> Option<String> {
+    let pom_path = root.join("pom.xml");
+    if !pom_path.exists() {
+        return None;
+    }
+
+    let content = std::fs::read_to_string(&pom_path).ok()?;
+
+    // Simple XML parsing for <groupId>
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("<groupId>") && trimmed.ends_with("</groupId>") {
+            let start = "<groupId>".len();
+            let end = trimmed.len() - "</groupId>".len();
+            return Some(trimmed[start..end].to_string());
+        }
+    }
+
+    None
+}
+
+/// Parse build.gradle or build.gradle.kts to extract group
+fn find_gradle_package(root: &std::path::Path) -> Option<String> {
+    // Try build.gradle (Groovy)
+    if let Some(package) = find_gradle_package_in_file(&root.join("build.gradle")) {
+        return Some(package);
+    }
+
+    // Try build.gradle.kts (Kotlin)
+    find_gradle_package_in_file(&root.join("build.gradle.kts"))
+}
+
+fn find_gradle_package_in_file(gradle_path: &std::path::Path) -> Option<String> {
+    if !gradle_path.exists() {
+        return None;
+    }
+
+    let content = std::fs::read_to_string(gradle_path).ok()?;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Groovy: group = 'org.neo4j'
+        // Kotlin: group = "org.neo4j"
+        if trimmed.starts_with("group") {
+            if let Some(equals_idx) = trimmed.find('=') {
+                let value = &trimmed[equals_idx + 1..].trim();
+                // Remove quotes
+                let value = value.trim_matches(|c| c == '\'' || c == '"');
+                return Some(value.to_string());
+            }
+        }
+    }
+
+    None
+}
+
+/// Scan .java files to find common package prefix
+fn find_package_from_sources(root: &std::path::Path) -> Option<String> {
+    use std::collections::HashMap;
+
+    let mut package_counts: HashMap<String, usize> = HashMap::new();
+
+    // Walk the directory tree looking for .java files
+    fn walk_dir(dir: &std::path::Path, package_counts: &mut HashMap<String, usize>, depth: usize) {
+        // Limit depth to avoid excessive scanning
+        if depth > 10 {
+            return;
+        }
+
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+
+            if path.is_dir() {
+                walk_dir(&path, package_counts, depth + 1);
+            } else if path.extension().and_then(|s| s.to_str()) == Some("java") {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    // Extract package declaration
+                    for line in content.lines().take(20) { // Check first 20 lines
+                        let trimmed = line.trim();
+                        if trimmed.starts_with("package ") && trimmed.ends_with(';') {
+                            let package = &trimmed[8..trimmed.len() - 1].trim();
+
+                            // Extract base package (first 2 components: org.neo4j)
+                            let parts: Vec<&str> = package.split('.').collect();
+                            if parts.len() >= 2 {
+                                let base_package = format!("{}.{}", parts[0], parts[1]);
+                                *package_counts.entry(base_package).or_insert(0) += 1;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    walk_dir(root, &mut package_counts, 0);
+
+    // Find the most common package prefix
+    package_counts.into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(package, _)| package)
+}
+
+/// Reclassify a Java import using the project package prefix
+/// Similar to reclassify_go_import() for Go
+pub fn reclassify_java_import(import_path: &str, package_prefix: Option<&str>) -> ImportType {
+    classify_java_import_impl(import_path, package_prefix)
+}
+
+fn classify_java_import_impl(import_path: &str, package_prefix: Option<&str>) -> ImportType {
+    // First check if this is an internal import (matches project package)
+    if let Some(prefix) = package_prefix {
+        if import_path.starts_with(prefix) {
+            return ImportType::Internal;
+        }
+    }
 
     // Java standard library packages (common ones)
     const STDLIB_PACKAGES: &[&str] = &[
@@ -1095,16 +1263,6 @@ fn classify_java_import(import_path: &str) -> ImportType {
         }
     }
 
-    // Common external package patterns (third-party)
-    if import_path.starts_with("org.")
-        || import_path.starts_with("com.")
-        || import_path.starts_with("net.")
-        || import_path.starts_with("io.") {
-        // This could be internal or external - we'll assume external for now
-        // A more sophisticated approach would check against the project's package name
-        return ImportType::External;
-    }
-
-    // Default to external
+    // Everything else is external
     ImportType::External
 }

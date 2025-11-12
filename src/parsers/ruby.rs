@@ -15,7 +15,8 @@
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
-use crate::models::{Language, SearchResult, Span, SymbolKind};
+use crate::models::{Language, SearchResult, Span, SymbolKind, ImportType};
+use crate::parsers::{DependencyExtractor, ImportInfo};
 
 /// Parse Ruby source code and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -557,6 +558,143 @@ fn extract_preview(source: &str, span: &Span) -> String {
     lines[start_idx..end_idx].join("\n")
 }
 
+/// Ruby dependency extractor for require and require_relative statements
+pub struct RubyDependencyExtractor;
+
+impl DependencyExtractor for RubyDependencyExtractor {
+    fn extract_dependencies(source: &str) -> Result<Vec<ImportInfo>> {
+        let mut parser = Parser::new();
+        let language = tree_sitter_ruby::LANGUAGE;
+
+        parser
+            .set_language(&language.into())
+            .context("Failed to set Ruby language")?;
+
+        let tree = parser
+            .parse(source, None)
+            .context("Failed to parse Ruby source")?;
+
+        let root_node = tree.root_node();
+
+        // Query for require and require_relative calls
+        // In Ruby AST, these are method calls with string arguments
+        let query_str = r#"
+            (call
+                method: (identifier) @method_name
+                arguments: (argument_list
+                    [
+                        (string (string_content) @import_path)
+                        (simple_symbol) @import_path
+                    ]))
+
+            (#match? @method_name "^(require|require_relative|load)$")
+        "#;
+
+        let query = Query::new(&language.into(), query_str)
+            .context("Failed to create Ruby require query")?;
+
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&query, root_node, source.as_bytes());
+
+        let mut imports = Vec::new();
+
+        while let Some(match_) = matches.next() {
+            let mut method_name = None;
+            let mut import_path = None;
+            let mut path_node = None;
+
+            for capture in match_.captures {
+                let capture_name: &str = &query.capture_names()[capture.index as usize];
+                match capture_name {
+                    "method_name" => {
+                        method_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    }
+                    "import_path" => {
+                        import_path = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                        path_node = Some(capture.node);
+                    }
+                    _ => {}
+                }
+            }
+
+            if let (Some(method), Some(mut path), Some(node)) = (method_name, import_path, path_node) {
+                // For symbols, remove leading ':'
+                if path.starts_with(':') {
+                    path = path.trim_start_matches(':').to_string();
+                }
+
+                let import_type = classify_ruby_import(&path, &method);
+                let line_number = node.start_position().row + 1;
+
+                imports.push(ImportInfo {
+                    imported_path: path,
+                    line_number,
+                    import_type,
+                    imported_symbols: None, // Ruby doesn't have explicit symbol imports like Python
+                });
+            }
+        }
+
+        Ok(imports)
+    }
+}
+
+/// Classify Ruby imports into Internal/External/Stdlib
+fn classify_ruby_import(path: &str, method: &str) -> ImportType {
+    // require_relative is always internal (relative to current file)
+    if method == "require_relative" {
+        return ImportType::Internal;
+    }
+
+    // Ruby standard library gems
+    let stdlib_prefixes = [
+        "json", "csv", "yaml", "uri", "net/", "open-uri", "openssl",
+        "digest", "base64", "securerandom", "time", "date", "set",
+        "fileutils", "pathname", "tempfile", "logger", "benchmark",
+        "ostruct", "forwardable", "singleton", "observer", "delegate",
+        "abbrev", "cgi", "erb", "optparse", "shellwords", "stringio",
+        "strscan", "socket", "thread", "mutex_m", "monitor", "sync",
+        "timeout", "weakref", "English", "fiddle", "rbconfig",
+    ];
+
+    for prefix in &stdlib_prefixes {
+        if path == *prefix || path.starts_with(&format!("{}/", prefix)) {
+            return ImportType::Stdlib;
+        }
+    }
+
+    // Common third-party gems
+    let known_external = [
+        "rails", "activerecord", "activemodel", "activesupport", "actionpack",
+        "actionview", "actioncable", "activejob", "actionmailer", "actiontext",
+        "activestorage", "railties", "sinatra", "rack", "puma", "sidekiq",
+        "resque", "redis", "pg", "mysql2", "sqlite3", "mongoid", "sequel",
+        "devise", "cancancan", "pundit", "doorkeeper", "jwt", "bcrypt",
+        "faker", "factory_bot", "rspec", "minitest", "capybara", "webmock",
+        "vcr", "simplecov", "rubocop", "pry", "byebug", "better_errors",
+        "binding_of_caller", "awesome_print", "nokogiri", "httparty", "faraday",
+        "rest-client", "typhoeus", "grape", "jbuilder", "oj", "yajl",
+        "kaminari", "will_paginate", "draper", "simple_form", "formtastic",
+        "carrierwave", "paperclip", "shrine", "aws-sdk", "fog", "stripe",
+        "omniauth", "warden", "rack-cors", "dotenv", "figaro", "config",
+        "whenever", "clockwork", "delayed_job", "que", "sucker_punch",
+    ];
+
+    for gem in &known_external {
+        if path == *gem || path.starts_with(&format!("{}/", gem)) {
+            return ImportType::External;
+        }
+    }
+
+    // If it starts with a relative path indicator, it's internal
+    if path.starts_with("./") || path.starts_with("../") {
+        return ImportType::Internal;
+    }
+
+    // Default to external for unknown gems
+    ImportType::External
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -880,5 +1018,46 @@ end
         assert!(properties.iter().any(|p| p.symbol.as_deref() == Some("address")));
 
         assert_eq!(properties.len(), 5);
+    }
+
+    #[test]
+    fn test_extract_ruby_requires() {
+        let source = r#"
+            require 'json'
+            require 'rails'
+            require 'activerecord'
+            require_relative '../models/user'
+            require_relative './helpers/auth'
+
+            class UsersController
+              def index
+                # implementation
+              end
+            end
+        "#;
+
+        let deps = RubyDependencyExtractor::extract_dependencies(source).unwrap();
+
+        assert_eq!(deps.len(), 5, "Should extract 5 require statements");
+        assert!(deps.iter().any(|d| d.imported_path == "json"));
+        assert!(deps.iter().any(|d| d.imported_path == "rails"));
+        assert!(deps.iter().any(|d| d.imported_path == "activerecord"));
+        assert!(deps.iter().any(|d| d.imported_path == "../models/user"));
+        assert!(deps.iter().any(|d| d.imported_path == "./helpers/auth"));
+
+        // Check stdlib classification
+        let json_dep = deps.iter().find(|d| d.imported_path == "json").unwrap();
+        assert!(matches!(json_dep.import_type, ImportType::Stdlib),
+                "json should be classified as Stdlib");
+
+        // Check external classification
+        let rails_dep = deps.iter().find(|d| d.imported_path == "rails").unwrap();
+        assert!(matches!(rails_dep.import_type, ImportType::External),
+                "rails should be classified as External");
+
+        // Check internal classification (require_relative)
+        let user_dep = deps.iter().find(|d| d.imported_path == "../models/user").unwrap();
+        assert!(matches!(user_dep.import_type, ImportType::Internal),
+                "require_relative should be classified as Internal");
     }
 }

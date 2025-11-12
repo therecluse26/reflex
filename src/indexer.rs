@@ -28,6 +28,11 @@ use crate::parsers::c::CDependencyExtractor;
 use crate::parsers::cpp::CppDependencyExtractor;
 use crate::parsers::csharp::CSharpDependencyExtractor;
 use crate::parsers::php::PhpDependencyExtractor;
+use crate::parsers::ruby::RubyDependencyExtractor;
+use crate::parsers::kotlin::KotlinDependencyExtractor;
+use crate::parsers::zig::ZigDependencyExtractor;
+use crate::parsers::vue::VueDependencyExtractor;
+use crate::parsers::svelte::SvelteDependencyExtractor;
 use crate::trigram::TrigramIndex;
 
 /// Progress callback type: (current_file_count, total_file_count, status_message)
@@ -387,6 +392,51 @@ impl Indexer {
                             }
                         }
                     }
+                    Language::Ruby => {
+                        match RubyDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::Kotlin => {
+                        match KotlinDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::Zig => {
+                        match ZigDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::Vue => {
+                        match VueDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::Svelte => {
+                        match SvelteDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
                     // Other languages not yet implemented
                     _ => Vec::new(),
                 };
@@ -525,6 +575,18 @@ impl Indexer {
                 pb.set_message("Extracting dependencies...".to_string());
             }
 
+            // Find and parse go.mod to get module prefix for Go projects
+            let go_module_prefix = crate::parsers::go::find_go_module_name(root);
+            if let Some(ref prefix) = go_module_prefix {
+                log::info!("Found Go module: {}", prefix);
+            }
+
+            // Find and parse pom.xml/build.gradle to get package prefix for Java projects
+            let java_package_prefix = crate::parsers::java::find_java_package_name(root);
+            if let Some(ref prefix) = java_package_prefix {
+                log::info!("Found Java package: {}", prefix);
+            }
+
             // Create dependency index to resolve paths and insert dependencies
             let cache_for_deps = CacheManager::new(root);
             let dep_index = DependencyIndex::new(cache_for_deps);
@@ -542,34 +604,52 @@ impl Indexer {
                     }
                 };
 
-                // Resolve import paths to file IDs using our path resolution helpers
+                // Reclassify and filter dependencies
                 let mut resolved_deps = Vec::new();
 
-                for import_info in import_infos {
-                    // Skip external and stdlib dependencies - we only care about internal code structure
+                for mut import_info in import_infos {
+                    // Reclassify Go imports using module prefix (if Go project)
+                    if file_path.ends_with(".go") {
+                        import_info.import_type = crate::parsers::go::reclassify_go_import(
+                            &import_info.imported_path,
+                            go_module_prefix.as_deref(),
+                        );
+                    }
+
+                    // Reclassify Java imports using package prefix (if Java project)
+                    if file_path.ends_with(".java") {
+                        import_info.import_type = crate::parsers::java::reclassify_java_import(
+                            &import_info.imported_path,
+                            java_package_prefix.as_deref(),
+                        );
+                    }
+
+                    // ONLY insert Internal dependencies - skip External and Stdlib
                     if !matches!(import_info.import_type, ImportType::Internal) {
                         continue;
                     }
 
-                    // Try to resolve internal import to a file path
-                    let resolved_path = crate::dependency::resolve_rust_import(
-                        &import_info.imported_path,
-                        &file_path,
-                        root,
-                    );
+                    // Try to resolve import path to a file
+                    let resolved_file_id = {
+                        let resolved_path = crate::dependency::resolve_rust_import(
+                            &import_info.imported_path,
+                            &file_path,
+                            root,
+                        );
 
-                    // Get target file ID if resolved
-                    let target_file_id = if let Some(ref path) = resolved_path {
-                        dep_index.get_file_id_by_path(path)?
-                    } else {
-                        None
+                        if let Some(ref path) = resolved_path {
+                            dep_index.get_file_id_by_path(path)?
+                        } else {
+                            None
+                        }
                     };
 
+                    // Insert Internal dependency
                     resolved_deps.push(Dependency {
                         file_id,
                         imported_path: import_info.imported_path.clone(),
-                        resolved_file_id: target_file_id,
-                        import_type: ImportType::Internal,
+                        resolved_file_id,
+                        import_type: import_info.import_type,
                         line_number: import_info.line_number,
                         imported_symbols: import_info.imported_symbols.clone(),
                     });
