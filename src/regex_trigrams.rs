@@ -326,6 +326,13 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_literal_sequences_word_boundary() {
+        // \b is word boundary, not literal
+        let sequences = extract_literal_sequences("\\bListUsersController\\b");
+        assert_eq!(sequences, vec!["ListUsersController"]);
+    }
+
+    #[test]
     fn test_extract_trigrams_simple_literal() {
         let trigrams = extract_trigrams_from_regex("extract");
         // "extract" has 5 trigrams: "ext", "xtr", "tra", "rac", "act"
