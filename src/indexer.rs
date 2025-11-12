@@ -587,6 +587,25 @@ impl Indexer {
                 log::info!("Found Java package: {}", prefix);
             }
 
+            // Find and parse pyproject.toml/setup.py/setup.cfg for Python projects
+            let python_package_prefix = crate::parsers::python::find_python_package_name(root);
+            if let Some(ref prefix) = python_package_prefix {
+                log::info!("Found Python package: {}", prefix);
+            }
+
+            // Find and parse *.gemspec files for Ruby projects
+            let ruby_gem_names = crate::parsers::ruby::find_ruby_gem_names(root);
+            if !ruby_gem_names.is_empty() {
+                log::info!("Found Ruby gems: {}", ruby_gem_names.join(", "));
+            }
+
+            // Find and parse build.gradle/pom.xml for Kotlin projects
+            // (reuses Java's find_java_package_name since Kotlin uses same build systems)
+            let kotlin_package_prefix = crate::parsers::java::find_java_package_name(root);
+            if let Some(ref prefix) = kotlin_package_prefix {
+                log::info!("Found Kotlin package: {}", prefix);
+            }
+
             // Create dependency index to resolve paths and insert dependencies
             let cache_for_deps = CacheManager::new(root);
             let dep_index = DependencyIndex::new(cache_for_deps);
@@ -621,6 +640,30 @@ impl Indexer {
                         import_info.import_type = crate::parsers::java::reclassify_java_import(
                             &import_info.imported_path,
                             java_package_prefix.as_deref(),
+                        );
+                    }
+
+                    // Reclassify Python imports using package prefix (if Python project)
+                    if file_path.ends_with(".py") {
+                        import_info.import_type = crate::parsers::python::reclassify_python_import(
+                            &import_info.imported_path,
+                            python_package_prefix.as_deref(),
+                        );
+                    }
+
+                    // Reclassify Ruby imports using gem names (if Ruby project)
+                    if file_path.ends_with(".rb") || file_path.ends_with(".rake") || file_path.ends_with(".gemspec") {
+                        import_info.import_type = crate::parsers::ruby::reclassify_ruby_import(
+                            &import_info.imported_path,
+                            &ruby_gem_names,
+                        );
+                    }
+
+                    // Reclassify Kotlin imports using package prefix (if Kotlin project)
+                    if file_path.ends_with(".kt") || file_path.ends_with(".kts") {
+                        import_info.import_type = crate::parsers::kotlin::reclassify_kotlin_import(
+                            &import_info.imported_path,
+                            kotlin_package_prefix.as_deref(),
                         );
                     }
 

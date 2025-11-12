@@ -976,26 +976,75 @@ impl DependencyExtractor for KotlinDependencyExtractor {
             .parse(source, None)
             .context("Failed to parse Kotlin source")?;
 
-        // Simple text-based extraction as fallback
-        // Parse import statements line by line
+        let root_node = tree.root_node();
+
         let mut imports = Vec::new();
-        for (line_idx, line) in source.lines().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("import ") {
-                if let Some(path) = extract_import_path_from_text(trimmed) {
-                    let import_type = classify_kotlin_import(&path);
-                    let line_number = line_idx + 1;
-                    imports.push(ImportInfo {
-                        imported_path: path,
-                        line_number,
-                        import_type,
-                        imported_symbols: None,
-                    });
-                }
-            }
-        }
+
+        // Extract import statements using tree-sitter
+        imports.extend(extract_kotlin_imports(source, &root_node)?);
 
         Ok(imports)
+    }
+}
+
+/// Extract Kotlin import statements
+/// Uses improved text parsing since tree-sitter-kotlin-ng has non-standard node types
+fn extract_kotlin_imports(
+    source: &str,
+    _root: &tree_sitter::Node,
+) -> Result<Vec<ImportInfo>> {
+    let mut imports = Vec::new();
+
+    // Parse import statements line by line (improved from previous version)
+    for (line_idx, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+
+        // Check if line starts with "import " and isn't a comment
+        if trimmed.starts_with("import ") && !trimmed.starts_with("//") {
+            if let Some(import_path) = extract_import_path_from_header(trimmed) {
+                let import_type = classify_kotlin_import(&import_path);
+                let line_number = line_idx + 1;
+
+                imports.push(ImportInfo {
+                    imported_path: import_path,
+                    line_number,
+                    import_type,
+                    imported_symbols: None,
+                });
+            }
+        }
+    }
+
+    Ok(imports)
+}
+
+/// Extract import path from import_header text
+/// Examples:
+///   "import java.util.List" -> "java.util.List"
+///   "import kotlinx.coroutines.*" -> "kotlinx.coroutines"
+///   "import com.example.Foo as Bar" -> "com.example.Foo"
+fn extract_import_path_from_header(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+
+    // Remove "import" keyword
+    let after_import = trimmed.strip_prefix("import")?;
+    let after_import = after_import.trim();
+
+    // Find the end of the import path (before 'as' or wildcard)
+    let end_pos = after_import
+        .find(" as ")
+        .or_else(|| after_import.find(".*"))
+        .unwrap_or(after_import.len());
+
+    let path = after_import[..end_pos].trim();
+
+    // Remove trailing wildcard if present
+    let path = path.trim_end_matches(".*");
+
+    if path.is_empty() {
+        None
+    } else {
+        Some(path.to_string())
     }
 }
 
@@ -1028,8 +1077,28 @@ fn extract_import_path_from_text(text: &str) -> Option<String> {
     }
 }
 
+/// Reclassify a Kotlin import using the project's package prefix
+/// Similar to reclassify_go_import() and reclassify_java_import()
+pub fn reclassify_kotlin_import(
+    import_path: &str,
+    package_prefix: Option<&str>,
+) -> ImportType {
+    classify_kotlin_import_impl(import_path, package_prefix)
+}
+
 /// Classify Kotlin imports into Internal/External/Stdlib
 fn classify_kotlin_import(import_path: &str) -> ImportType {
+    classify_kotlin_import_impl(import_path, None)
+}
+
+fn classify_kotlin_import_impl(import_path: &str, package_prefix: Option<&str>) -> ImportType {
+    // First check if this is an internal import (matches project package)
+    if let Some(prefix) = package_prefix {
+        if import_path.starts_with(prefix) {
+            return ImportType::Internal;
+        }
+    }
+
     // Java standard library
     if import_path.starts_with("java.") || import_path.starts_with("javax.") {
         return ImportType::Stdlib;

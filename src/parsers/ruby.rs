@@ -639,14 +639,113 @@ impl DependencyExtractor for RubyDependencyExtractor {
     }
 }
 
-/// Classify Ruby imports into Internal/External/Stdlib
-fn classify_ruby_import(path: &str, method: &str) -> ImportType {
-    // require_relative is always internal (relative to current file)
-    if method == "require_relative" {
+/// Find all Ruby gem names from gemspec files in the project
+/// Searches recursively up to 3 levels deep (handles monorepos like Rails)
+pub fn find_ruby_gem_names(root: &std::path::Path) -> Vec<String> {
+    use walkdir::WalkDir;
+
+    let mut gem_names = Vec::new();
+
+    // Search for *.gemspec files
+    for entry in WalkDir::new(root).max_depth(3).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) == Some("gemspec") {
+            if let Some(name) = parse_gemspec_name(path) {
+                gem_names.push(name);
+            }
+        }
+    }
+
+    gem_names
+}
+
+/// Parse a gemspec file to extract the gem name
+fn parse_gemspec_name(gemspec_path: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(gemspec_path).ok()?;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Match: s.name = "activerecord"
+        // Match: spec.name = "activerecord"
+        if (trimmed.starts_with("s.name") || trimmed.starts_with("spec.name"))
+            && trimmed.contains('=')
+        {
+            // Extract quoted value after =
+            if let Some(equals_pos) = trimmed.find('=') {
+                let after_equals = &trimmed[equals_pos + 1..].trim();
+
+                // Handle both "name" and 'name'
+                for quote in ['"', '\''] {
+                    if let Some(start) = after_equals.find(quote) {
+                        if let Some(end) = after_equals[start + 1..].find(quote) {
+                            let name = &after_equals[start + 1..start + 1 + end];
+                            return Some(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Convert a gem name to all possible require path variants
+/// Handles hyphen/underscore conversions: "active-record" → ["active-record", "active_record"]
+fn gem_name_to_require_paths(gem_name: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+
+    // 1. Exact match
+    paths.push(gem_name.to_string());
+
+    // 2. Convert hyphens to underscores
+    if gem_name.contains('-') {
+        paths.push(gem_name.replace('-', "_"));
+    }
+
+    // 3. Convert underscores to hyphens
+    if gem_name.contains('_') {
+        paths.push(gem_name.replace('_', "-"));
+    }
+
+    paths
+}
+
+/// Reclassify a Ruby import using the project's gem names
+/// Similar to reclassify_go_import() and reclassify_java_import()
+pub fn reclassify_ruby_import(
+    import_path: &str,
+    gem_names: &[String],
+) -> ImportType {
+    // require_relative is always internal
+    if import_path.starts_with("./") || import_path.starts_with("../") {
         return ImportType::Internal;
     }
 
-    // Ruby standard library gems
+    // Extract first component: "active_record/base" → "active_record"
+    let first_component = import_path.split('/').next().unwrap_or(import_path);
+
+    // Check if matches ANY gem name variant
+    for gem_name in gem_names {
+        for variant in gem_name_to_require_paths(gem_name) {
+            if first_component == variant {
+                return ImportType::Internal;
+            }
+        }
+    }
+
+    // Check stdlib
+    if is_ruby_stdlib(import_path) {
+        return ImportType::Stdlib;
+    }
+
+    // Default to external
+    ImportType::External
+}
+
+/// Check if a require path is Ruby stdlib
+fn is_ruby_stdlib(path: &str) -> bool {
     let stdlib_prefixes = [
         "json", "csv", "yaml", "uri", "net/", "open-uri", "openssl",
         "digest", "base64", "securerandom", "time", "date", "set",
@@ -659,31 +758,23 @@ fn classify_ruby_import(path: &str, method: &str) -> ImportType {
 
     for prefix in &stdlib_prefixes {
         if path == *prefix || path.starts_with(&format!("{}/", prefix)) {
-            return ImportType::Stdlib;
+            return true;
         }
     }
 
-    // Common third-party gems
-    let known_external = [
-        "rails", "activerecord", "activemodel", "activesupport", "actionpack",
-        "actionview", "actioncable", "activejob", "actionmailer", "actiontext",
-        "activestorage", "railties", "sinatra", "rack", "puma", "sidekiq",
-        "resque", "redis", "pg", "mysql2", "sqlite3", "mongoid", "sequel",
-        "devise", "cancancan", "pundit", "doorkeeper", "jwt", "bcrypt",
-        "faker", "factory_bot", "rspec", "minitest", "capybara", "webmock",
-        "vcr", "simplecov", "rubocop", "pry", "byebug", "better_errors",
-        "binding_of_caller", "awesome_print", "nokogiri", "httparty", "faraday",
-        "rest-client", "typhoeus", "grape", "jbuilder", "oj", "yajl",
-        "kaminari", "will_paginate", "draper", "simple_form", "formtastic",
-        "carrierwave", "paperclip", "shrine", "aws-sdk", "fog", "stripe",
-        "omniauth", "warden", "rack-cors", "dotenv", "figaro", "config",
-        "whenever", "clockwork", "delayed_job", "que", "sucker_punch",
-    ];
+    false
+}
 
-    for gem in &known_external {
-        if path == *gem || path.starts_with(&format!("{}/", gem)) {
-            return ImportType::External;
-        }
+/// Classify Ruby imports into Internal/External/Stdlib (legacy version without gem names)
+fn classify_ruby_import(path: &str, method: &str) -> ImportType {
+    // require_relative is always internal (relative to current file)
+    if method == "require_relative" {
+        return ImportType::Internal;
+    }
+
+    // Check stdlib
+    if is_ruby_stdlib(path) {
+        return ImportType::Stdlib;
     }
 
     // If it starts with a relative path indicator, it's internal

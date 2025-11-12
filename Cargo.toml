@@ -1,6 +1,6 @@
 [package]
 name = "reflex-search"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 authors = ["Reflex Contributors"]
 description = "A local-first, structure-aware code search engine for AI agents"
@@ -77,6 +77,9 @@ ignore = "0.4"
 
 # Glob pattern matching
 globset = "0.4"
+
+# Directory traversal
+walkdir = "2.5"
 
 # Date/time utilities
 chrono = "0.4"
