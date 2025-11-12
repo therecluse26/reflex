@@ -54,6 +54,8 @@ pub struct QueryFilter {
     pub force: bool,
     /// Suppress warning/info output (for --json mode to ensure pure JSON output)
     pub suppress_output: bool,
+    /// Include dependency information in results
+    pub include_dependencies: bool,
 }
 
 impl Default for QueryFilter {
@@ -76,6 +78,7 @@ impl Default for QueryFilter {
             offset: None,
             force: false,  // Default: enable broad query detection
             suppress_output: false,  // Default: show warnings/info
+            include_dependencies: false,  // Default: don't load dependencies for performance
         }
     }
 }
@@ -89,6 +92,56 @@ impl QueryEngine {
     /// Create a new query engine with the given cache manager
     pub fn new(cache: CacheManager) -> Self {
         Self { cache }
+    }
+
+    /// Load dependencies for search results if requested
+    fn load_dependencies(&self, results: &mut [SearchResult], include_deps: bool) -> Result<()> {
+        if !include_deps || results.is_empty() {
+            return Ok(());
+        }
+
+        log::debug!("Loading dependencies for {} results", results.len());
+
+        // Create dependency index
+        // Note: We need to pass the workspace root, not the cache directory
+        // The cache path is .reflex/, so its parent is the workspace root (.)
+        let workspace_root = self.cache.path().parent()
+            .ok_or_else(|| anyhow::anyhow!("Cache path has no parent"))?;
+        let cache_for_deps = CacheManager::new(workspace_root);
+        let dep_index = crate::dependency::DependencyIndex::new(cache_for_deps);
+
+        // Load dependencies for each result
+        for result in results {
+            // Normalize path: strip leading "./" if present
+            let normalized_path = result.path.strip_prefix("./").unwrap_or(&result.path);
+
+            // Get file_id from database by path
+            match self.cache.get_file_id(normalized_path) {
+                Ok(Some(file_id)) => {
+                    log::debug!("Found file_id={} for path={}", file_id, result.path);
+                    // Get dependencies for this file
+                    match dep_index.get_dependencies_info(file_id) {
+                        Ok(dep_infos) => {
+                            log::debug!("Loaded {} dependencies for file_id={}", dep_infos.len(), file_id);
+                            if !dep_infos.is_empty() {
+                                result.dependencies = Some(dep_infos);
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to get dependencies for file_id={}: {}", file_id, e);
+                        }
+                    }
+                }
+                Ok(None) => {
+                    log::warn!("No file_id found for path: {}", result.path);
+                }
+                Err(e) => {
+                    log::warn!("Failed to get file_id for path {}: {}", result.path, e);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Execute a query and return matching results with index metadata
@@ -117,7 +170,10 @@ impl QueryEngine {
         let (status, can_trust_results, warning) = self.get_index_status()?;
 
         // Execute the search
-        let (results, total) = self.search_internal(pattern, filter.clone())?;
+        let (mut results, total) = self.search_internal(pattern, filter.clone())?;
+
+        // Load dependencies if requested
+        self.load_dependencies(&mut results, filter.include_dependencies)?;
 
         // Build pagination metadata
         use crate::models::PaginationInfo;
@@ -165,7 +221,11 @@ impl QueryEngine {
         self.check_index_freshness(&filter)?;
 
         // Execute the search (discard total count - legacy method doesn't use it)
-        let (results, _total_count) = self.search_internal(pattern, filter)?;
+        let (mut results, _total_count) = self.search_internal(pattern, filter.clone())?;
+
+        // Load dependencies if requested
+        self.load_dependencies(&mut results, filter.include_dependencies)?;
+
         Ok(results)
     }
 
@@ -769,6 +829,7 @@ impl QueryEngine {
                 symbol: None,
                 kind: SymbolKind::Unknown("ast_query".to_string()),
                 preview: String::new(),
+                dependencies: None,
             });
         }
 
@@ -880,6 +941,9 @@ impl QueryEngine {
         }
 
         log::info!("AST query returned {} results", results.len());
+
+        // Load dependencies if requested
+        self.load_dependencies(&mut results, filter.include_dependencies)?;
 
         Ok(results)
     }
@@ -1659,6 +1723,7 @@ impl QueryEngine {
                 symbol: None,
                 kind: SymbolKind::Unknown("keyword_query".to_string()),
                 preview: String::new(),
+                dependencies: None,
             });
         }
 
@@ -1794,6 +1859,7 @@ impl QueryEngine {
                             end_line: line_no,
                         },
                         preview: line.to_string(),
+                        dependencies: None,
                     });
                 }
 
@@ -1979,6 +2045,7 @@ impl QueryEngine {
                         end_line: line_no,
                     },
                     preview: line.to_string(),
+                    dependencies: None,
                 });
             }
         }

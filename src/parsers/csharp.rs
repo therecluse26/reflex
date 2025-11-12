@@ -1235,4 +1235,178 @@ public class LegacyClass
         // Should find Obsolete/ObsoleteAttribute at least 3 times (1 definition + 2 uses)
         assert!(obsolete_count >= 3);
     }
+
+    #[test]
+    fn test_extract_csharp_usings() {
+        let source = r#"
+            using System;
+            using System.Collections.Generic;
+            using System.Linq;
+            using Microsoft.AspNetCore.Mvc;
+
+            namespace MyApp.Controllers
+            {
+                public class HomeController : Controller
+                {
+                    public IActionResult Index()
+                    {
+                        return View();
+                    }
+                }
+            }
+        "#;
+
+        use crate::parsers::{DependencyExtractor, ImportInfo};
+
+        let deps = CSharpDependencyExtractor::extract_dependencies(source).unwrap();
+
+        assert_eq!(deps.len(), 4, "Should extract 4 using directives");
+        assert!(deps.iter().any(|d| d.imported_path == "System"));
+        assert!(deps.iter().any(|d| d.imported_path == "System.Collections.Generic"));
+        assert!(deps.iter().any(|d| d.imported_path == "System.Linq"));
+        assert!(deps.iter().any(|d| d.imported_path == "Microsoft.AspNetCore.Mvc"));
+
+        for dep in &deps {
+            assert!(matches!(dep.import_type, ImportType::Stdlib),
+                    "System and Microsoft namespaces should be classified as Stdlib");
+        }
+    }
+}
+
+// ============================================================================
+// Dependency Extraction
+// ============================================================================
+
+use crate::models::ImportType;
+use crate::parsers::{DependencyExtractor, ImportInfo};
+
+/// C# dependency extractor
+pub struct CSharpDependencyExtractor;
+
+impl DependencyExtractor for CSharpDependencyExtractor {
+    fn extract_dependencies(source: &str) -> Result<Vec<ImportInfo>> {
+        let mut parser = Parser::new();
+        let language = tree_sitter_c_sharp::LANGUAGE;
+
+        parser
+            .set_language(&language.into())
+            .context("Failed to set C# language")?;
+
+        let tree = parser
+            .parse(source, None)
+            .context("Failed to parse C# source")?;
+
+        let root_node = tree.root_node();
+
+        let mut imports = Vec::new();
+
+        // Extract using directives
+        imports.extend(extract_csharp_usings(source, &root_node)?);
+
+        Ok(imports)
+    }
+}
+
+/// Extract C# using directives
+fn extract_csharp_usings(
+    source: &str,
+    root: &tree_sitter::Node,
+) -> Result<Vec<ImportInfo>> {
+    let language = tree_sitter_c_sharp::LANGUAGE;
+
+    let query_str = r#"
+        (using_directive
+            [
+                (qualified_name) @using_path
+                (identifier) @using_path
+            ])
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create C# using query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut imports = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            if capture_name == "using_path" {
+                let path = capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                let import_type = classify_csharp_using(&path);
+                let line_number = capture.node.start_position().row + 1;
+
+                imports.push(ImportInfo {
+                    imported_path: path,
+                    import_type,
+                    line_number,
+                    imported_symbols: None, // C# imports entire namespace
+                });
+            }
+        }
+    }
+
+    Ok(imports)
+}
+
+/// Classify a C# using directive as internal, external, or stdlib
+fn classify_csharp_using(using_path: &str) -> ImportType {
+    // C# standard library namespaces (Microsoft-provided)
+    const CSHARP_STDLIB_NAMESPACES: &[&str] = &[
+        // Core system namespaces
+        "System", "System.Collections", "System.Collections.Generic", "System.Collections.Concurrent",
+        "System.Collections.Immutable", "System.Collections.ObjectModel", "System.Collections.Specialized",
+        "System.ComponentModel", "System.ComponentModel.DataAnnotations",
+        "System.Configuration", "System.Data", "System.Data.Common", "System.Data.SqlClient",
+        "System.Diagnostics", "System.Diagnostics.CodeAnalysis", "System.Diagnostics.Contracts",
+        "System.Drawing", "System.Globalization", "System.IO", "System.IO.Compression",
+        "System.IO.Pipes", "System.Linq", "System.Linq.Expressions", "System.Net",
+        "System.Net.Http", "System.Net.Mail", "System.Net.Sockets", "System.Numerics",
+        "System.Reflection", "System.Reflection.Emit", "System.Resources", "System.Runtime",
+        "System.Runtime.CompilerServices", "System.Runtime.InteropServices", "System.Runtime.Serialization",
+        "System.Security", "System.Security.Cryptography", "System.Security.Principal",
+        "System.Text", "System.Text.Json", "System.Text.RegularExpressions", "System.Threading",
+        "System.Threading.Tasks", "System.Timers", "System.Xml", "System.Xml.Linq",
+        "System.Xml.Serialization",
+
+        // ASP.NET namespaces
+        "Microsoft.AspNetCore", "Microsoft.AspNetCore.Builder", "Microsoft.AspNetCore.Hosting",
+        "Microsoft.AspNetCore.Http", "Microsoft.AspNetCore.Mvc", "Microsoft.AspNetCore.Routing",
+        "Microsoft.AspNetCore.Authentication", "Microsoft.AspNetCore.Authorization",
+
+        // Entity Framework
+        "Microsoft.EntityFrameworkCore", "Microsoft.EntityFrameworkCore.Design",
+        "Microsoft.EntityFrameworkCore.Migrations",
+
+        // Extensions
+        "Microsoft.Extensions.Configuration", "Microsoft.Extensions.DependencyInjection",
+        "Microsoft.Extensions.Hosting", "Microsoft.Extensions.Logging", "Microsoft.Extensions.Options",
+
+        // Windows-specific
+        "Microsoft.Win32", "System.Windows", "System.Windows.Forms", "System.Windows.Controls",
+        "System.Windows.Data", "System.Windows.Input", "System.Windows.Media",
+
+        // WPF
+        "System.Xaml",
+
+        // Older frameworks
+        "System.Web", "System.Web.Mvc", "System.Web.Http",
+    ];
+
+    // Check if it's a standard library namespace or starts with one
+    for stdlib_ns in CSHARP_STDLIB_NAMESPACES {
+        if using_path == *stdlib_ns || using_path.starts_with(&format!("{}.", stdlib_ns)) {
+            return ImportType::Stdlib;
+        }
+    }
+
+    // Internal: anything that doesn't match stdlib patterns
+    // In C#, project namespaces are typically named after the project/company
+    // External packages usually have their own top-level namespace (e.g., Newtonsoft.Json)
+    // We'll classify non-System/Microsoft namespaces as internal by default
+    // (This means third-party packages will initially appear as internal,
+    // but will be filtered out at indexing time if they're not in the project)
+    ImportType::Internal
 }

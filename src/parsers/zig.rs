@@ -14,6 +14,8 @@ use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
 use crate::models::{Language, SearchResult, Span, SymbolKind};
+use crate::parsers::{DependencyExtractor, ImportInfo};
+use crate::ImportType;
 
 /// Parse Zig source code and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -224,6 +226,71 @@ fn extract_preview(source: &str, span: &Span) -> String {
     let end_idx = (start_idx + 7).min(lines.len());
 
     lines[start_idx..end_idx].join("\n")
+}
+
+/// Zig dependency extractor
+pub struct ZigDependencyExtractor;
+
+impl DependencyExtractor for ZigDependencyExtractor {
+    fn extract_dependencies(source: &str) -> Result<Vec<ImportInfo>> {
+        // Zig uses @import("path") builtin for imports
+        // Use simple text-based extraction as fallback since tree-sitter query might not work
+        let mut imports = Vec::new();
+
+        for (line_idx, line) in source.lines().enumerate() {
+            // Look for @import("...") or @import('...')
+            if let Some(import_path) = extract_zig_import_from_line(line) {
+                let import_type = classify_zig_import(&import_path);
+                let line_number = line_idx + 1;
+
+                imports.push(ImportInfo {
+                    imported_path: import_path,
+                    line_number,
+                    import_type,
+                    imported_symbols: None,
+                });
+            }
+        }
+
+        Ok(imports)
+    }
+}
+
+/// Extract import path from a line containing @import("...")
+fn extract_zig_import_from_line(line: &str) -> Option<String> {
+    // Find @import( in the line
+    let import_start = line.find("@import(")?;
+    let after_import = &line[import_start + 8..]; // Skip "@import("
+
+    // Find the string content (either "..." or '...')
+    let first_char = after_import.trim_start().chars().next()?;
+    if first_char != '"' && first_char != '\'' {
+        return None;
+    }
+
+    let quote_char = first_char;
+    let after_quote = &after_import[after_import.find(quote_char)? + 1..];
+    let end_quote = after_quote.find(quote_char)?;
+    let path = &after_quote[..end_quote];
+
+    Some(path.to_string())
+}
+
+/// Classify Zig import as Internal, External, or Stdlib
+fn classify_zig_import(import_path: &str) -> ImportType {
+    // Zig standard library imports
+    if import_path == "std" || import_path == "builtin" || import_path == "root" {
+        return ImportType::Stdlib;
+    }
+
+    // Relative imports (start with ./ or ../)
+    if import_path.starts_with("./") || import_path.starts_with("../") {
+        return ImportType::Internal;
+    }
+
+    // External package imports (anything else that's not stdlib)
+    // Zig package manager uses package names directly
+    ImportType::External
 }
 
 #[cfg(test)]
@@ -479,5 +546,36 @@ test "variable types" {
         for variable in &variables {
             // Removed: scope field no longer exists: assert_eq!(variable.scope, None);
         }
+    }
+
+    #[test]
+    fn test_extract_zig_imports() {
+        let source = r#"
+const std = @import("std");
+const builtin = @import("builtin");
+const utils = @import("./utils.zig");
+const helpers = @import("../helpers.zig");
+const zap = @import("zap");
+
+pub fn main() !void {
+    const stdout = std.io.getStdOut().writer();
+    try stdout.print("Hello, World!\n", .{});
+}
+        "#;
+
+        let deps = ZigDependencyExtractor::extract_dependencies(source).unwrap();
+
+        assert!(deps.len() >= 4, "Should extract at least 4 imports, got {}", deps.len());
+
+        // Stdlib imports
+        assert!(deps.iter().any(|d| d.imported_path == "std" && matches!(d.import_type, ImportType::Stdlib)));
+        assert!(deps.iter().any(|d| d.imported_path == "builtin" && matches!(d.import_type, ImportType::Stdlib)));
+
+        // Internal imports (relative paths)
+        assert!(deps.iter().any(|d| d.imported_path == "./utils.zig" && matches!(d.import_type, ImportType::Internal)));
+        assert!(deps.iter().any(|d| d.imported_path == "../helpers.zig" && matches!(d.import_type, ImportType::Internal)));
+
+        // External package import
+        assert!(deps.iter().any(|d| d.imported_path == "zap" && matches!(d.import_type, ImportType::External)));
     }
 }

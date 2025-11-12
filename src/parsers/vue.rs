@@ -17,6 +17,8 @@ use anyhow::{Context, Result};
 use crate::models::{Language, SearchResult, Span, SymbolKind};
 use tree_sitter::{Parser, Query, QueryCursor};
 use streaming_iterator::StreamingIterator;
+use crate::parsers::{DependencyExtractor, ImportInfo};
+use crate::parsers::typescript::TypeScriptDependencyExtractor;
 
 /// Parse Vue SFC and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -338,6 +340,37 @@ fn extract_preview(source: &str, span: &Span, line_offset: usize) -> String {
     lines[start_idx..end_idx].join("\n")
 }
 
+/// Vue dependency extractor
+pub struct VueDependencyExtractor;
+
+impl DependencyExtractor for VueDependencyExtractor {
+    fn extract_dependencies(source: &str) -> Result<Vec<ImportInfo>> {
+        // Extract script blocks from Vue SFC
+        let script_blocks = extract_script_blocks(source)?;
+
+        let mut all_imports = Vec::new();
+
+        // Extract dependencies from each script block
+        for (script_source, line_offset) in script_blocks {
+            // Use TypeScript dependency extractor for the script content
+            match TypeScriptDependencyExtractor::extract_dependencies(&script_source) {
+                Ok(mut imports) => {
+                    // Adjust line numbers to account for the script block offset in the Vue file
+                    for import in &mut imports {
+                        import.line_number += line_offset;
+                    }
+                    all_imports.extend(imports);
+                }
+                Err(e) => {
+                    log::warn!("Failed to extract dependencies from Vue script block: {}", e);
+                }
+            }
+        }
+
+        Ok(all_imports)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,6 +503,47 @@ function process(value) {
         }
         for constant in constants {
             // Removed: scope field no longer exists: assert_eq!(constant.scope, None);
+        }
+    }
+
+    #[test]
+    fn test_extract_vue_imports() {
+        let source = r#"
+<template>
+  <div>{{ count }}</div>
+</template>
+
+<script setup>
+import { ref, computed } from 'vue'
+import { useRouter } from 'vue-router'
+import axios from 'axios'
+import MyComponent from './MyComponent.vue'
+import { helper } from '../utils/helpers'
+
+const count = ref(0)
+const router = useRouter()
+</script>
+
+<style scoped>
+div { color: blue; }
+</style>
+"#;
+
+        let deps = VueDependencyExtractor::extract_dependencies(source).unwrap();
+
+        assert!(deps.len() >= 5, "Should extract at least 5 imports, got {}", deps.len());
+
+        // Check for specific imports
+        assert!(deps.iter().any(|d| d.imported_path == "vue"));
+        assert!(deps.iter().any(|d| d.imported_path == "vue-router"));
+        assert!(deps.iter().any(|d| d.imported_path == "axios"));
+        assert!(deps.iter().any(|d| d.imported_path == "./MyComponent.vue"));
+        assert!(deps.iter().any(|d| d.imported_path == "../utils/helpers"));
+
+        // Verify line numbers are adjusted for script block offset
+        // Script block starts around line 6, so imports should have line numbers >= 7
+        for dep in &deps {
+            assert!(dep.line_number >= 7, "Import line number should be >= 7, got {}", dep.line_number);
         }
     }
 }

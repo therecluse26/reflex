@@ -17,6 +17,8 @@ use anyhow::{Context, Result};
 use crate::models::{Language, SearchResult, Span, SymbolKind};
 use tree_sitter::{Parser, Query, QueryCursor};
 use streaming_iterator::StreamingIterator;
+use crate::parsers::{DependencyExtractor, ImportInfo};
+use crate::parsers::typescript::TypeScriptDependencyExtractor;
 
 /// Parse Svelte component and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -263,6 +265,7 @@ fn extract_variables(
                     symbol: Some(name),
                     span,
                     preview,
+                    dependencies: None,
                 });
             }
         }
@@ -329,6 +332,7 @@ fn extract_reactive_declarations(
                     symbol: Some(name),
                     span,
                     preview,
+                    dependencies: None,
                 });
             }
         }
@@ -375,6 +379,7 @@ fn extract_symbols(
                 symbol: Some(name),
                 span,
                 preview,
+                dependencies: None,
             });
         }
     }
@@ -404,6 +409,37 @@ fn extract_preview(source: &str, span: &Span, line_offset: usize) -> String {
     let end_idx = (start_idx + 7).min(lines.len());
 
     lines[start_idx..end_idx].join("\n")
+}
+
+/// Svelte dependency extractor
+pub struct SvelteDependencyExtractor;
+
+impl DependencyExtractor for SvelteDependencyExtractor {
+    fn extract_dependencies(source: &str) -> Result<Vec<ImportInfo>> {
+        // Extract script blocks from Svelte component
+        let script_blocks = extract_script_blocks(source)?;
+
+        let mut all_imports = Vec::new();
+
+        // Extract dependencies from each script block
+        for (script_source, line_offset, _is_module) in script_blocks {
+            // Use TypeScript dependency extractor for the script content
+            match TypeScriptDependencyExtractor::extract_dependencies(&script_source) {
+                Ok(mut imports) => {
+                    // Adjust line numbers to account for the script block offset in the Svelte file
+                    for import in &mut imports {
+                        import.line_number += line_offset;
+                    }
+                    all_imports.extend(imports);
+                }
+                Err(e) => {
+                    log::warn!("Failed to extract dependencies from Svelte script block: {}", e);
+                }
+            }
+        }
+
+        Ok(all_imports)
+    }
 }
 
 #[cfg(test)]
@@ -546,5 +582,45 @@ mod tests {
         // Check that const declarations are captured as constants
         assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("API_KEY")));
         assert!(constants.iter().any(|c| c.symbol.as_deref() == Some("temp")));
+    }
+
+    #[test]
+    fn test_extract_svelte_imports() {
+        let source = r#"
+<script>
+  import { onMount } from 'svelte';
+  import { writable } from 'svelte/store';
+  import axios from 'axios';
+  import MyComponent from './MyComponent.svelte';
+  import { helper } from '../utils/helpers';
+
+  let count = writable(0);
+
+  onMount(() => {
+    console.log('Component mounted');
+  });
+</script>
+
+<div>
+  <MyComponent />
+</div>
+"#;
+
+        let deps = SvelteDependencyExtractor::extract_dependencies(source).unwrap();
+
+        assert!(deps.len() >= 5, "Should extract at least 5 imports, got {}", deps.len());
+
+        // Check for specific imports
+        assert!(deps.iter().any(|d| d.imported_path == "svelte"));
+        assert!(deps.iter().any(|d| d.imported_path == "svelte/store"));
+        assert!(deps.iter().any(|d| d.imported_path == "axios"));
+        assert!(deps.iter().any(|d| d.imported_path == "./MyComponent.svelte"));
+        assert!(deps.iter().any(|d| d.imported_path == "../utils/helpers"));
+
+        // Verify line numbers are adjusted for script block offset
+        // Script block starts around line 2, so imports should have line numbers >= 3
+        for dep in &deps {
+            assert!(dep.line_number >= 3, "Import line number should be >= 3, got {}", dep.line_number);
+        }
     }
 }

@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
 use crate::models::{Language, SearchResult, Span, SymbolKind};
+use crate::parsers::{DependencyExtractor, ImportInfo};
 
 /// Parse Rust source code and extract symbols
 pub fn parse(path: &str, source: &str) -> Result<Vec<SearchResult>> {
@@ -472,6 +473,257 @@ fn extract_preview(source: &str, span: &Span) -> String {
     lines[start_idx..end_idx].join("\n")
 }
 
+/// Rust dependency extractor implementation
+pub struct RustDependencyExtractor;
+
+impl DependencyExtractor for RustDependencyExtractor {
+    fn extract_dependencies(source: &str) -> Result<Vec<ImportInfo>> {
+        let mut parser = Parser::new();
+        let language = tree_sitter_rust::LANGUAGE;
+
+        parser
+            .set_language(&language.into())
+            .context("Failed to set Rust language")?;
+
+        let tree = parser
+            .parse(source, None)
+            .context("Failed to parse Rust source")?;
+
+        let root_node = tree.root_node();
+
+        let mut imports = Vec::new();
+
+        // Extract use declarations
+        imports.extend(extract_use_declarations(source, &root_node)?);
+
+        // Extract mod items (module declarations)
+        imports.extend(extract_mod_items(source, &root_node)?);
+
+        // Extract extern crate declarations
+        imports.extend(extract_extern_crates(source, &root_node)?);
+
+        Ok(imports)
+    }
+}
+
+/// Extract use declarations (use std::collections::HashMap)
+fn extract_use_declarations(source: &str, root: &tree_sitter::Node) -> Result<Vec<ImportInfo>> {
+    let language = tree_sitter_rust::LANGUAGE;
+    let query_str = r#"
+        (use_declaration) @use
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create use declaration query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut imports = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        for capture in match_.captures {
+            let node = capture.node;
+            let text = node.utf8_text(source.as_bytes()).unwrap_or("");
+            let line_number = node.start_position().row + 1;
+
+            // Parse the use declaration text
+            let path_info = parse_rust_use_declaration(text);
+
+            for (path, symbols) in path_info {
+                let import_type = classify_rust_import(&path);
+
+                imports.push(ImportInfo {
+                    imported_path: path,
+                    import_type,
+                    line_number,
+                    imported_symbols: symbols,
+                });
+            }
+        }
+    }
+
+    Ok(imports)
+}
+
+/// Extract mod items (mod parser;)
+fn extract_mod_items(source: &str, root: &tree_sitter::Node) -> Result<Vec<ImportInfo>> {
+    let language = tree_sitter_rust::LANGUAGE;
+    let query_str = r#"
+        (mod_item
+            name: (identifier) @name) @mod
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create mod item query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut imports = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut name = None;
+        let mut mod_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "name" => {
+                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                }
+                "mod" => {
+                    mod_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(name), Some(node)) = (name, mod_node) {
+            // Check if this is an external module declaration (no body)
+            let has_body = node.child_by_field_name("body").is_some();
+
+            if !has_body {
+                // This is an external module reference (mod parser;)
+                let line_number = node.start_position().row + 1;
+
+                imports.push(ImportInfo {
+                    imported_path: name,
+                    import_type: crate::models::ImportType::Internal,
+                    line_number,
+                    imported_symbols: None,
+                });
+            }
+        }
+    }
+
+    Ok(imports)
+}
+
+/// Extract extern crate declarations (extern crate serde;)
+fn extract_extern_crates(source: &str, root: &tree_sitter::Node) -> Result<Vec<ImportInfo>> {
+    let language = tree_sitter_rust::LANGUAGE;
+    let query_str = r#"
+        (extern_crate_declaration
+            name: (identifier) @name) @extern
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create extern crate query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut imports = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut name = None;
+        let mut extern_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "name" => {
+                    name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                }
+                "extern" => {
+                    extern_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(name), Some(node)) = (name, extern_node) {
+            let line_number = node.start_position().row + 1;
+            let import_type = classify_rust_import(&name);
+
+            imports.push(ImportInfo {
+                imported_path: name,
+                import_type,
+                line_number,
+                imported_symbols: None,
+            });
+        }
+    }
+
+    Ok(imports)
+}
+
+/// Classify a Rust import path as Internal, External, or Stdlib
+fn classify_rust_import(path: &str) -> crate::models::ImportType {
+    use crate::models::ImportType;
+
+    if path.starts_with("std::") || path.starts_with("core::") || path.starts_with("alloc::") {
+        ImportType::Stdlib
+    } else if path.starts_with("crate::") || path.starts_with("super::") || path.starts_with("self::") {
+        ImportType::Internal
+    } else {
+        // External crate
+        ImportType::External
+    }
+}
+
+/// Parse a Rust use declaration and extract path(s) and symbols
+///
+/// Handles:
+/// - Simple: use std::collections::HashMap;
+/// - With symbols: use std::collections::{HashMap, HashSet};
+/// - Nested: use std::{io, fs};
+/// - With aliases: use std::io::Result as IoResult;
+/// - Glob: use std::collections::*;
+fn parse_rust_use_declaration(text: &str) -> Vec<(String, Option<Vec<String>>)> {
+    // Remove visibility modifiers and keywords
+    let text = text.trim()
+        .strip_prefix("pub(crate)").unwrap_or(text)
+        .trim()
+        .strip_prefix("pub(super)").unwrap_or(text)
+        .trim()
+        .strip_prefix("pub").unwrap_or(text)
+        .trim()
+        .strip_prefix("use").unwrap_or(text)
+        .trim()
+        .strip_suffix(";").unwrap_or(text)
+        .trim();
+
+    // Handle different patterns
+    if text.contains('{') {
+        // Has braces - extract base path and symbols
+        if let Some(idx) = text.find('{') {
+            let base_path = text[..idx].trim_end_matches("::").to_string();
+
+            if let Some(end) = text.find('}') {
+                let symbols_str = &text[idx + 1..end];
+                let symbols: Vec<String> = symbols_str
+                    .split(',')
+                    .map(|s| {
+                        // Handle aliases like "HashMap as Map" - extract the imported name
+                        let trimmed = s.trim();
+                        if let Some(as_idx) = trimmed.find(" as ") {
+                            trimmed[..as_idx].trim().to_string()
+                        } else {
+                            trimmed.to_string()
+                        }
+                    })
+                    .filter(|s| !s.is_empty() && s != "*")
+                    .collect();
+
+                if !symbols.is_empty() {
+                    return vec![(base_path, Some(symbols))];
+                }
+            }
+        }
+    }
+
+    // Simple path (possibly with alias)
+    let path = if let Some(as_idx) = text.find(" as ") {
+        text[..as_idx].trim().to_string()
+    } else {
+        text.to_string()
+    };
+
+    vec![(path, None)]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -774,5 +1026,117 @@ mod tests {
 
         // Should find: test (3x), should_panic (1x), derive (1x), cfg (1x) = 6 total
         assert_eq!(attributes.len(), 6);
+    }
+
+    #[test]
+    fn test_extract_dependencies_use_declarations() {
+        let source = r#"
+            use std::collections::HashMap;
+            use crate::models::{Language, SearchResult};
+            use super::utils;
+            use anyhow::Result;
+        "#;
+
+        let deps = RustDependencyExtractor::extract_dependencies(source).unwrap();
+
+        // Should find 4 imports
+        assert_eq!(deps.len(), 4);
+
+        // Check std import
+        let std_import = deps.iter().find(|d| d.imported_path == "std::collections::HashMap").unwrap();
+        assert!(matches!(std_import.import_type, crate::models::ImportType::Stdlib));
+
+        // Check crate import with symbols
+        let crate_import = deps.iter().find(|d| d.imported_path == "crate::models").unwrap();
+        assert!(matches!(crate_import.import_type, crate::models::ImportType::Internal));
+        assert!(crate_import.imported_symbols.is_some());
+        let symbols = crate_import.imported_symbols.as_ref().unwrap();
+        assert_eq!(symbols.len(), 2);
+        assert!(symbols.contains(&"Language".to_string()));
+        assert!(symbols.contains(&"SearchResult".to_string()));
+
+        // Check super import
+        let super_import = deps.iter().find(|d| d.imported_path == "super::utils").unwrap();
+        assert!(matches!(super_import.import_type, crate::models::ImportType::Internal));
+
+        // Check external import
+        let external_import = deps.iter().find(|d| d.imported_path == "anyhow::Result").unwrap();
+        assert!(matches!(external_import.import_type, crate::models::ImportType::External));
+    }
+
+    #[test]
+    fn test_extract_dependencies_mod_declarations() {
+        let source = r#"
+            mod parser;
+            mod utils;
+
+            mod inline {
+                fn test() {}
+            }
+        "#;
+
+        let deps = RustDependencyExtractor::extract_dependencies(source).unwrap();
+
+        // Should find 2 external mod declarations (not the inline one)
+        assert_eq!(deps.len(), 2);
+        assert!(deps.iter().any(|d| d.imported_path == "parser"));
+        assert!(deps.iter().any(|d| d.imported_path == "utils"));
+        assert!(deps.iter().all(|d| matches!(d.import_type, crate::models::ImportType::Internal)));
+    }
+
+    #[test]
+    fn test_extract_dependencies_extern_crate() {
+        let source = r#"
+            extern crate serde;
+            extern crate serde_json;
+        "#;
+
+        let deps = RustDependencyExtractor::extract_dependencies(source).unwrap();
+
+        // Should find 2 extern crate declarations
+        assert_eq!(deps.len(), 2);
+        assert!(deps.iter().any(|d| d.imported_path == "serde"));
+        assert!(deps.iter().any(|d| d.imported_path == "serde_json"));
+        assert!(deps.iter().all(|d| matches!(d.import_type, crate::models::ImportType::External)));
+    }
+
+    #[test]
+    fn test_parse_use_with_aliases() {
+        let source = r#"
+            use std::io::Result as IoResult;
+            use std::collections::{HashMap as Map, HashSet};
+        "#;
+
+        let deps = RustDependencyExtractor::extract_dependencies(source).unwrap();
+
+        // Check alias handling - should extract the original name
+        let io_import = deps.iter().find(|d| d.imported_path == "std::io::Result").unwrap();
+        assert!(matches!(io_import.import_type, crate::models::ImportType::Stdlib));
+
+        let collections_import = deps.iter().find(|d| d.imported_path == "std::collections").unwrap();
+        let symbols = collections_import.imported_symbols.as_ref().unwrap();
+        assert_eq!(symbols.len(), 2);
+        assert!(symbols.contains(&"HashMap".to_string()));
+        assert!(symbols.contains(&"HashSet".to_string()));
+    }
+
+    #[test]
+    fn test_classify_rust_imports() {
+        use crate::models::ImportType;
+
+        // Stdlib
+        assert!(matches!(classify_rust_import("std::collections::HashMap"), ImportType::Stdlib));
+        assert!(matches!(classify_rust_import("core::ptr"), ImportType::Stdlib));
+        assert!(matches!(classify_rust_import("alloc::vec::Vec"), ImportType::Stdlib));
+
+        // Internal
+        assert!(matches!(classify_rust_import("crate::models::Language"), ImportType::Internal));
+        assert!(matches!(classify_rust_import("super::utils"), ImportType::Internal));
+        assert!(matches!(classify_rust_import("self::helper"), ImportType::Internal));
+
+        // External
+        assert!(matches!(classify_rust_import("serde::Serialize"), ImportType::External));
+        assert!(matches!(classify_rust_import("anyhow::Result"), ImportType::External));
+        assert!(matches!(classify_rust_import("tokio::runtime"), ImportType::External));
     }
 }

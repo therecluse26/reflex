@@ -181,6 +181,7 @@ mod tests {
             symbol: Some("test".to_string()),
             span: Span { start_line: line, end_line: line },
             preview: "test".to_string(),
+            dependencies: None,
         }
     }
 

@@ -455,6 +455,404 @@ fn extract_preview(source: &str, span: &Span) -> String {
     lines[start_idx..end_idx].join("\n")
 }
 
+// ============================================================================
+// Dependency Extraction
+// ============================================================================
+
+use crate::models::ImportType;
+use crate::parsers::{DependencyExtractor, ImportInfo};
+
+/// Python dependency extractor
+pub struct PythonDependencyExtractor;
+
+impl DependencyExtractor for PythonDependencyExtractor {
+    fn extract_dependencies(source: &str) -> Result<Vec<ImportInfo>> {
+        let mut parser = Parser::new();
+        let language = tree_sitter_python::LANGUAGE;
+
+        parser
+            .set_language(&language.into())
+            .context("Failed to set Python language")?;
+
+        let tree = parser
+            .parse(source, None)
+            .context("Failed to parse Python source")?;
+
+        let root_node = tree.root_node();
+
+        let mut imports = Vec::new();
+
+        // Extract import statements (import os, sys)
+        imports.extend(extract_import_statements(source, &root_node)?);
+
+        // Extract from-import statements (from os import path)
+        imports.extend(extract_from_imports(source, &root_node)?);
+
+        Ok(imports)
+    }
+}
+
+/// Extract regular import statements: import os, import sys
+fn extract_import_statements(
+    source: &str,
+    root: &tree_sitter::Node,
+) -> Result<Vec<ImportInfo>> {
+    let language = tree_sitter_python::LANGUAGE;
+
+    let query_str = r#"
+        (import_statement
+            name: (dotted_name) @import_path) @import
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create import statement query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut imports = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut import_path = None;
+        let mut import_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "import_path" => {
+                    import_path = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                }
+                "import" => {
+                    import_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(path), Some(node)) = (import_path, import_node) {
+            let import_type = classify_python_import(&path);
+            let line_number = node.start_position().row + 1;
+
+            imports.push(ImportInfo {
+                imported_path: path,
+                import_type,
+                line_number,
+                imported_symbols: None,
+            });
+        }
+    }
+
+    Ok(imports)
+}
+
+/// Extract from-import statements: from os import path, from . import module
+fn extract_from_imports(
+    source: &str,
+    root: &tree_sitter::Node,
+) -> Result<Vec<ImportInfo>> {
+    let language = tree_sitter_python::LANGUAGE;
+
+    let query_str = r#"
+        (import_from_statement
+            module_name: (dotted_name) @module_path) @import
+
+        (import_from_statement
+            module_name: (relative_import) @module_path) @import
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create from-import query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut imports = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut module_path = None;
+        let mut import_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "module_path" => {
+                    module_path = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                }
+                "import" => {
+                    import_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(path), Some(node)) = (module_path, import_node) {
+            let import_type = classify_python_import(&path);
+            let line_number = node.start_position().row + 1;
+
+            // Extract imported symbols if present
+            let imported_symbols = extract_imported_symbols(source, &node);
+
+            imports.push(ImportInfo {
+                imported_path: path,
+                import_type,
+                line_number,
+                imported_symbols,
+            });
+        }
+    }
+
+    Ok(imports)
+}
+
+/// Extract the list of imported symbols from a from-import statement
+fn extract_imported_symbols(source: &str, import_node: &tree_sitter::Node) -> Option<Vec<String>> {
+    let mut symbols = Vec::new();
+
+    // Walk children to find aliased_import or dotted_name nodes
+    let mut cursor = import_node.walk();
+    for child in import_node.children(&mut cursor) {
+        match child.kind() {
+            "aliased_import" | "dotted_name" => {
+                // Get the first identifier
+                let mut child_cursor = child.walk();
+                for grandchild in child.children(&mut child_cursor) {
+                    if grandchild.kind() == "identifier" || grandchild.kind() == "dotted_name" {
+                        if let Ok(text) = grandchild.utf8_text(source.as_bytes()) {
+                            symbols.push(text.to_string());
+                            break; // Only get the first one for aliased imports
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if symbols.is_empty() {
+        None
+    } else {
+        Some(symbols)
+    }
+}
+
+/// Find the Python package name from pyproject.toml, setup.py, or setup.cfg
+/// This is used to determine which imports are internal vs external
+pub fn find_python_package_name(root: &std::path::Path) -> Option<String> {
+    // Try pyproject.toml first (modern standard)
+    if let Some(name) = find_pyproject_package(root) {
+        return Some(name);
+    }
+
+    // Try setup.py second
+    if let Some(name) = find_setup_py_package(root) {
+        return Some(name);
+    }
+
+    // Try setup.cfg third
+    if let Some(name) = find_setup_cfg_package(root) {
+        return Some(name);
+    }
+
+    None
+}
+
+/// Parse pyproject.toml to extract package name
+fn find_pyproject_package(root: &std::path::Path) -> Option<String> {
+    let pyproject_path = root.join("pyproject.toml");
+    let content = std::fs::read_to_string(pyproject_path).ok()?;
+
+    // Look for [project] section and name field
+    // Example: name = "Django"
+    let mut in_project_section = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Detect [project] section
+        if trimmed == "[project]" {
+            in_project_section = true;
+            continue;
+        }
+
+        // Stop if we hit another section
+        if trimmed.starts_with('[') && trimmed != "[project]" {
+            in_project_section = false;
+            continue;
+        }
+
+        // Parse name field if we're in [project] section
+        if in_project_section && trimmed.starts_with("name") && trimmed.contains('=') {
+            if let Some(equals_pos) = trimmed.find('=') {
+                let after_equals = trimmed[equals_pos + 1..].trim();
+
+                // Handle both "name" and 'name'
+                for quote in ['"', '\''] {
+                    if let Some(start) = after_equals.find(quote) {
+                        if let Some(end) = after_equals[start + 1..].find(quote) {
+                            let name = &after_equals[start + 1..start + 1 + end];
+                            // Convert to lowercase for matching (Django → django)
+                            return Some(name.to_lowercase());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Parse setup.py to extract package name
+fn find_setup_py_package(root: &std::path::Path) -> Option<String> {
+    let setup_path = root.join("setup.py");
+    let content = std::fs::read_to_string(setup_path).ok()?;
+
+    // Look for: setup(name="package_name", ...) or setup(name='package_name', ...)
+    // Simple regex-like parsing
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.contains("name") && trimmed.contains('=') {
+            // Extract quoted value after name=
+            if let Some(name_pos) = trimmed.find("name") {
+                let after_name = &trimmed[name_pos + 4..]; // Skip "name"
+
+                if let Some(equals_pos) = after_name.find('=') {
+                    let after_equals = after_name[equals_pos + 1..].trim();
+
+                    // Handle both "name" and 'name'
+                    for quote in ['"', '\''] {
+                        if let Some(start) = after_equals.find(quote) {
+                            if let Some(end) = after_equals[start + 1..].find(quote) {
+                                let name = &after_equals[start + 1..start + 1 + end];
+                                return Some(name.to_lowercase());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Parse setup.cfg to extract package name
+fn find_setup_cfg_package(root: &std::path::Path) -> Option<String> {
+    let setup_cfg_path = root.join("setup.cfg");
+    let content = std::fs::read_to_string(setup_cfg_path).ok()?;
+
+    // Look for [metadata] section and name field
+    let mut in_metadata_section = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Detect [metadata] section
+        if trimmed == "[metadata]" {
+            in_metadata_section = true;
+            continue;
+        }
+
+        // Stop if we hit another section
+        if trimmed.starts_with('[') && trimmed != "[metadata]" {
+            in_metadata_section = false;
+            continue;
+        }
+
+        // Parse name field if we're in [metadata] section
+        if in_metadata_section && trimmed.starts_with("name") && trimmed.contains('=') {
+            if let Some(equals_pos) = trimmed.find('=') {
+                let name = trimmed[equals_pos + 1..].trim();
+                return Some(name.to_lowercase());
+            }
+        }
+    }
+
+    None
+}
+
+/// Reclassify a Python import using the project's package name
+/// Similar to reclassify_go_import() and reclassify_java_import()
+pub fn reclassify_python_import(
+    import_path: &str,
+    package_prefix: Option<&str>,
+) -> ImportType {
+    // First check if this is an internal import (matches project package)
+    if let Some(prefix) = package_prefix {
+        // Extract first component: "django.conf.settings" → "django"
+        let first_component = import_path.split('.').next().unwrap_or(import_path);
+
+        if first_component == prefix {
+            return ImportType::Internal;
+        }
+    }
+
+    // Then check if it's relative (always internal)
+    if import_path.starts_with('.') {
+        return ImportType::Internal;
+    }
+
+    // Check stdlib
+    if is_python_stdlib(import_path) {
+        return ImportType::Stdlib;
+    }
+
+    // Default to external
+    ImportType::External
+}
+
+/// Check if a Python import path is from the standard library
+fn is_python_stdlib(path: &str) -> bool {
+    const STDLIB_MODULES: &[&str] = &[
+        "os", "sys", "io", "re", "json", "csv", "xml", "html", "http", "urllib",
+        "collections", "itertools", "functools", "operator", "pathlib", "glob",
+        "tempfile", "shutil", "pickle", "shelve", "sqlite3", "zlib", "gzip",
+        "time", "datetime", "calendar", "logging", "argparse", "configparser",
+        "typing", "dataclasses", "enum", "abc", "contextlib", "weakref",
+        "threading", "multiprocessing", "subprocess", "queue", "asyncio",
+        "socket", "email", "base64", "hashlib", "hmac", "secrets", "uuid",
+        "math", "random", "statistics", "decimal", "fractions",
+        "unittest", "doctest", "pdb", "trace", "timeit",
+    ];
+
+    // Extract first component of the path
+    let first_component = path.split('.').next().unwrap_or("");
+
+    STDLIB_MODULES.contains(&first_component)
+}
+
+/// Classify a Python import as internal, external, or stdlib
+fn classify_python_import(import_path: &str) -> ImportType {
+    // Relative imports (. or ..)
+    if import_path.starts_with('.') {
+        return ImportType::Internal;
+    }
+
+    // Python standard library (common modules)
+    const STDLIB_MODULES: &[&str] = &[
+        "os", "sys", "io", "re", "json", "csv", "xml", "html", "http", "urllib",
+        "collections", "itertools", "functools", "operator", "pathlib", "glob",
+        "tempfile", "shutil", "pickle", "shelve", "sqlite3", "zlib", "gzip",
+        "time", "datetime", "calendar", "logging", "argparse", "configparser",
+        "typing", "dataclasses", "enum", "abc", "contextlib", "weakref",
+        "threading", "multiprocessing", "subprocess", "queue", "asyncio",
+        "socket", "email", "base64", "hashlib", "hmac", "secrets", "uuid",
+        "math", "random", "statistics", "decimal", "fractions",
+        "unittest", "doctest", "pdb", "trace", "timeit",
+    ];
+
+    // Extract first component of the path
+    let first_component = import_path.split('.').next().unwrap_or("");
+
+    if STDLIB_MODULES.contains(&first_component) {
+        ImportType::Stdlib
+    } else {
+        // Everything else is external (third-party packages)
+        ImportType::External
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

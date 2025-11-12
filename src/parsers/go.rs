@@ -607,4 +607,267 @@ func calculate(x int) int {
         assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("localVar")));
         assert!(var_symbols.iter().any(|s| s.symbol.as_deref() == Some("anotherLocal")));
     }
+
+    #[test]
+    fn test_extract_go_imports() {
+        let source = r#"package main
+
+import (
+	"fmt"
+	"encoding/json"
+	"github.com/gin-gonic/gin"
+	"myproject/internal/models"
+)
+
+func main() {
+	fmt.Println("Hello")
+}
+"#;
+
+        let deps = GoDependencyExtractor::extract_dependencies(source).unwrap();
+
+        assert_eq!(deps.len(), 4, "Should extract 4 import statements");
+        assert!(deps.iter().any(|d| d.imported_path == "fmt"));
+        assert!(deps.iter().any(|d| d.imported_path == "encoding/json"));
+        assert!(deps.iter().any(|d| d.imported_path == "github.com/gin-gonic/gin"));
+        assert!(deps.iter().any(|d| d.imported_path == "myproject/internal/models"));
+
+        // Check stdlib classification
+        let fmt_dep = deps.iter().find(|d| d.imported_path == "fmt").unwrap();
+        assert!(matches!(fmt_dep.import_type, ImportType::Stdlib),
+                "fmt should be classified as Stdlib");
+
+        let json_dep = deps.iter().find(|d| d.imported_path == "encoding/json").unwrap();
+        assert!(matches!(json_dep.import_type, ImportType::Stdlib),
+                "encoding/json should be classified as Stdlib");
+
+        // Check external classification
+        let gin_dep = deps.iter().find(|d| d.imported_path == "github.com/gin-gonic/gin").unwrap();
+        assert!(matches!(gin_dep.import_type, ImportType::External),
+                "github.com/gin-gonic/gin should be classified as External");
+
+        // Check myproject classification (ambiguous but should be External)
+        let models_dep = deps.iter().find(|d| d.imported_path == "myproject/internal/models").unwrap();
+        assert!(matches!(models_dep.import_type, ImportType::External),
+                "myproject/internal/models should be classified as External");
+    }
+
+    #[test]
+    fn test_extract_go_imports_with_comments() {
+        // Real-world Go code from Kubernetes with inline comments
+        let source = r#"package main
+
+import (
+	"os"
+	_ "time/tzdata" // for timeZone support in CronJob
+
+	"k8s.io/component-base/cli"
+	_ "k8s.io/component-base/logs/json/register"          // for JSON log format registration
+	_ "k8s.io/component-base/metrics/prometheus/clientgo" // load all the prometheus client-go plugins
+)
+
+func main() {
+	os.Exit(0)
+}
+"#;
+
+        let deps = GoDependencyExtractor::extract_dependencies(source).unwrap();
+
+        println!("Extracted {} dependencies:", deps.len());
+        for dep in &deps {
+            println!("  - {} (line {})", dep.imported_path, dep.line_number);
+        }
+
+        // Should extract all imports, even those with _ alias and comments
+        assert!(deps.len() >= 4, "Should extract at least 4 imports, got {}", deps.len());
+        assert!(deps.iter().any(|d| d.imported_path == "os"));
+        assert!(deps.iter().any(|d| d.imported_path == "time/tzdata"));
+        assert!(deps.iter().any(|d| d.imported_path == "k8s.io/component-base/cli"));
+    }
+}
+
+// ============================================================================
+// Dependency Extraction
+// ============================================================================
+
+use crate::models::ImportType;
+use crate::parsers::{DependencyExtractor, ImportInfo};
+
+/// Go dependency extractor
+pub struct GoDependencyExtractor;
+
+impl DependencyExtractor for GoDependencyExtractor {
+    fn extract_dependencies(source: &str) -> Result<Vec<ImportInfo>> {
+        let mut parser = Parser::new();
+        let language = tree_sitter_go::LANGUAGE;
+
+        parser
+            .set_language(&language.into())
+            .context("Failed to set Go language")?;
+
+        let tree = parser
+            .parse(source, None)
+            .context("Failed to parse Go source")?;
+
+        let root_node = tree.root_node();
+
+        let mut imports = Vec::new();
+
+        // Extract import statements
+        imports.extend(extract_go_imports(source, &root_node)?);
+
+        Ok(imports)
+    }
+}
+
+/// Extract Go import statements
+fn extract_go_imports(
+    source: &str,
+    root: &tree_sitter::Node,
+) -> Result<Vec<ImportInfo>> {
+    let language = tree_sitter_go::LANGUAGE;
+
+    // Go imports can be single or in groups
+    let query_str = r#"
+        (import_declaration
+            (import_spec
+                path: (interpreted_string_literal) @import_path)) @import
+
+        (import_declaration
+            (import_spec_list
+                (import_spec
+                    path: (interpreted_string_literal) @import_path))) @import
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create Go import query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut imports = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut import_path = None;
+        let mut import_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "import_path" => {
+                    // Remove quotes from string literal
+                    let raw_path = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
+                    import_path = Some(raw_path.trim_matches('"').to_string());
+                }
+                "import" => {
+                    import_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(path), Some(node)) = (import_path, import_node) {
+            let import_type = classify_go_import(&path);
+            let line_number = node.start_position().row + 1;
+
+            imports.push(ImportInfo {
+                imported_path: path,
+                import_type,
+                line_number,
+                imported_symbols: None, // Go imports entire packages, not selective symbols
+            });
+        }
+    }
+
+    Ok(imports)
+}
+
+/// Find and parse go.mod to extract module name
+/// Returns None if go.mod not found or module name can't be parsed
+pub fn find_go_module_name(root: &std::path::Path) -> Option<String> {
+    // Look for go.mod in root directory
+    let go_mod_path = root.join("go.mod");
+    if !go_mod_path.exists() {
+        return None;
+    }
+
+    // Read go.mod and extract module name
+    let content = std::fs::read_to_string(&go_mod_path).ok()?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("module ") {
+            // Extract module name: "module k8s.io/kubernetes" -> "k8s.io/kubernetes"
+            let module_name = trimmed["module ".len()..].trim();
+            return Some(module_name.to_string());
+        }
+    }
+
+    None
+}
+
+/// Reclassify a Go import based on the module prefix
+/// This should be called by the indexer after extraction to correctly identify internal imports
+pub fn reclassify_go_import(import_path: &str, module_prefix: Option<&str>) -> ImportType {
+    classify_go_import_impl(import_path, module_prefix)
+}
+
+/// Classify a Go import as internal, external, or stdlib
+fn classify_go_import(import_path: &str) -> ImportType {
+    classify_go_import_impl(import_path, None)
+}
+
+/// Internal implementation of Go import classification
+fn classify_go_import_impl(import_path: &str, module_prefix: Option<&str>) -> ImportType {
+    // If we have a module prefix, check if import starts with it → Internal
+    if let Some(prefix) = module_prefix {
+        if import_path.starts_with(prefix) {
+            return ImportType::Internal;
+        }
+        // Also check for multi-module repos - imports starting with k8s.io/* for Kubernetes
+        // Extract the domain portion and check if it matches
+        if let Some(import_domain) = import_path.split('/').next() {
+            if let Some(module_domain) = prefix.split('/').next() {
+                // If domains match (e.g., both start with k8s.io), consider it internal
+                if import_domain == module_domain && module_domain.contains('.') {
+                    return ImportType::Internal;
+                }
+            }
+        }
+    }
+    // Relative imports (./ or ../) - rare in Go but possible
+    if import_path.starts_with("./") || import_path.starts_with("../") {
+        return ImportType::Internal;
+    }
+
+    // Internal imports often start with company domain or project path
+    // Check for common patterns like github.com/your-org/project
+    // For now, we'll consider anything that looks like a full URL path as external
+    // and short stdlib-like paths as stdlib
+
+    // Go standard library modules (common ones)
+    const STDLIB_MODULES: &[&str] = &[
+        "fmt", "io", "os", "path", "strings", "bytes", "bufio", "errors",
+        "context", "sync", "time", "encoding/json", "encoding/xml", "encoding/csv",
+        "net/http", "net/url", "net", "crypto", "crypto/tls", "crypto/sha256",
+        "database/sql", "log", "math", "regexp", "strconv", "sort", "reflect",
+        "runtime", "testing", "flag", "filepath", "unicode", "html", "text/template",
+    ];
+
+    // Check if it's a stdlib module
+    if STDLIB_MODULES.contains(&import_path) {
+        return ImportType::Stdlib;
+    }
+
+    // If it contains a domain (has dots and slashes), it's external
+    if import_path.contains('/') && import_path.split('/').next().unwrap_or("").contains('.') {
+        return ImportType::External;
+    }
+
+    // Short paths without domains are likely stdlib
+    if !import_path.contains('/') || import_path.split('/').count() <= 2 {
+        return ImportType::Stdlib;
+    }
+
+    // Everything else is external
+    ImportType::External
 }

@@ -199,6 +199,11 @@ pub enum Command {
         /// • AST queries without --glob restrictions
         #[arg(long)]
         force: bool,
+
+        /// Include dependency information (imports) in results
+        /// Currently only available for Rust files
+        #[arg(long)]
+        dependencies: bool,
     },
 
     /// Start a local HTTP API server
@@ -313,8 +318,8 @@ impl Cli {
             Some(Command::Index { path, force, languages, quiet, status }) => {
                 handle_index(path, force, languages, quiet, status)
             }
-            Some(Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force }) => {
-                handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force)
+            Some(Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force, dependencies }) => {
+                handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force, dependencies)
             }
             Some(Command::Serve { port, host }) => {
                 handle_serve(port, host)
@@ -574,6 +579,7 @@ fn handle_query(
     no_truncate: bool,
     all: bool,
     force: bool,
+    include_dependencies: bool,
 ) -> Result<()> {
     log::info!("Starting query command");
 
@@ -713,6 +719,7 @@ fn handle_query(
         offset,
         force,
         suppress_output: as_json,  // Suppress warnings in JSON mode
+        include_dependencies,
     };
 
     // Measure query time
@@ -909,7 +916,7 @@ fn handle_serve(port: u16, host: String) -> Result<()> {
     println!("Starting Reflex HTTP server...");
     println!("  Address: http://{}:{}", host, port);
     println!("\nEndpoints:");
-    println!("  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&contains=true&expand=true&file=<pattern>&timeout=<secs>&glob=<pattern>&exclude=<pattern>&paths=true");
+    println!("  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&contains=true&expand=true&file=<pattern>&timeout=<secs>&glob=<pattern>&exclude=<pattern>&paths=true&dependencies=true");
     println!("  GET  /stats");
     println!("  POST /index");
     println!("\nPress Ctrl+C to stop.");
@@ -973,6 +980,8 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         paths: bool,
         #[serde(default)]
         force: bool,
+        #[serde(default)]
+        dependencies: bool,
     }
 
     // Default timeout for HTTP queries (30 seconds)
@@ -1072,6 +1081,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             offset: params.offset,
             force: params.force,
             suppress_output: true,  // HTTP API always returns JSON, suppress warnings
+            include_dependencies: params.dependencies,
         };
 
         match engine.search_with_metadata(&params.q, filter) {

@@ -15,8 +15,24 @@ use std::time::Instant;
 
 use crate::cache::CacheManager;
 use crate::content_store::ContentWriter;
-use crate::models::{IndexConfig, IndexStats, Language};
+use crate::dependency::DependencyIndex;
+use crate::models::{Dependency, IndexConfig, IndexStats, Language, ImportType};
 use crate::output;
+use crate::parsers::{DependencyExtractor, ImportInfo};
+use crate::parsers::rust::RustDependencyExtractor;
+use crate::parsers::python::PythonDependencyExtractor;
+use crate::parsers::typescript::TypeScriptDependencyExtractor;
+use crate::parsers::go::GoDependencyExtractor;
+use crate::parsers::java::JavaDependencyExtractor;
+use crate::parsers::c::CDependencyExtractor;
+use crate::parsers::cpp::CppDependencyExtractor;
+use crate::parsers::csharp::CSharpDependencyExtractor;
+use crate::parsers::php::PhpDependencyExtractor;
+use crate::parsers::ruby::RubyDependencyExtractor;
+use crate::parsers::kotlin::KotlinDependencyExtractor;
+use crate::parsers::zig::ZigDependencyExtractor;
+use crate::parsers::vue::VueDependencyExtractor;
+use crate::parsers::svelte::SvelteDependencyExtractor;
 use crate::trigram::TrigramIndex;
 
 /// Progress callback type: (current_file_count, total_file_count, status_message)
@@ -31,6 +47,7 @@ struct FileProcessingResult {
     content: String,
     language: Language,
     line_count: usize,
+    dependencies: Vec<ImportInfo>,
 }
 
 /// Manages the indexing process
@@ -165,6 +182,7 @@ impl Indexer {
         let mut new_hashes = HashMap::new();
         let mut files_indexed = 0;
         let mut file_metadata: Vec<(String, String, String, usize)> = Vec::new(); // For batch SQLite update
+        let mut all_dependencies: Vec<(String, Vec<ImportInfo>)> = Vec::new(); // For batch dependency insertion
 
         // Initialize trigram index and content store
         let mut trigram_index = TrigramIndex::new();
@@ -291,6 +309,138 @@ impl Indexer {
                 // Count lines in the file
                 let line_count = content.lines().count();
 
+                // Extract dependencies for supported languages
+                let dependencies = match language {
+                    Language::Rust => {
+                        match RustDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::Python => {
+                        match PythonDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::TypeScript | Language::JavaScript => {
+                        match TypeScriptDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::Go => {
+                        match GoDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::Java => {
+                        match JavaDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::C => {
+                        match CDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::Cpp => {
+                        match CppDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::CSharp => {
+                        match CSharpDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::PHP => {
+                        match PhpDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::Ruby => {
+                        match RubyDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::Kotlin => {
+                        match KotlinDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::Zig => {
+                        match ZigDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::Vue => {
+                        match VueDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::Svelte => {
+                        match SvelteDependencyExtractor::extract_dependencies(&content) {
+                            Ok(deps) => deps,
+                            Err(e) => {
+                                log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    // Other languages not yet implemented
+                    _ => Vec::new(),
+                };
+
                 // Update progress atomically
                 counter_clone.fetch_add(1, Ordering::Relaxed);
 
@@ -301,6 +451,7 @@ impl Indexer {
                     content,
                     language,
                     line_count,
+                    dependencies,
                 })
                 })
                 .collect()
@@ -326,6 +477,11 @@ impl Indexer {
                     format!("{:?}", result.language),
                     result.line_count
                 ));
+
+                // Collect dependencies for batch insertion (if any)
+                if !result.dependencies.is_empty() {
+                    all_dependencies.push((result.path_str.clone(), result.dependencies));
+                }
 
                 new_hashes.insert(result.path_str, result.hash);
             }
@@ -411,6 +567,149 @@ impl Indexer {
         self.cache.checkpoint_wal()
             .context("Failed to checkpoint WAL")?;
         log::debug!("WAL checkpoint completed - database is fully synced");
+
+        // Step 2.5: Insert dependencies (after files are inserted and have IDs)
+        if !all_dependencies.is_empty() {
+            *progress_status.lock().unwrap() = "Extracting dependencies...".to_string();
+            if show_progress {
+                pb.set_message("Extracting dependencies...".to_string());
+            }
+
+            // Find and parse go.mod to get module prefix for Go projects
+            let go_module_prefix = crate::parsers::go::find_go_module_name(root);
+            if let Some(ref prefix) = go_module_prefix {
+                log::info!("Found Go module: {}", prefix);
+            }
+
+            // Find and parse pom.xml/build.gradle to get package prefix for Java projects
+            let java_package_prefix = crate::parsers::java::find_java_package_name(root);
+            if let Some(ref prefix) = java_package_prefix {
+                log::info!("Found Java package: {}", prefix);
+            }
+
+            // Find and parse pyproject.toml/setup.py/setup.cfg for Python projects
+            let python_package_prefix = crate::parsers::python::find_python_package_name(root);
+            if let Some(ref prefix) = python_package_prefix {
+                log::info!("Found Python package: {}", prefix);
+            }
+
+            // Find and parse *.gemspec files for Ruby projects
+            let ruby_gem_names = crate::parsers::ruby::find_ruby_gem_names(root);
+            if !ruby_gem_names.is_empty() {
+                log::info!("Found Ruby gems: {}", ruby_gem_names.join(", "));
+            }
+
+            // Find and parse build.gradle/pom.xml for Kotlin projects
+            // (reuses Java's find_java_package_name since Kotlin uses same build systems)
+            let kotlin_package_prefix = crate::parsers::java::find_java_package_name(root);
+            if let Some(ref prefix) = kotlin_package_prefix {
+                log::info!("Found Kotlin package: {}", prefix);
+            }
+
+            // Create dependency index to resolve paths and insert dependencies
+            let cache_for_deps = CacheManager::new(root);
+            let dep_index = DependencyIndex::new(cache_for_deps);
+
+            let mut total_deps_inserted = 0;
+
+            // Process each file's dependencies
+            for (file_path, import_infos) in all_dependencies {
+                // Get file ID from database
+                let file_id = match dep_index.get_file_id_by_path(&file_path)? {
+                    Some(id) => id,
+                    None => {
+                        log::warn!("File not found in database (skipping dependencies): {}", file_path);
+                        continue;
+                    }
+                };
+
+                // Reclassify and filter dependencies
+                let mut resolved_deps = Vec::new();
+
+                for mut import_info in import_infos {
+                    // Reclassify Go imports using module prefix (if Go project)
+                    if file_path.ends_with(".go") {
+                        import_info.import_type = crate::parsers::go::reclassify_go_import(
+                            &import_info.imported_path,
+                            go_module_prefix.as_deref(),
+                        );
+                    }
+
+                    // Reclassify Java imports using package prefix (if Java project)
+                    if file_path.ends_with(".java") {
+                        import_info.import_type = crate::parsers::java::reclassify_java_import(
+                            &import_info.imported_path,
+                            java_package_prefix.as_deref(),
+                        );
+                    }
+
+                    // Reclassify Python imports using package prefix (if Python project)
+                    if file_path.ends_with(".py") {
+                        import_info.import_type = crate::parsers::python::reclassify_python_import(
+                            &import_info.imported_path,
+                            python_package_prefix.as_deref(),
+                        );
+                    }
+
+                    // Reclassify Ruby imports using gem names (if Ruby project)
+                    if file_path.ends_with(".rb") || file_path.ends_with(".rake") || file_path.ends_with(".gemspec") {
+                        import_info.import_type = crate::parsers::ruby::reclassify_ruby_import(
+                            &import_info.imported_path,
+                            &ruby_gem_names,
+                        );
+                    }
+
+                    // Reclassify Kotlin imports using package prefix (if Kotlin project)
+                    if file_path.ends_with(".kt") || file_path.ends_with(".kts") {
+                        import_info.import_type = crate::parsers::kotlin::reclassify_kotlin_import(
+                            &import_info.imported_path,
+                            kotlin_package_prefix.as_deref(),
+                        );
+                    }
+
+                    // ONLY insert Internal dependencies - skip External and Stdlib
+                    if !matches!(import_info.import_type, ImportType::Internal) {
+                        continue;
+                    }
+
+                    // Try to resolve import path to a file
+                    let resolved_file_id = {
+                        let resolved_path = crate::dependency::resolve_rust_import(
+                            &import_info.imported_path,
+                            &file_path,
+                            root,
+                        );
+
+                        if let Some(ref path) = resolved_path {
+                            dep_index.get_file_id_by_path(path)?
+                        } else {
+                            None
+                        }
+                    };
+
+                    // Insert Internal dependency
+                    resolved_deps.push(Dependency {
+                        file_id,
+                        imported_path: import_info.imported_path.clone(),
+                        resolved_file_id,
+                        import_type: import_info.import_type,
+                        line_number: import_info.line_number,
+                        imported_symbols: import_info.imported_symbols.clone(),
+                    });
+                }
+
+                // Clear existing dependencies for this file (incremental reindex)
+                dep_index.clear_dependencies(file_id)?;
+
+                // Batch insert dependencies
+                if !resolved_deps.is_empty() {
+                    dep_index.batch_insert_dependencies(&resolved_deps)?;
+                    total_deps_inserted += resolved_deps.len();
+                }
+            }
+
+            log::info!("Extracted {} dependencies", total_deps_inserted);
+        }
 
         log::info!("Indexed {} files", files_indexed);
 

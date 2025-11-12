@@ -1060,4 +1060,227 @@ mod tests {
         assert!(class_symbols.iter().any(|c| c.symbol.as_deref() == Some("ComplexClass")),
                 "Should find ComplexClass with large docblock, extends, and implements multiple interfaces");
     }
+
+    #[test]
+    fn test_extract_php_use_dependencies() {
+        let source = r#"
+            <?php
+
+            use Illuminate\Database\Migrations\Migration;
+            use Illuminate\Database\Schema\Blueprint;
+            use Illuminate\Support\Facades\Schema;
+
+            return new class extends Migration
+            {
+                public function up(): void
+                {
+                    Schema::create('test', function (Blueprint $table) {
+                        $table->id();
+                    });
+                }
+            };
+        "#;
+
+        let deps = PhpDependencyExtractor::extract_dependencies(source).unwrap();
+
+        // Should find 3 use statements
+        assert_eq!(deps.len(), 3, "Should extract 3 use statements");
+
+        // Check specific imports
+        assert!(deps.iter().any(|d| d.imported_path.contains("Migration")));
+        assert!(deps.iter().any(|d| d.imported_path.contains("Blueprint")));
+        assert!(deps.iter().any(|d| d.imported_path.contains("Schema")));
+
+        // All should be Internal (Laravel framework classes)
+        for dep in &deps {
+            assert!(matches!(dep.import_type, ImportType::Internal),
+                    "Laravel classes should be classified as Internal");
+        }
+    }
+}
+
+// ============================================================================
+// Dependency Extraction
+// ============================================================================
+
+use crate::models::ImportType;
+use crate::parsers::{DependencyExtractor, ImportInfo};
+
+/// PHP dependency extractor
+pub struct PhpDependencyExtractor;
+
+impl DependencyExtractor for PhpDependencyExtractor {
+    fn extract_dependencies(source: &str) -> Result<Vec<ImportInfo>> {
+        let mut parser = Parser::new();
+        let language = tree_sitter_php::LANGUAGE_PHP;
+
+        parser
+            .set_language(&language.into())
+            .context("Failed to set PHP language")?;
+
+        let tree = parser
+            .parse(source, None)
+            .context("Failed to parse PHP source")?;
+
+        let root_node = tree.root_node();
+
+        let mut imports = Vec::new();
+
+        // Extract use declarations
+        imports.extend(extract_php_uses(source, &root_node)?);
+
+        // Extract require/include statements
+        imports.extend(extract_php_requires(source, &root_node)?);
+
+        Ok(imports)
+    }
+}
+
+/// Extract PHP `use` declarations
+fn extract_php_uses(
+    source: &str,
+    root: &tree_sitter::Node,
+) -> Result<Vec<ImportInfo>> {
+    let language = tree_sitter_php::LANGUAGE_PHP;
+
+    let query_str = r#"
+        (namespace_use_clause
+            [
+                (name) @use_path
+                (qualified_name) @use_path
+            ])
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create PHP use query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut imports = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            if capture_name == "use_path" {
+                let path = capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                let import_type = classify_php_use(&path);
+                let line_number = capture.node.start_position().row + 1;
+
+                imports.push(ImportInfo {
+                    imported_path: path,
+                    import_type,
+                    line_number,
+                    imported_symbols: None, // PHP imports entire namespace/class
+                });
+            }
+        }
+    }
+
+    Ok(imports)
+}
+
+/// Extract PHP `require`, `require_once`, `include`, `include_once` statements
+fn extract_php_requires(
+    source: &str,
+    root: &tree_sitter::Node,
+) -> Result<Vec<ImportInfo>> {
+    let language = tree_sitter_php::LANGUAGE_PHP;
+
+    // Match require/include with both string and expression
+    let query_str = r#"
+        (expression_statement
+            (require_expression
+                (string) @require_path)) @require
+
+        (expression_statement
+            (require_once_expression
+                (string) @require_path)) @require
+
+        (expression_statement
+            (include_expression
+                (string) @require_path)) @require
+
+        (expression_statement
+            (include_once_expression
+                (string) @require_path)) @require
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create PHP require/include query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut imports = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut require_path = None;
+        let mut require_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "require_path" => {
+                    let raw_path = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
+                    // Remove quotes from path
+                    require_path = Some(raw_path.trim_matches(|c| c == '"' || c == '\'').to_string());
+                }
+                "require" => {
+                    require_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(path), Some(node)) = (require_path, require_node) {
+            // For require/include, we consider them as internal file dependencies
+            let line_number = node.start_position().row + 1;
+
+            imports.push(ImportInfo {
+                imported_path: path,
+                import_type: ImportType::Internal, // File includes are always internal
+                line_number,
+                imported_symbols: None, // Includes don't specify symbols
+            });
+        }
+    }
+
+    Ok(imports)
+}
+
+/// Classify a PHP `use` declaration as internal, external, or stdlib
+fn classify_php_use(use_path: &str) -> ImportType {
+    // PHP standard library extensions/classes (built-in PHP namespaces)
+    const PHP_STDLIB_NAMESPACES: &[&str] = &[
+        // PSR standards (PHP standard interfaces)
+        "Psr\\", "Psr\\Http", "Psr\\Log", "Psr\\Cache", "Psr\\Container",
+
+        // PHP built-in classes/interfaces
+        "Exception", "Error", "DateTime", "DateTimeImmutable", "DateTimeInterface",
+        "DateInterval", "DatePeriod", "PDO", "PDOStatement", "Closure",
+        "Generator", "ArrayIterator", "IteratorAggregate", "Traversable",
+        "Iterator", "Countable", "Serializable", "JsonSerializable",
+
+        // SPL (Standard PHP Library)
+        "SplFileInfo", "SplFileObject", "SplDoublyLinkedList", "SplQueue",
+        "SplStack", "SplHeap", "SplMinHeap", "SplMaxHeap", "SplPriorityQueue",
+        "SplFixedArray", "SplObjectStorage",
+
+        // PHP XML classes
+        "SimpleXMLElement", "DOMDocument", "DOMElement", "DOMNode",
+        "XMLReader", "XMLWriter",
+    ];
+
+    // Check if it's a standard library class
+    for stdlib_ns in PHP_STDLIB_NAMESPACES {
+        if use_path == *stdlib_ns || use_path.starts_with(stdlib_ns) {
+            return ImportType::Stdlib;
+        }
+    }
+
+    // Internal: project namespaces (will be filtered if not in codebase)
+    // External: third-party packages (e.g., vendor/ classes)
+    // We classify as Internal by default; non-project files will be filtered at indexing time
+    ImportType::Internal
 }
