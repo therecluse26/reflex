@@ -1266,3 +1266,338 @@ fn classify_java_import_impl(import_path: &str, package_prefix: Option<&str>) ->
     // Everything else is external
     ImportType::External
 }
+
+// ============================================================================
+// Monorepo Support - Java/Kotlin Dependency Resolution
+// ============================================================================
+
+/// Represents a Java/Kotlin project in a monorepo
+#[derive(Debug, Clone)]
+pub struct JavaProject {
+    /// Package name (groupId from Maven or group from Gradle)
+    pub package_name: String,
+    /// Relative path to project root (where pom.xml or build.gradle is)
+    pub project_root: String,
+    /// Absolute path to project root
+    pub abs_project_root: String,
+}
+
+/// Find all Maven/Gradle projects in the repository recursively
+/// Similar to find_all_go_mods() for Go
+pub fn find_all_maven_gradle_projects(root: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
+    let mut config_files = Vec::new();
+
+    let walker = ignore::WalkBuilder::new(root)
+        .follow_links(false)
+        .git_ignore(true)
+        .build();
+
+    for entry in walker {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_file() {
+            let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+            // Match pom.xml (Maven) or build.gradle/build.gradle.kts (Gradle)
+            if filename == "pom.xml"
+                || filename == "build.gradle"
+                || filename == "build.gradle.kts" {
+                config_files.push(path.to_path_buf());
+                log::trace!("Found Java/Kotlin config: {}", path.display());
+            }
+        }
+    }
+
+    log::debug!("Found {} Java/Kotlin project config files", config_files.len());
+    Ok(config_files)
+}
+
+/// Parse all Maven/Gradle projects and return JavaProject structs
+/// Similar to parse_all_go_modules() for Go
+pub fn parse_all_java_projects(root: &std::path::Path) -> Result<Vec<JavaProject>> {
+    let config_files = find_all_maven_gradle_projects(root)?;
+    let mut projects = Vec::new();
+
+    let root_abs = root.canonicalize()
+        .with_context(|| format!("Failed to canonicalize root path: {}", root.display()))?;
+
+    for config_path in &config_files {
+        // Get the directory containing the config file (project root)
+        if let Some(project_dir) = config_path.parent() {
+            // Parse the config file to get package name
+            if let Some(package_name) = extract_package_from_config(config_path) {
+                let project_abs = project_dir.canonicalize()
+                    .with_context(|| format!("Failed to canonicalize project path: {}", project_dir.display()))?;
+
+                let project_rel = project_abs.strip_prefix(&root_abs)
+                    .unwrap_or(project_dir)
+                    .to_string_lossy()
+                    .to_string();
+
+                projects.push(JavaProject {
+                    package_name: package_name.clone(),
+                    project_root: project_rel,
+                    abs_project_root: project_abs.to_string_lossy().to_string(),
+                });
+
+                log::trace!("Parsed Java/Kotlin project: {} at {}", package_name, project_dir.display());
+            }
+        }
+    }
+
+    log::info!("Parsed {} Java/Kotlin projects", projects.len());
+    Ok(projects)
+}
+
+/// Extract package name from pom.xml or build.gradle
+fn extract_package_from_config(config_path: &std::path::Path) -> Option<String> {
+    let filename = config_path.file_name()?.to_str()?;
+
+    match filename {
+        "pom.xml" => {
+            // Extract <groupId> from Maven pom.xml
+            let content = std::fs::read_to_string(config_path).ok()?;
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("<groupId>") && trimmed.ends_with("</groupId>") {
+                    let start = "<groupId>".len();
+                    let end = trimmed.len() - "</groupId>".len();
+                    return Some(trimmed[start..end].to_string());
+                }
+            }
+            None
+        }
+        "build.gradle" | "build.gradle.kts" => {
+            // Extract group from Gradle build file
+            let content = std::fs::read_to_string(config_path).ok()?;
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("group") {
+                    if let Some(equals_idx) = trimmed.find('=') {
+                        let value = &trimmed[equals_idx + 1..].trim();
+                        let value = value.trim_matches(|c| c == '\'' || c == '"');
+                        return Some(value.to_string());
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Resolve a Java import to a file path
+///
+/// Java imports look like: `com.example.myapp.UserService`
+/// Files are located at: `src/main/java/com/example/myapp/UserService.java`
+/// or: `src/com/example/myapp/UserService.java`
+pub fn resolve_java_import_to_path(
+    import_path: &str,
+    projects: &[JavaProject],
+    _current_file_path: Option<&str>,
+) -> Option<String> {
+    // Java imports are absolute package paths, not relative
+    // Find which project this import belongs to
+    for project in projects {
+        if import_path.starts_with(&project.package_name) {
+            // Convert package to file path: com.example.UserService → com/example/UserService.java
+            let file_path = import_path.replace('.', "/");
+
+            // Try common Java source directory structures
+            let candidates = vec![
+                // Maven/Gradle standard structure
+                format!("{}/src/main/java/{}.java", project.project_root, file_path),
+                // Simpler structure
+                format!("{}/src/{}.java", project.project_root, file_path),
+                // Root-level src
+                format!("{}/{}.java", project.project_root, file_path),
+            ];
+
+            for candidate in candidates {
+                log::trace!("Checking Java import path: {}", candidate);
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+/// Resolve a Kotlin import to a file path
+///
+/// Kotlin uses the same package system as Java, but with .kt extension
+pub fn resolve_kotlin_import_to_path(
+    import_path: &str,
+    projects: &[JavaProject],
+    _current_file_path: Option<&str>,
+) -> Option<String> {
+    // Kotlin imports are identical to Java imports
+    for project in projects {
+        if import_path.starts_with(&project.package_name) {
+            let file_path = import_path.replace('.', "/");
+
+            // Try common Kotlin source directory structures
+            let candidates = vec![
+                // Maven/Gradle standard structure
+                format!("{}/src/main/kotlin/{}.kt", project.project_root, file_path),
+                // Java source dir (Kotlin can be in java dir)
+                format!("{}/src/main/java/{}.kt", project.project_root, file_path),
+                // Simpler structure
+                format!("{}/src/{}.kt", project.project_root, file_path),
+                // Root-level src
+                format!("{}/{}.kt", project.project_root, file_path),
+            ];
+
+            for candidate in candidates {
+                log::trace!("Checking Kotlin import path: {}", candidate);
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod monorepo_tests {
+    use super::*;
+    use tempfile::TempDir;
+    use std::fs;
+
+    #[test]
+    fn test_resolve_java_import_maven_structure() {
+        let projects = vec![JavaProject {
+            package_name: "com.example".to_string(),
+            project_root: "project1".to_string(),
+            abs_project_root: "/abs/project1".to_string(),
+        }];
+
+        let resolved = resolve_java_import_to_path(
+            "com.example.UserService",
+            &projects,
+            None,
+        );
+
+        assert!(resolved.is_some());
+        let path = resolved.unwrap();
+        // Should try Maven standard structure first
+        assert!(path.contains("src/main/java/com/example/UserService.java"));
+    }
+
+    #[test]
+    fn test_resolve_kotlin_import() {
+        let projects = vec![JavaProject {
+            package_name: "org.acme".to_string(),
+            project_root: "kotlin-project".to_string(),
+            abs_project_root: "/abs/kotlin-project".to_string(),
+        }];
+
+        let resolved = resolve_kotlin_import_to_path(
+            "org.acme.Repository",
+            &projects,
+            None,
+        );
+
+        assert!(resolved.is_some());
+        let path = resolved.unwrap();
+        assert!(path.contains("src/main/kotlin/org/acme/Repository.kt"));
+    }
+
+    #[test]
+    fn test_resolve_java_import_no_match() {
+        let projects = vec![JavaProject {
+            package_name: "com.example".to_string(),
+            project_root: "project1".to_string(),
+            abs_project_root: "/abs/project1".to_string(),
+        }];
+
+        // Different package
+        let resolved = resolve_java_import_to_path(
+            "org.other.Service",
+            &projects,
+            None,
+        );
+
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn test_resolve_java_import_monorepo() {
+        let projects = vec![
+            JavaProject {
+                package_name: "com.example.service1".to_string(),
+                project_root: "services/service1".to_string(),
+                abs_project_root: "/abs/services/service1".to_string(),
+            },
+            JavaProject {
+                package_name: "com.example.service2".to_string(),
+                project_root: "services/service2".to_string(),
+                abs_project_root: "/abs/services/service2".to_string(),
+            },
+        ];
+
+        // Should resolve to service1
+        let resolved1 = resolve_java_import_to_path(
+            "com.example.service1.UserController",
+            &projects,
+            None,
+        );
+        assert!(resolved1.is_some());
+        assert!(resolved1.unwrap().contains("services/service1"));
+
+        // Should resolve to service2
+        let resolved2 = resolve_java_import_to_path(
+            "com.example.service2.ProductController",
+            &projects,
+            None,
+        );
+        assert!(resolved2.is_some());
+        assert!(resolved2.unwrap().contains("services/service2"));
+    }
+
+    #[test]
+    fn test_extract_package_from_pom_xml() {
+        let temp = TempDir::new().unwrap();
+        let pom_path = temp.path().join("pom.xml");
+
+        fs::write(&pom_path, r#"
+<?xml version="1.0" encoding="UTF-8"?>
+<project>
+    <groupId>com.example.myapp</groupId>
+    <artifactId>my-application</artifactId>
+</project>
+        "#).unwrap();
+
+        let package = extract_package_from_config(&pom_path);
+        assert_eq!(package, Some("com.example.myapp".to_string()));
+    }
+
+    #[test]
+    fn test_extract_package_from_gradle() {
+        let temp = TempDir::new().unwrap();
+        let gradle_path = temp.path().join("build.gradle");
+
+        fs::write(&gradle_path, r#"
+group = 'org.example.myproject'
+version = '1.0.0'
+        "#).unwrap();
+
+        let package = extract_package_from_config(&gradle_path);
+        assert_eq!(package, Some("org.example.myproject".to_string()));
+    }
+
+    #[test]
+    fn test_extract_package_from_gradle_kts() {
+        let temp = TempDir::new().unwrap();
+        let gradle_path = temp.path().join("build.gradle.kts");
+
+        fs::write(&gradle_path, r#"
+group = "com.acme.tools"
+version = "2.0.0"
+        "#).unwrap();
+
+        let package = extract_package_from_config(&gradle_path);
+        assert_eq!(package, Some("com.acme.tools".to_string()));
+    }
+}

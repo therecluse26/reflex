@@ -588,10 +588,17 @@ impl Indexer {
                 }
             }
 
-            // Find and parse pom.xml/build.gradle to get package prefix for Java projects
-            let java_package_prefix = crate::parsers::java::find_java_package_name(root);
-            if let Some(ref prefix) = java_package_prefix {
-                log::info!("Found Java package: {}", prefix);
+            // Find and parse all pom.xml/build.gradle files for Java projects (monorepo support)
+            let java_projects = crate::parsers::java::parse_all_java_projects(root)
+                .unwrap_or_else(|e| {
+                    log::warn!("Failed to parse Java project configs: {}", e);
+                    Vec::new()
+                });
+            if !java_projects.is_empty() {
+                log::info!("Found {} Java projects", java_projects.len());
+                for project in &java_projects {
+                    log::debug!("  {} (project: {})", project.package_name, project.project_root);
+                }
             }
 
             // Find and parse all Python package configs for Python projects (monorepo support)
@@ -607,18 +614,20 @@ impl Indexer {
                 }
             }
 
-            // Find and parse *.gemspec files for Ruby projects
-            let ruby_gem_names = crate::parsers::ruby::find_ruby_gem_names(root);
-            if !ruby_gem_names.is_empty() {
-                log::info!("Found Ruby gems: {}", ruby_gem_names.join(", "));
+            // Find and parse *.gemspec files for Ruby projects (monorepo support)
+            let ruby_projects = crate::parsers::ruby::parse_all_ruby_projects(root)
+                .unwrap_or_else(|e| {
+                    log::warn!("Failed to parse Ruby project configs: {}", e);
+                    Vec::new()
+                });
+            if !ruby_projects.is_empty() {
+                log::info!("Found {} Ruby projects", ruby_projects.len());
+                for project in &ruby_projects {
+                    log::debug!("  {} (project: {})", project.gem_name, project.project_root);
+                }
             }
 
-            // Find and parse build.gradle/pom.xml for Kotlin projects
-            // (reuses Java's find_java_package_name since Kotlin uses same build systems)
-            let kotlin_package_prefix = crate::parsers::java::find_java_package_name(root);
-            if let Some(ref prefix) = kotlin_package_prefix {
-                log::info!("Found Kotlin package: {}", prefix);
-            }
+            // Note: Kotlin projects use the same java_projects above (same build systems: Maven/Gradle)
 
             // Find and parse all composer.json files for PHP projects (monorepo support)
             let php_psr4_mappings = crate::parsers::php::parse_all_composer_psr4(root)
@@ -678,12 +687,28 @@ impl Indexer {
                         }
                     }
 
-                    // Reclassify Java imports using package prefix (if Java project)
+                    // Reclassify Java imports using package names (if Java project)
                     if file_path.ends_with(".java") {
-                        import_info.import_type = crate::parsers::java::reclassify_java_import(
-                            &import_info.imported_path,
-                            java_package_prefix.as_deref(),
-                        );
+                        // Check if the import matches any Java project
+                        let mut reclassified = false;
+                        for project in &java_projects {
+                            import_info.import_type = crate::parsers::java::reclassify_java_import(
+                                &import_info.imported_path,
+                                Some(&project.package_name),
+                            );
+                            // If it's internal, we've found the right project
+                            if matches!(import_info.import_type, ImportType::Internal) {
+                                reclassified = true;
+                                break;
+                            }
+                        }
+                        // If no project matched, use base classification
+                        if !reclassified {
+                            import_info.import_type = crate::parsers::java::reclassify_java_import(
+                                &import_info.imported_path,
+                                None,
+                            );
+                        }
                     }
 
                     // Reclassify Python imports using package names (if Python project)
@@ -712,18 +737,51 @@ impl Indexer {
 
                     // Reclassify Ruby imports using gem names (if Ruby project)
                     if file_path.ends_with(".rb") || file_path.ends_with(".rake") || file_path.ends_with(".gemspec") {
-                        import_info.import_type = crate::parsers::ruby::reclassify_ruby_import(
-                            &import_info.imported_path,
-                            &ruby_gem_names,
-                        );
+                        // Check if the import matches any Ruby project
+                        let mut reclassified = false;
+                        for project in &ruby_projects {
+                            let gem_names = vec![project.gem_name.clone()];
+                            import_info.import_type = crate::parsers::ruby::reclassify_ruby_import(
+                                &import_info.imported_path,
+                                &gem_names,
+                            );
+                            // If it's internal, we've found the right project
+                            if matches!(import_info.import_type, ImportType::Internal) {
+                                reclassified = true;
+                                break;
+                            }
+                        }
+                        // If no project matched, use base classification (will be External or Stdlib)
+                        if !reclassified {
+                            import_info.import_type = crate::parsers::ruby::reclassify_ruby_import(
+                                &import_info.imported_path,
+                                &[],
+                            );
+                        }
                     }
 
-                    // Reclassify Kotlin imports using package prefix (if Kotlin project)
+                    // Reclassify Kotlin imports using package names (if Kotlin project)
                     if file_path.ends_with(".kt") || file_path.ends_with(".kts") {
-                        import_info.import_type = crate::parsers::kotlin::reclassify_kotlin_import(
-                            &import_info.imported_path,
-                            kotlin_package_prefix.as_deref(),
-                        );
+                        // Check if the import matches any Java/Kotlin project (same build systems)
+                        let mut reclassified = false;
+                        for project in &java_projects {
+                            import_info.import_type = crate::parsers::kotlin::reclassify_kotlin_import(
+                                &import_info.imported_path,
+                                Some(&project.package_name),
+                            );
+                            // If it's internal, we've found the right project
+                            if matches!(import_info.import_type, ImportType::Internal) {
+                                reclassified = true;
+                                break;
+                            }
+                        }
+                        // If no project matched, use base classification
+                        if !reclassified {
+                            import_info.import_type = crate::parsers::kotlin::reclassify_kotlin_import(
+                                &import_info.imported_path,
+                                None,
+                            );
+                        }
                     }
 
                     // ONLY insert Internal dependencies - skip External and Stdlib
@@ -852,6 +910,78 @@ impl Indexer {
                             }
                         } else {
                             log::trace!("Could not resolve Rust import (external or stdlib): {}", import_info.imported_path);
+                            None
+                        }
+                    } else if file_path.ends_with(".java") && !java_projects.is_empty() {
+                        // Resolve Java dependencies using project mappings
+                        if let Some(resolved_path) = crate::parsers::java::resolve_java_import_to_path(
+                            &import_info.imported_path,
+                            &java_projects,
+                            Some(&file_path),
+                        ) {
+                            // Look up file ID in database using exact match
+                            match dep_index.get_file_id_by_path(&resolved_path)? {
+                                Some(id) => {
+                                    log::trace!("Resolved Java dependency: {} -> {} (file_id={})",
+                                               import_info.imported_path, resolved_path, id);
+                                    Some(id)
+                                }
+                                None => {
+                                    log::trace!("Java dependency resolved to path but file not in index: {} -> {}",
+                                               import_info.imported_path, resolved_path);
+                                    None
+                                }
+                            }
+                        } else {
+                            log::trace!("Could not resolve Java import: {}", import_info.imported_path);
+                            None
+                        }
+                    } else if (file_path.ends_with(".kt") || file_path.ends_with(".kts")) && !java_projects.is_empty() {
+                        // Resolve Kotlin dependencies using project mappings (same build systems as Java)
+                        if let Some(resolved_path) = crate::parsers::java::resolve_kotlin_import_to_path(
+                            &import_info.imported_path,
+                            &java_projects,
+                            Some(&file_path),
+                        ) {
+                            // Look up file ID in database using exact match
+                            match dep_index.get_file_id_by_path(&resolved_path)? {
+                                Some(id) => {
+                                    log::trace!("Resolved Kotlin dependency: {} -> {} (file_id={})",
+                                               import_info.imported_path, resolved_path, id);
+                                    Some(id)
+                                }
+                                None => {
+                                    log::trace!("Kotlin dependency resolved to path but file not in index: {} -> {}",
+                                               import_info.imported_path, resolved_path);
+                                    None
+                                }
+                            }
+                        } else {
+                            log::trace!("Could not resolve Kotlin import: {}", import_info.imported_path);
+                            None
+                        }
+                    } else if (file_path.ends_with(".rb") || file_path.ends_with(".rake") || file_path.ends_with(".gemspec")) && !ruby_projects.is_empty() {
+                        // Resolve Ruby dependencies using project mappings
+                        if let Some(resolved_path) = crate::parsers::ruby::resolve_ruby_require_to_path(
+                            &import_info.imported_path,
+                            &ruby_projects,
+                            Some(&file_path),
+                        ) {
+                            // Look up file ID in database using exact match
+                            match dep_index.get_file_id_by_path(&resolved_path)? {
+                                Some(id) => {
+                                    log::trace!("Resolved Ruby dependency: {} -> {} (file_id={})",
+                                               import_info.imported_path, resolved_path, id);
+                                    Some(id)
+                                }
+                                None => {
+                                    log::trace!("Ruby dependency resolved to path but file not in index: {} -> {}",
+                                               import_info.imported_path, resolved_path);
+                                    None
+                                }
+                            }
+                        } else {
+                            log::trace!("Could not resolve Ruby require: {}", import_info.imported_path);
                             None
                         }
                     } else {
