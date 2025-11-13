@@ -293,6 +293,41 @@ fn classify_zig_import(import_path: &str) -> ImportType {
     ImportType::External
 }
 
+/// Resolve a Zig @import("...") path to an absolute file path
+///
+/// Only resolves Internal imports (relative paths starting with ./ or ../)
+/// Returns None for External and Stdlib imports
+///
+/// # Arguments
+/// * `import_path` - The path from @import("...") (e.g., "./utils.zig", "../helpers.zig")
+/// * `current_file_path` - The absolute path of the file containing the import
+///
+/// # Returns
+/// Some(absolute_path) if the import is resolvable (Internal relative path)
+/// None if the import is External or Stdlib
+pub fn resolve_zig_import_to_path(
+    import_path: &str,
+    current_file_path: Option<&str>,
+) -> Option<String> {
+    // Only resolve Internal imports (relative paths)
+    if !import_path.starts_with("./") && !import_path.starts_with("../") {
+        return None;
+    }
+
+    let current_file = current_file_path?;
+    let current_dir = std::path::Path::new(current_file).parent()?;
+    let resolved = current_dir.join(import_path);
+
+    // Try to canonicalize (normalize) the path
+    match resolved.canonicalize() {
+        Ok(normalized) => Some(normalized.display().to_string()),
+        Err(_) => {
+            // If canonicalization fails (file doesn't exist), return the raw path
+            Some(resolved.display().to_string())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,5 +612,55 @@ pub fn main() !void {
 
         // External package import
         assert!(deps.iter().any(|d| d.imported_path == "zap" && matches!(d.import_type, ImportType::External)));
+    }
+
+    // Zig import path resolution tests
+    #[cfg(test)]
+    mod resolution_tests {
+        use super::*;
+
+        #[test]
+        fn test_resolve_zig_import_same_directory() {
+            let result = resolve_zig_import_to_path("./utils.zig", Some("/project/src/main.zig"));
+            assert!(result.is_some());
+            let path = result.unwrap();
+            assert!(path.contains("src") && path.ends_with("utils.zig"));
+        }
+
+        #[test]
+        fn test_resolve_zig_import_subdirectory() {
+            let result = resolve_zig_import_to_path("./utils/helpers.zig", Some("/project/src/main.zig"));
+            assert!(result.is_some());
+            let path = result.unwrap();
+            assert!(path.contains("src") && path.contains("utils") && path.ends_with("helpers.zig"));
+        }
+
+        #[test]
+        fn test_resolve_zig_import_parent_directory() {
+            let result = resolve_zig_import_to_path("../common.zig", Some("/project/src/utils/main.zig"));
+            assert!(result.is_some());
+            let path = result.unwrap();
+            assert!(path.contains("src") && path.ends_with("common.zig"));
+        }
+
+        #[test]
+        fn test_resolve_zig_import_stdlib_returns_none() {
+            // Stdlib imports should not be resolved
+            let result = resolve_zig_import_to_path("std", Some("/project/src/main.zig"));
+            assert!(result.is_none());
+
+            let result = resolve_zig_import_to_path("builtin", Some("/project/src/main.zig"));
+            assert!(result.is_none());
+        }
+
+        #[test]
+        fn test_resolve_zig_import_external_returns_none() {
+            // External package imports should not be resolved
+            let result = resolve_zig_import_to_path("zap", Some("/project/src/main.zig"));
+            assert!(result.is_none());
+
+            let result = resolve_zig_import_to_path("some_package", Some("/project/src/main.zig"));
+            assert!(result.is_none());
+        }
     }
 }

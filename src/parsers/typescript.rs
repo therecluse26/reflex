@@ -1079,25 +1079,65 @@ pub fn resolve_ts_import_to_path(
     // Resolve the import path relative to current directory
     let resolved = current_dir.join(import_path);
 
-    // Normalize the path (resolve .. and .)
-    let resolved_path = resolved.to_string_lossy().to_string();
+    // Normalize the path (resolve .. and . components)
+    // Use components() to properly handle . and .. without requiring filesystem access
+    let normalized_path = std::path::Path::new(&resolved)
+        .components()
+        .fold(std::path::PathBuf::new(), |mut acc, component| {
+            match component {
+                std::path::Component::CurDir => acc, // Skip .
+                std::path::Component::ParentDir => {
+                    acc.pop(); // Go up one level for ..
+                    acc
+                }
+                _ => {
+                    acc.push(component);
+                    acc
+                }
+            }
+        });
 
-    // Try multiple file extensions in order of preference
+    let normalized = normalized_path.to_string_lossy().to_string();
+
+    // Check if the import already has a known extension
+    // Vue/Svelte files are imported with their extension: import Foo from './Foo.vue'
+    let has_extension = normalized.ends_with(".vue")
+        || normalized.ends_with(".svelte")
+        || normalized.ends_with(".ts")
+        || normalized.ends_with(".tsx")
+        || normalized.ends_with(".js")
+        || normalized.ends_with(".jsx")
+        || normalized.ends_with(".mjs")
+        || normalized.ends_with(".cjs");
+
+    if has_extension {
+        // Import already has an extension - just return it normalized
+        log::trace!("TS/JS import with extension: {}", normalized);
+        return Some(normalized);
+    }
+
+    // No extension - try multiple file extensions in order of preference
     // TypeScript: .ts, .tsx, .d.ts
     // JavaScript: .js, .jsx, .mjs, .cjs
     // Also try index files if the import is a directory
+    //
+    // NOTE: We return a list of candidates separated by "|" delimiter
+    // The indexer will try each one in order until it finds a match in the database
     let extensions = vec![
         ".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs",
         "/index.tsx", "/index.ts", "/index.jsx", "/index.js",
     ];
 
-    for ext in extensions {
-        let candidate = format!("{}{}", resolved_path, ext);
-        log::trace!("Checking TS/JS import path: {}", candidate);
-        return Some(candidate);
-    }
+    let candidates: Vec<String> = extensions
+        .iter()
+        .map(|ext| format!("{}{}", normalized, ext))
+        .collect();
 
-    None
+    log::trace!("TS/JS import candidates (no extension): {}", candidates.join(" | "));
+
+    // Return all candidates as a pipe-delimited string
+    // Format: "path.tsx|path.ts|path.jsx|path.js|..."
+    Some(candidates.join("|"))
 }
 
 #[cfg(test)]
@@ -1113,9 +1153,12 @@ mod path_resolution_tests {
         );
 
         assert!(result.is_some());
-        let path = result.unwrap();
-        // Should try .tsx first
-        assert!(path == "src/components/Button.tsx" || path.ends_with("/Button.tsx"));
+        let candidates = result.unwrap();
+        // Should contain pipe-delimited candidates with .tsx first, then .ts, etc.
+        assert!(candidates.contains("Button.tsx"));
+        assert!(candidates.contains("Button.ts"));
+        // First candidate should be .tsx
+        assert!(candidates.starts_with("src/components/Button.tsx") || candidates.contains("/Button.tsx|"));
     }
 
     #[test]

@@ -650,3 +650,96 @@ fn classify_c_include(include_path: &str, source: &str, node: &tree_sitter::Node
     // Everything else with angle brackets is external (third-party libraries)
     ImportType::External
 }
+
+// ============================================================================
+// Path Resolution
+// ============================================================================
+
+/// Resolve a C #include directive to a file path
+///
+/// # Arguments
+/// * `include_path` - The path from the #include directive (e.g., "utils/helper.h")
+/// * `current_file_path` - Path to the file containing the #include directive
+///
+/// # Returns
+/// * `Some(path)` if the include can be resolved (quoted includes only)
+/// * `None` for angle bracket includes (system/library headers)
+pub fn resolve_c_include_to_path(
+    include_path: &str,
+    current_file_path: Option<&str>,
+) -> Option<String> {
+    // Only resolve relative includes (quoted includes, which are Internal)
+    // Angle bracket includes are system/library headers and won't be resolved
+
+    let current_file = current_file_path?;
+
+    // Get directory of current file
+    let current_dir = std::path::Path::new(current_file).parent()?;
+
+    // Resolve the include path relative to current file
+    let resolved = current_dir.join(include_path);
+
+    // Normalize the path
+    match resolved.canonicalize() {
+        Ok(normalized) => Some(normalized.display().to_string()),
+        Err(_) => {
+            // If canonicalize fails (file doesn't exist yet), return the joined path
+            Some(resolved.display().to_string())
+        }
+    }
+}
+
+// ============================================================================
+// Tests for Path Resolution
+// ============================================================================
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_c_include_same_directory() {
+        let result = resolve_c_include_to_path(
+            "helper.h",
+            Some("/project/src/main.c"),
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        assert!(path.ends_with("src/helper.h") || path.ends_with("src\\helper.h"));
+    }
+
+    #[test]
+    fn test_resolve_c_include_subdirectory() {
+        let result = resolve_c_include_to_path(
+            "utils/helper.h",
+            Some("/project/src/main.c"),
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        assert!(path.ends_with("src/utils/helper.h") || path.ends_with("src\\utils\\helper.h"));
+    }
+
+    #[test]
+    fn test_resolve_c_include_parent_directory() {
+        let result = resolve_c_include_to_path(
+            "../include/common.h",
+            Some("/project/src/main.c"),
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        assert!(path.contains("include") && path.contains("common.h"));
+    }
+
+    #[test]
+    fn test_resolve_c_include_no_current_file() {
+        let result = resolve_c_include_to_path(
+            "helper.h",
+            None,
+        );
+
+        assert!(result.is_none());
+    }
+}

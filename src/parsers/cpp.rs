@@ -997,3 +997,108 @@ fn classify_cpp_include(include_path: &str, source: &str, node: &tree_sitter::No
     // Everything else with angle brackets is external (third-party libraries)
     ImportType::External
 }
+
+// ============================================================================
+// Path Resolution
+// ============================================================================
+
+/// Resolve a C++ #include directive to a file path
+///
+/// # Arguments
+/// * `include_path` - The path from the #include directive (e.g., "utils/helper.hpp")
+/// * `current_file_path` - Path to the file containing the #include directive
+///
+/// # Returns
+/// * `Some(path)` if the include can be resolved (quoted includes only)
+/// * `None` for angle bracket includes (system/library headers)
+pub fn resolve_cpp_include_to_path(
+    include_path: &str,
+    current_file_path: Option<&str>,
+) -> Option<String> {
+    // Only resolve relative includes (quoted includes, which are Internal)
+    // Angle bracket includes are system/library headers and won't be resolved
+
+    let current_file = current_file_path?;
+
+    // Get directory of current file
+    let current_dir = std::path::Path::new(current_file).parent()?;
+
+    // Resolve the include path relative to current file
+    let resolved = current_dir.join(include_path);
+
+    // Normalize the path
+    match resolved.canonicalize() {
+        Ok(normalized) => Some(normalized.display().to_string()),
+        Err(_) => {
+            // If canonicalize fails (file doesn't exist yet), return the joined path
+            Some(resolved.display().to_string())
+        }
+    }
+}
+
+// ============================================================================
+// Tests for Path Resolution
+// ============================================================================
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_cpp_include_same_directory() {
+        let result = resolve_cpp_include_to_path(
+            "helper.hpp",
+            Some("/project/src/main.cpp"),
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        assert!(path.ends_with("src/helper.hpp") || path.ends_with("src\\helper.hpp"));
+    }
+
+    #[test]
+    fn test_resolve_cpp_include_subdirectory() {
+        let result = resolve_cpp_include_to_path(
+            "utils/helper.hpp",
+            Some("/project/src/main.cpp"),
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        assert!(path.ends_with("src/utils/helper.hpp") || path.ends_with("src\\utils\\helper.hpp"));
+    }
+
+    #[test]
+    fn test_resolve_cpp_include_parent_directory() {
+        let result = resolve_cpp_include_to_path(
+            "../include/common.hpp",
+            Some("/project/src/main.cpp"),
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        assert!(path.contains("include") && path.contains("common.hpp"));
+    }
+
+    #[test]
+    fn test_resolve_cpp_include_h_extension() {
+        let result = resolve_cpp_include_to_path(
+            "legacy.h",
+            Some("/project/src/main.cpp"),
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        assert!(path.ends_with("src/legacy.h") || path.ends_with("src\\legacy.h"));
+    }
+
+    #[test]
+    fn test_resolve_cpp_include_no_current_file() {
+        let result = resolve_cpp_include_to_path(
+            "helper.hpp",
+            None,
+        );
+
+        assert!(result.is_none());
+    }
+}

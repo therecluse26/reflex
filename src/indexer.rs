@@ -867,23 +867,35 @@ impl Indexer {
                             || file_path.ends_with(".mts") || file_path.ends_with(".cts")
                             || file_path.ends_with(".mjs") || file_path.ends_with(".cjs") {
                         // Resolve TypeScript/JavaScript dependencies (relative imports only)
-                        if let Some(resolved_path) = crate::parsers::typescript::resolve_ts_import_to_path(
+                        if let Some(candidates_str) = crate::parsers::typescript::resolve_ts_import_to_path(
                             &import_info.imported_path,
                             Some(&file_path),
                         ) {
-                            // Look up file ID in database using exact match
-                            match dep_index.get_file_id_by_path(&resolved_path)? {
-                                Some(id) => {
-                                    log::trace!("Resolved TS/JS dependency: {} -> {} (file_id={})",
-                                               import_info.imported_path, resolved_path, id);
-                                    Some(id)
-                                }
-                                None => {
-                                    log::trace!("TS/JS dependency resolved to path but file not in index: {} -> {}",
-                                               import_info.imported_path, resolved_path);
-                                    None
+                            // Parse pipe-delimited candidates (e.g., "path.tsx|path.ts|path.jsx|path.js")
+                            let candidates: Vec<&str> = candidates_str.split('|').collect();
+
+                            // Try each candidate in order until we find one in the database
+                            let mut resolved_id = None;
+                            for candidate_path in candidates {
+                                match dep_index.get_file_id_by_path(candidate_path)? {
+                                    Some(id) => {
+                                        log::trace!("Resolved TS/JS dependency: {} -> {} (file_id={})",
+                                                   import_info.imported_path, candidate_path, id);
+                                        resolved_id = Some(id);
+                                        break; // Found a match, stop trying
+                                    }
+                                    None => {
+                                        log::trace!("TS/JS candidate not in index: {}", candidate_path);
+                                    }
                                 }
                             }
+
+                            if resolved_id.is_none() {
+                                log::trace!("TS/JS dependency: no matching file found in database for any candidate: {}",
+                                           candidates_str);
+                            }
+
+                            resolved_id
                         } else {
                             log::trace!("Could not resolve TS/JS import (non-relative or external): {}", import_info.imported_path);
                             None
@@ -984,12 +996,141 @@ impl Indexer {
                             log::trace!("Could not resolve Ruby require: {}", import_info.imported_path);
                             None
                         }
+                    } else if file_path.ends_with(".c") || file_path.ends_with(".h") {
+                        // Resolve C dependencies (relative #include paths)
+                        if let Some(resolved_path) = crate::parsers::c::resolve_c_include_to_path(
+                            &import_info.imported_path,
+                            Some(&file_path),
+                        ) {
+                            // Look up file ID in database using exact match
+                            match dep_index.get_file_id_by_path(&resolved_path)? {
+                                Some(id) => {
+                                    log::trace!("Resolved C dependency: {} -> {} (file_id={})",
+                                               import_info.imported_path, resolved_path, id);
+                                    Some(id)
+                                }
+                                None => {
+                                    log::trace!("C dependency resolved to path but file not in index: {} -> {}",
+                                               import_info.imported_path, resolved_path);
+                                    None
+                                }
+                            }
+                        } else {
+                            log::trace!("Could not resolve C include (system header): {}", import_info.imported_path);
+                            None
+                        }
+                    } else if file_path.ends_with(".cpp") || file_path.ends_with(".cc") || file_path.ends_with(".cxx")
+                           || file_path.ends_with(".hpp") || file_path.ends_with(".hxx") || file_path.ends_with(".h++")
+                           || file_path.ends_with(".C") || file_path.ends_with(".H") {
+                        // Resolve C++ dependencies (relative #include paths)
+                        if let Some(resolved_path) = crate::parsers::cpp::resolve_cpp_include_to_path(
+                            &import_info.imported_path,
+                            Some(&file_path),
+                        ) {
+                            // Look up file ID in database using exact match
+                            match dep_index.get_file_id_by_path(&resolved_path)? {
+                                Some(id) => {
+                                    log::trace!("Resolved C++ dependency: {} -> {} (file_id={})",
+                                               import_info.imported_path, resolved_path, id);
+                                    Some(id)
+                                }
+                                None => {
+                                    log::trace!("C++ dependency resolved to path but file not in index: {} -> {}",
+                                               import_info.imported_path, resolved_path);
+                                    None
+                                }
+                            }
+                        } else {
+                            log::trace!("Could not resolve C++ include (system header): {}", import_info.imported_path);
+                            None
+                        }
+                    } else if file_path.ends_with(".cs") {
+                        // Resolve C# dependencies (using namespace-to-path mapping)
+                        if let Some(resolved_path) = crate::parsers::csharp::resolve_csharp_using_to_path(
+                            &import_info.imported_path,
+                            Some(&file_path),
+                        ) {
+                            // Look up file ID in database using exact match
+                            match dep_index.get_file_id_by_path(&resolved_path)? {
+                                Some(id) => {
+                                    log::trace!("Resolved C# dependency: {} -> {} (file_id={})",
+                                               import_info.imported_path, resolved_path, id);
+                                    Some(id)
+                                }
+                                None => {
+                                    log::trace!("C# dependency resolved to path but file not in index: {} -> {}",
+                                               import_info.imported_path, resolved_path);
+                                    None
+                                }
+                            }
+                        } else {
+                            log::trace!("Could not resolve C# using directive: {}", import_info.imported_path);
+                            None
+                        }
+                    } else if file_path.ends_with(".zig") {
+                        // Resolve Zig dependencies (relative @import paths)
+                        if let Some(resolved_path) = crate::parsers::zig::resolve_zig_import_to_path(
+                            &import_info.imported_path,
+                            Some(&file_path),
+                        ) {
+                            // Look up file ID in database using exact match
+                            match dep_index.get_file_id_by_path(&resolved_path)? {
+                                Some(id) => {
+                                    log::trace!("Resolved Zig dependency: {} -> {} (file_id={})",
+                                               import_info.imported_path, resolved_path, id);
+                                    Some(id)
+                                }
+                                None => {
+                                    log::trace!("Zig dependency resolved to path but file not in index: {} -> {}",
+                                               import_info.imported_path, resolved_path);
+                                    None
+                                }
+                            }
+                        } else {
+                            log::trace!("Could not resolve Zig import (external or stdlib): {}", import_info.imported_path);
+                            None
+                        }
+                    } else if file_path.ends_with(".vue") || file_path.ends_with(".svelte") {
+                        // Resolve Vue/Svelte dependencies (use TypeScript/JavaScript resolver for imports in <script> blocks)
+                        if let Some(candidates_str) = crate::parsers::typescript::resolve_ts_import_to_path(
+                            &import_info.imported_path,
+                            Some(&file_path),
+                        ) {
+                            // Parse pipe-delimited candidates (e.g., "path.tsx|path.ts|path.jsx|path.js")
+                            let candidates: Vec<&str> = candidates_str.split('|').collect();
+
+                            // Try each candidate in order until we find one in the database
+                            let mut resolved_id = None;
+                            for candidate_path in candidates {
+                                match dep_index.get_file_id_by_path(candidate_path)? {
+                                    Some(id) => {
+                                        log::trace!("Resolved Vue/Svelte dependency: {} -> {} (file_id={})",
+                                                   import_info.imported_path, candidate_path, id);
+                                        resolved_id = Some(id);
+                                        break; // Found a match, stop trying
+                                    }
+                                    None => {
+                                        log::trace!("Vue/Svelte candidate not in index: {}", candidate_path);
+                                    }
+                                }
+                            }
+
+                            if resolved_id.is_none() {
+                                log::trace!("Vue/Svelte dependency: no matching file found in database for any candidate: {}",
+                                           candidates_str);
+                            }
+
+                            resolved_id
+                        } else {
+                            log::trace!("Could not resolve Vue/Svelte import (non-relative or external): {}", import_info.imported_path);
+                            None
+                        }
                     } else {
                         None
                     };
 
                     // resolved_file_id will be populated using deterministic language-specific resolution
-                    // TODO: Implement proper resolvers for other languages
+                    // All language resolvers have been implemented!
                     resolved_deps.push(Dependency {
                         file_id,
                         imported_path: import_info.imported_path.clone(),

@@ -1410,3 +1410,87 @@ fn classify_csharp_using(using_path: &str) -> ImportType {
     // but will be filtered out at indexing time if they're not in the project)
     ImportType::Internal
 }
+
+// ============================================================================
+// Path Resolution
+// ============================================================================
+
+/// Resolve a C# using directive to a file path
+///
+/// # Arguments
+/// * `using_path` - The namespace from the using directive (e.g., "MyApp.Models.User")
+/// * `current_file_path` - Path to the file containing the using directive (unused for C#)
+///
+/// # Returns
+/// * `Some(path)` if the namespace can be resolved to a file
+/// * `None` if resolution fails
+///
+/// # Notes
+/// C# namespace-to-file resolution follows these common patterns:
+/// - `MyApp.Models.User` → `MyApp/Models/User.cs`
+/// - `MyApp.Services.UserService` → `MyApp/Services/UserService.cs`
+///
+/// This resolver tries to convert namespace paths to file paths based on
+/// C# naming conventions where namespace structure matches directory structure.
+pub fn resolve_csharp_using_to_path(
+    using_path: &str,
+    _current_file_path: Option<&str>,
+) -> Option<String> {
+    // C# namespaces typically map to directory structure
+    // Example: MyApp.Models.User → MyApp/Models/User.cs
+
+    // Convert namespace separators to path separators
+    let path_without_extension = using_path.replace('.', "/");
+
+    // Try with .cs extension (most common)
+    Some(format!("{}.cs", path_without_extension))
+}
+
+// ============================================================================
+// Tests for Path Resolution
+// ============================================================================
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_csharp_using_simple_namespace() {
+        let result = resolve_csharp_using_to_path(
+            "MyApp.Models.User",
+            None,
+        );
+
+        assert_eq!(result, Some("MyApp/Models/User.cs".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_csharp_using_services() {
+        let result = resolve_csharp_using_to_path(
+            "MyApp.Services.UserService",
+            None,
+        );
+
+        assert_eq!(result, Some("MyApp/Services/UserService.cs".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_csharp_using_single_level() {
+        let result = resolve_csharp_using_to_path(
+            "MyApp",
+            None,
+        );
+
+        assert_eq!(result, Some("MyApp.cs".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_csharp_using_deep_namespace() {
+        let result = resolve_csharp_using_to_path(
+            "MyApp.Core.Domain.Models.User",
+            None,
+        );
+
+        assert_eq!(result, Some("MyApp/Core/Domain/Models/User.cs".to_string()));
+    }
+}
