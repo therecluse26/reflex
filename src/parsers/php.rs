@@ -15,6 +15,7 @@
 use anyhow::{Context, Result};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
+use std::path::{Path, PathBuf};
 use crate::models::{Language, SearchResult, Span, SymbolKind};
 
 /// Parse PHP source code and extract symbols
@@ -1105,6 +1106,7 @@ mod tests {
 
 use crate::models::ImportType;
 use crate::parsers::{DependencyExtractor, ImportInfo};
+use std::collections::HashMap;
 
 /// PHP dependency extractor
 pub struct PhpDependencyExtractor;
@@ -1272,6 +1274,30 @@ fn classify_php_use(use_path: &str) -> ImportType {
         "XMLReader", "XMLWriter",
     ];
 
+    // Common vendor packages (third-party dependencies from composer)
+    const PHP_VENDOR_NAMESPACES: &[&str] = &[
+        // Laravel framework
+        "Illuminate\\", "Laravel\\",
+
+        // Symfony framework
+        "Symfony\\",
+
+        // Popular packages
+        "Spatie\\", "Stancl\\", "Doctrine\\", "Monolog\\", "PHPUnit\\",
+        "Carbon\\", "GuzzleHttp\\", "Composer\\", "Predis\\", "League\\",
+        "Ramsey\\", "Webmozart\\", "Brick\\", "Mockery\\", "Faker\\",
+        "PhpParser\\", "PHPStan\\", "Psalm\\", "Pest\\", "Filament\\",
+        "Livewire\\", "Inertia\\", "Socialite\\", "Sanctum\\", "Passport\\",
+        "Horizon\\", "Telescope\\", "Forge\\", "Vapor\\", "Cashier\\",
+        "Nova\\", "Spark\\", "Jetstream\\", "Fortify\\", "Breeze\\",
+        "Vonage\\", "Twilio\\", "Stripe\\", "Pusher\\", "Algolia\\",
+        "Aws\\", "Google\\", "Microsoft\\", "Facebook\\", "Twitter\\",
+        "Sentry\\", "Bugsnag\\", "Rollbar\\", "NewRelic\\", "Datadog\\",
+        "Elasticsearch\\", "Redis\\", "Memcached\\", "MongoDB\\",
+        "PhpOffice\\", "Dompdf\\", "TCPDF\\", "Mpdf\\", "Intervention\\",
+        "Barryvdh\\", "Maatwebsite\\", "Rap2hpoutre\\", "Yajra\\",
+    ];
+
     // Check if it's a standard library class
     for stdlib_ns in PHP_STDLIB_NAMESPACES {
         if use_path == *stdlib_ns || use_path.starts_with(stdlib_ns) {
@@ -1279,8 +1305,252 @@ fn classify_php_use(use_path: &str) -> ImportType {
         }
     }
 
-    // Internal: project namespaces (will be filtered if not in codebase)
-    // External: third-party packages (e.g., vendor/ classes)
-    // We classify as Internal by default; non-project files will be filtered at indexing time
+    // Check if it's a vendor/third-party package
+    for vendor_ns in PHP_VENDOR_NAMESPACES {
+        if use_path.starts_with(vendor_ns) {
+            return ImportType::External;
+        }
+    }
+
+    // Internal: project namespaces
     ImportType::Internal
+}
+
+// ============================================================================
+// PSR-4 Autoloading Support (composer.json parser)
+// ============================================================================
+
+/// PSR-4 autoload mapping (namespace prefix → directory path)
+#[derive(Debug, Clone)]
+pub struct Psr4Mapping {
+    pub namespace_prefix: String,  // e.g., "App\\"
+    pub directory: String,          // e.g., "app/"
+    pub project_root: String,       // e.g., "services/php/rcm-backend/" (relative to index root)
+}
+
+/// Parse composer.json and extract PSR-4 autoload mappings
+///
+/// Returns a vector of PSR-4 mappings sorted by namespace length (longest first)
+/// to ensure more specific namespaces are matched before general ones.
+///
+/// # Arguments
+///
+/// * `project_root` - Root directory of the project (where composer.json is located)
+pub fn parse_composer_psr4(project_root: &Path) -> Result<Vec<Psr4Mapping>> {
+    let composer_path = project_root.join("composer.json");
+
+    // If composer.json doesn't exist, return empty mappings
+    if !composer_path.exists() {
+        log::debug!("No composer.json found at {:?}", composer_path);
+        return Ok(Vec::new());
+    }
+
+    let content = std::fs::read_to_string(&composer_path)
+        .context("Failed to read composer.json")?;
+
+    let json: serde_json::Value = serde_json::from_str(&content)
+        .context("Failed to parse composer.json")?;
+
+    let mut mappings = Vec::new();
+
+    // Extract PSR-4 mappings from autoload section
+    if let Some(autoload) = json.get("autoload") {
+        if let Some(psr4) = autoload.get("psr-4") {
+            if let Some(psr4_obj) = psr4.as_object() {
+                for (namespace, path) in psr4_obj {
+                    // path can be a string or array of strings
+                    let directories = match path {
+                        serde_json::Value::String(s) => vec![s.clone()],
+                        serde_json::Value::Array(arr) => {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect()
+                        }
+                        _ => continue,
+                    };
+
+                    for dir in directories {
+                        mappings.push(Psr4Mapping {
+                            namespace_prefix: namespace.clone(),
+                            directory: dir,
+                            project_root: String::new(), // Empty for single-project use
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by namespace length (longest first) for correct matching
+    // Example: "App\\Http\\" should match before "App\\"
+    mappings.sort_by(|a, b| b.namespace_prefix.len().cmp(&a.namespace_prefix.len()));
+
+    log::debug!("Loaded {} PSR-4 mappings from composer.json", mappings.len());
+    for mapping in &mappings {
+        log::trace!("  {} => {}", mapping.namespace_prefix, mapping.directory);
+    }
+
+    Ok(mappings)
+}
+
+/// Find all composer.json files in a directory tree (excluding vendor directories)
+///
+/// # Arguments
+///
+/// * `index_root` - Root directory of the indexed codebase
+///
+/// # Returns
+///
+/// Vector of absolute paths to composer.json files (excluding vendor/)
+pub fn find_all_composer_json(index_root: &Path) -> Result<Vec<PathBuf>> {
+    use ignore::WalkBuilder;
+
+    let mut composer_files = Vec::new();
+
+    let walker = WalkBuilder::new(index_root)
+        .follow_links(false)
+        .git_ignore(true)
+        .build();
+
+    for entry in walker {
+        let entry = entry?;
+        let path = entry.path();
+
+        // Only process files named composer.json
+        if !path.is_file() || path.file_name() != Some(std::ffi::OsStr::new("composer.json")) {
+            continue;
+        }
+
+        // Skip vendor directories (composer packages)
+        if path.components().any(|c| c.as_os_str() == "vendor") {
+            log::trace!("Skipping vendor composer.json: {:?}", path);
+            continue;
+        }
+
+        composer_files.push(path.to_path_buf());
+    }
+
+    log::debug!("Found {} project composer.json files", composer_files.len());
+    Ok(composer_files)
+}
+
+/// Parse all composer.json files in a monorepo and extract PSR-4 mappings
+///
+/// # Arguments
+///
+/// * `index_root` - Root directory of the indexed codebase (e.g., monorepo root)
+///
+/// # Returns
+///
+/// Vector of PSR-4 mappings with project_root relative to index_root
+pub fn parse_all_composer_psr4(index_root: &Path) -> Result<Vec<Psr4Mapping>> {
+    let composer_files = find_all_composer_json(index_root)?;
+
+    if composer_files.is_empty() {
+        log::debug!("No composer.json files found in {:?}", index_root);
+        return Ok(Vec::new());
+    }
+
+    let mut all_mappings = Vec::new();
+    let composer_count = composer_files.len(); // Save count before moving
+
+    for composer_path in composer_files {
+        let project_root = composer_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("composer.json has no parent directory"))?;
+
+        // Get project root relative to index root
+        let relative_project_root = project_root
+            .strip_prefix(index_root)
+            .unwrap_or(project_root)
+            .to_string_lossy()
+            .to_string();
+
+        log::debug!("Parsing composer.json at {:?}", composer_path);
+
+        // Parse this composer.json
+        let mappings = parse_composer_psr4(project_root)?;
+
+        // Add project_root to each mapping
+        for mut mapping in mappings {
+            mapping.project_root = relative_project_root.clone();
+            all_mappings.push(mapping);
+        }
+    }
+
+    // Sort by namespace length (longest first) for correct matching
+    all_mappings.sort_by(|a, b| b.namespace_prefix.len().cmp(&a.namespace_prefix.len()));
+
+    log::info!("Loaded {} total PSR-4 mappings from {} projects",
+               all_mappings.len(), composer_count);
+
+    Ok(all_mappings)
+}
+
+/// Resolve a PHP namespace to a file path using PSR-4 autoload rules
+///
+/// # Arguments
+///
+/// * `namespace` - Full namespace (e.g., "App\\Http\\Controllers\\UserController")
+/// * `psr4_mappings` - PSR-4 mappings from composer.json
+///
+/// # Returns
+///
+/// Relative file path (e.g., "app/Http/Controllers/UserController.php") or None if not resolvable
+///
+/// # PSR-4 Resolution Rules
+///
+/// 1. Find the longest matching namespace prefix
+/// 2. Strip the prefix from the namespace
+/// 3. Convert remaining namespace to path (replace \\ with /)
+/// 4. Append to the mapped directory
+/// 5. Add .php extension
+///
+/// # Examples
+///
+/// ```
+/// // PSR-4 mapping: "App\\" => "app/"
+/// // Input: "App\\Http\\Controllers\\UserController"
+/// // Output: "app/Http/Controllers/UserController.php"
+/// ```
+pub fn resolve_php_namespace_to_path(
+    namespace: &str,
+    psr4_mappings: &[Psr4Mapping],
+) -> Option<String> {
+    // Find the longest matching PSR-4 prefix
+    for mapping in psr4_mappings {
+        if namespace.starts_with(&mapping.namespace_prefix) {
+            // Strip the namespace prefix
+            let relative_namespace = &namespace[mapping.namespace_prefix.len()..];
+
+            // Convert namespace to path (replace \\ with /)
+            let relative_path = relative_namespace.replace('\\', "/");
+
+            // Combine directory + relative_path + .php
+            let file_path = if relative_path.is_empty() {
+                // Namespace exactly matches prefix (e.g., "App\\") → "app/.php" (invalid)
+                // This shouldn't happen for valid class imports
+                return None;
+            } else {
+                // Build full path: project_root + directory + relative_path + .php
+                let base_path = if mapping.project_root.is_empty() {
+                    // Single-project mode: just directory + file
+                    format!("{}{}.php", mapping.directory, relative_path)
+                } else {
+                    // Monorepo mode: project_root + directory + file
+                    format!("{}/{}{}.php", mapping.project_root, mapping.directory, relative_path)
+                };
+
+                // Normalize path separators (replace // with /)
+                base_path.replace("//", "/")
+            };
+
+            log::trace!("Resolved namespace '{}' to path '{}'", namespace, file_path);
+            return Some(file_path);
+        }
+    }
+
+    // No matching PSR-4 prefix found
+    log::trace!("No PSR-4 mapping found for namespace '{}'", namespace);
+    None
 }

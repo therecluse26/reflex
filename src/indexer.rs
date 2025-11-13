@@ -606,6 +606,19 @@ impl Indexer {
                 log::info!("Found Kotlin package: {}", prefix);
             }
 
+            // Find and parse all composer.json files for PHP projects (monorepo support)
+            let php_psr4_mappings = crate::parsers::php::parse_all_composer_psr4(root)
+                .unwrap_or_else(|e| {
+                    log::warn!("Failed to parse composer.json files: {}", e);
+                    Vec::new()
+                });
+            if !php_psr4_mappings.is_empty() {
+                log::info!("Found {} PSR-4 mappings from composer.json files", php_psr4_mappings.len());
+                for mapping in &php_psr4_mappings {
+                    log::debug!("  {} => {} (project: {})", mapping.namespace_prefix, mapping.directory, mapping.project_root);
+                }
+            }
+
             // Create dependency index to resolve paths and insert dependencies
             let cache_for_deps = CacheManager::new(root);
             let dep_index = DependencyIndex::new(cache_for_deps);
@@ -672,22 +685,37 @@ impl Indexer {
                         continue;
                     }
 
-                    // Try to resolve import path to a file
-                    let resolved_file_id = {
-                        let resolved_path = crate::dependency::resolve_rust_import(
+                    // Resolve PHP dependencies using PSR-4 (deterministic)
+                    let resolved_file_id = if file_path.ends_with(".php") && !php_psr4_mappings.is_empty() {
+                        // Use PSR-4 to resolve namespace to file path
+                        if let Some(resolved_path) = crate::parsers::php::resolve_php_namespace_to_path(
                             &import_info.imported_path,
-                            &file_path,
-                            root,
-                        );
-
-                        if let Some(ref path) = resolved_path {
-                            dep_index.get_file_id_by_path(path)?
+                            &php_psr4_mappings,
+                        ) {
+                            // Look up file ID in database using exact match
+                            match dep_index.get_file_id_by_path(&resolved_path)? {
+                                Some(id) => {
+                                    log::trace!("Resolved PHP dependency: {} -> {} (file_id={})",
+                                               import_info.imported_path, resolved_path, id);
+                                    Some(id)
+                                }
+                                None => {
+                                    log::trace!("PHP dependency resolved to path but file not in index: {} -> {}",
+                                               import_info.imported_path, resolved_path);
+                                    None
+                                }
+                            }
                         } else {
+                            log::trace!("Could not resolve PHP namespace using PSR-4: {}",
+                                       import_info.imported_path);
                             None
                         }
+                    } else {
+                        None
                     };
 
-                    // Insert Internal dependency
+                    // resolved_file_id will be populated using deterministic language-specific resolution
+                    // TODO: Implement proper resolvers for other languages
                     resolved_deps.push(Dependency {
                         file_id,
                         imported_path: import_info.imported_path.clone(),

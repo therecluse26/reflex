@@ -10,6 +10,7 @@ use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
 use crate::cache::CacheManager;
+use crate::dependency::DependencyIndex;
 use crate::indexer::Indexer;
 use crate::models::{IndexConfig, Language, SymbolKind};
 use crate::query::{QueryEngine, QueryFilter};
@@ -359,6 +360,86 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "Languages to include (empty = all)"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "get_dependencies",
+                "description": "Get all dependencies (imports) of a specific file.\n\n**Purpose:** Analyze what modules/files a given file imports.\n\n**Returns:** Array of dependency objects with import path, line number, type (internal/external/stdlib), and optional symbols.\n\n**Use this when:**\n- Understanding file dependencies\n- Analyzing import structure\n- Finding what a file depends on\n\n**Note:** Path matching is fuzzy - supports exact paths, fragments, or just filenames.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "File path (supports fuzzy matching: 'Controllers/FooController.php' or just 'FooController.php')"
+                        }
+                    },
+                    "required": ["path"]
+                }
+            },
+            {
+                "name": "get_dependents",
+                "description": "Get all files that depend on (import) a specific file.\n\n**Purpose:** Find what other files import this file (reverse dependency lookup).\n\n**Returns:** Array of file paths that import the specified file.\n\n**Use this when:**\n- Understanding impact of changes\n- Finding usages of a module\n- Analyzing file importance\n\n**Note:** Path matching is fuzzy - supports exact paths, fragments, or just filenames.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "File path (supports fuzzy matching: 'models/User.php' or just 'User.php')"
+                        }
+                    },
+                    "required": ["path"]
+                }
+            },
+            {
+                "name": "get_transitive_deps",
+                "description": "Get transitive dependencies of a file up to a specified depth.\n\n**Purpose:** Find not just direct dependencies, but dependencies of dependencies (the full dependency tree).\n\n**Returns:** Object mapping file IDs to their depth in the dependency tree.\n\n**Use this when:**\n- Understanding full dependency chain\n- Analyzing deep coupling\n- Planning refactoring impact\n\n**Example:** depth=2 finds: file → deps → deps of deps",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "File path (supports fuzzy matching)"
+                        },
+                        "depth": {
+                            "type": "integer",
+                            "description": "Maximum depth to traverse (default: 3, max recommended: 5)"
+                        }
+                    },
+                    "required": ["path"]
+                }
+            },
+            {
+                "name": "find_hotspots",
+                "description": "Find the most-imported files in the codebase (dependency hotspots).\n\n**Purpose:** Identify files that many other files depend on.\n\n**Returns:** Array of {file_id, import_count, path} objects sorted by import count (descending).\n\n**Use this when:**\n- Finding critical files\n- Identifying potential bottlenecks\n- Understanding architecture\n- Planning refactoring priorities\n\n**Example output:** [{\"path\": \"src/models.rs\", \"import_count\": 27}]",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of hotspots to return (default: 10)"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "find_circular",
+                "description": "Detect circular dependencies in the codebase.\n\n**Purpose:** Find dependency cycles (A → B → C → A).\n\n**Returns:** Array of cycles, where each cycle is an array of file IDs forming the circular path.\n\n**Use this when:**\n- Debugging circular dependency issues\n- Improving code architecture\n- Validating refactoring\n\n**Note:** Circular dependencies can cause compilation issues and indicate architectural problems.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "find_unused",
+                "description": "Find unused files that no other files import.\n\n**Purpose:** Identify orphaned files that could be safely removed.\n\n**Returns:** Array of file paths with no incoming dependencies.\n\n**Use this when:**\n- Cleaning up dead code\n- Reducing codebase size\n- Identifying test-only or entry-point files\n\n**Note:** Entry points (main.rs, index.ts) will appear as unused but should not be deleted.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of unused files to return (default: 100)"
                         }
                     }
                 }
@@ -817,6 +898,191 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 "content": [{
                     "type": "text",
                     "text": serde_json::to_string(&stats)?
+                }]
+            }))
+        }
+        "get_dependencies" => {
+            let path = arguments["path"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing path"))?
+                .to_string();
+
+            let cache = CacheManager::new(".");
+            let deps_index = DependencyIndex::new(cache);
+
+            // Fuzzy path matching
+            let file_id = deps_index.get_file_id_by_path(&path)?
+                .ok_or_else(|| anyhow::anyhow!("File '{}' not found in index", path))?;
+
+            let dependencies = deps_index.get_dependencies_info(file_id)?;
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&dependencies)?
+                }]
+            }))
+        }
+        "get_dependents" => {
+            let path = arguments["path"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing path"))?
+                .to_string();
+
+            let cache = CacheManager::new(".");
+            let deps_index = DependencyIndex::new(cache);
+
+            // Fuzzy path matching
+            let file_id = deps_index.get_file_id_by_path(&path)?
+                .ok_or_else(|| anyhow::anyhow!("File '{}' not found in index", path))?;
+
+            let dependents = deps_index.get_dependents(file_id)?;
+            let paths = deps_index.get_file_paths(&dependents)?;
+
+            // Convert to array of paths
+            let path_list: Vec<String> = dependents.iter()
+                .filter_map(|id| paths.get(id).cloned())
+                .collect();
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&path_list)?
+                }]
+            }))
+        }
+        "get_transitive_deps" => {
+            let path = arguments["path"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing path"))?
+                .to_string();
+
+            let depth = arguments["depth"]
+                .as_u64()
+                .map(|n| n as usize)
+                .unwrap_or(3);  // Default depth of 3
+
+            let cache = CacheManager::new(".");
+            let deps_index = DependencyIndex::new(cache);
+
+            // Fuzzy path matching
+            let file_id = deps_index.get_file_id_by_path(&path)?
+                .ok_or_else(|| anyhow::anyhow!("File '{}' not found in index", path))?;
+
+            let transitive = deps_index.get_transitive_deps(file_id, depth)?;
+
+            // Get paths for all file IDs
+            let file_ids: Vec<i64> = transitive.keys().copied().collect();
+            let paths = deps_index.get_file_paths(&file_ids)?;
+
+            // Build result with path → depth mapping
+            let result: Vec<serde_json::Value> = transitive.iter()
+                .filter_map(|(id, depth)| {
+                    paths.get(id).map(|path| json!({
+                        "path": path,
+                        "depth": depth
+                    }))
+                })
+                .collect();
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&result)?
+                }]
+            }))
+        }
+        "find_hotspots" => {
+            let limit = arguments["limit"]
+                .as_u64()
+                .map(|n| n as usize);
+
+            let cache = CacheManager::new(".");
+            let deps_index = DependencyIndex::new(cache);
+
+            let hotspots = deps_index.find_hotspots(limit)?;
+
+            // Get paths for all file IDs
+            let file_ids: Vec<i64> = hotspots.iter().map(|(id, _)| *id).collect();
+            let paths = deps_index.get_file_paths(&file_ids)?;
+
+            // Build result with path + import_count
+            let result: Vec<serde_json::Value> = hotspots.iter()
+                .filter_map(|(id, count)| {
+                    paths.get(id).map(|path| json!({
+                        "file_id": id,
+                        "import_count": count,
+                        "path": path
+                    }))
+                })
+                .collect();
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&result)?
+                }]
+            }))
+        }
+        "find_circular" => {
+            let cache = CacheManager::new(".");
+            let deps_index = DependencyIndex::new(cache);
+
+            let cycles = deps_index.detect_circular_dependencies()?;
+
+            if cycles.is_empty() {
+                Ok(json!({
+                    "content": [{
+                        "type": "text",
+                        "text": json!({"cycles": []}).to_string()
+                    }]
+                }))
+            } else {
+                // Convert cycles to paths
+                let result: Vec<Vec<String>> = cycles.iter()
+                    .map(|cycle| {
+                        let paths = deps_index.get_file_paths(cycle).unwrap_or_default();
+                        cycle.iter()
+                            .filter_map(|id| paths.get(id).cloned())
+                            .collect()
+                    })
+                    .collect();
+
+                Ok(json!({
+                    "content": [{
+                        "type": "text",
+                        "text": serde_json::to_string(&json!({"cycles": result}))?
+                    }]
+                }))
+            }
+        }
+        "find_unused" => {
+            let limit = arguments["limit"]
+                .as_u64()
+                .map(|n| n as usize);
+
+            let cache = CacheManager::new(".");
+            let deps_index = DependencyIndex::new(cache);
+
+            let mut unused = deps_index.find_unused_files()?;
+
+            // Apply limit if specified
+            if let Some(lim) = limit {
+                unused.truncate(lim);
+            }
+
+            // Get paths for all unused file IDs
+            let paths = deps_index.get_file_paths(&unused)?;
+
+            // Build result (array of paths)
+            let result: Vec<String> = unused.iter()
+                .filter_map(|id| paths.get(id).cloned())
+                .collect();
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&result)?
                 }]
             }))
         }

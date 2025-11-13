@@ -288,6 +288,75 @@ pub enum Command {
     /// }
     Mcp,
 
+    /// Analyze file dependencies and imports
+    ///
+    /// Show dependencies, dependents, and perform graph analysis
+    /// to understand code relationships and architecture.
+    ///
+    /// Examples:
+    ///   rfx deps src/main.rs                  # Show dependencies
+    ///   rfx deps src/config.rs --reverse      # Show dependents
+    ///   rfx deps src/api.rs --depth 3         # Transitive deps
+    ///   rfx deps --circular                   # Find cycles
+    ///   rfx deps --hotspots                   # Most-imported files
+    ///   rfx deps --unused                     # Orphaned files
+    Deps {
+        /// File path to analyze (omit for graph-wide operations)
+        file: Option<PathBuf>,
+
+        /// Show files that depend on this file (reverse lookup)
+        #[arg(short, long)]
+        reverse: bool,
+
+        /// Traversal depth for transitive dependencies (default: 1)
+        #[arg(short, long, default_value = "1")]
+        depth: usize,
+
+        /// Output format: json (default), tree, table, dot
+        #[arg(short = 'f', long, default_value = "json")]
+        format: String,
+
+        /// Pretty-print JSON output (only with --format json)
+        #[arg(long)]
+        pretty: bool,
+
+        /// Filter to internal dependencies only
+        #[arg(long)]
+        only_internal: bool,
+
+        /// Filter to external dependencies only
+        #[arg(long)]
+        only_external: bool,
+
+        /// Filter to stdlib dependencies only
+        #[arg(long)]
+        only_stdlib: bool,
+
+        /// Find circular dependencies (graph-wide)
+        #[arg(long, conflicts_with = "file")]
+        circular: bool,
+
+        /// Find most-imported files (hotspots)
+        #[arg(long, conflicts_with = "file")]
+        hotspots: bool,
+
+        /// Find unused files (no incoming dependencies)
+        #[arg(long, conflicts_with = "file")]
+        unused: bool,
+
+        /// Find disconnected components (islands)
+        #[arg(long, conflicts_with = "file")]
+        islands: bool,
+
+        /// Full analysis report (runs all analyses)
+        #[arg(long, conflicts_with = "file")]
+        analyze: bool,
+
+        /// Maximum number of results to return
+        #[arg(short = 'n', long)]
+        limit: Option<usize>,
+    },
+
     /// Internal command: Run background symbol indexing (hidden from help)
     #[command(hide = true)]
     IndexSymbolsInternal {
@@ -338,6 +407,9 @@ impl Cli {
             }
             Some(Command::Mcp) => {
                 handle_mcp()
+            }
+            Some(Command::Deps { file, reverse, depth, format, pretty, only_internal, only_external, only_stdlib, circular, hotspots, unused, islands, analyze, limit }) => {
+                handle_deps(file, reverse, depth, format, pretty, only_internal, only_external, only_stdlib, circular, hotspots, unused, islands, analyze, limit)
             }
             Some(Command::IndexSymbolsInternal { cache_dir }) => {
                 handle_index_symbols_internal(cache_dir)
@@ -1423,5 +1495,581 @@ fn handle_mcp() -> Result<()> {
 fn handle_index_symbols_internal(cache_dir: PathBuf) -> Result<()> {
     let mut indexer = crate::background_indexer::BackgroundIndexer::new(&cache_dir)?;
     indexer.run()?;
+    Ok(())
+}
+
+/// Handle the `deps` subcommand
+#[allow(clippy::too_many_arguments)]
+fn handle_deps(
+    file: Option<PathBuf>,
+    reverse: bool,
+    depth: usize,
+    format: String,
+    pretty_json: bool,
+    only_internal: bool,
+    only_external: bool,
+    only_stdlib: bool,
+    circular: bool,
+    hotspots: bool,
+    unused: bool,
+    islands: bool,
+    analyze: bool,
+    limit: Option<usize>,
+) -> Result<()> {
+    use crate::dependency::DependencyIndex;
+    use crate::models::ImportType;
+
+    log::info!("Starting deps command");
+
+    let cache = CacheManager::new(".");
+
+    if !cache.exists() {
+        anyhow::bail!(
+            "No index found in current directory.\n\
+             \n\
+             Run 'rfx index' to build the code search index first.\n\
+             \n\
+             Example:\n\
+             $ rfx index          # Index current directory\n\
+             $ rfx deps <file>    # Analyze dependencies"
+        );
+    }
+
+    let deps_index = DependencyIndex::new(cache);
+
+    // Determine operation mode
+    if analyze {
+        // Run full analysis
+        return handle_deps_analyze(&deps_index, &format, pretty_json, limit);
+    } else if circular {
+        return handle_deps_circular(&deps_index, &format, pretty_json);
+    } else if hotspots {
+        return handle_deps_hotspots(&deps_index, &format, pretty_json, limit);
+    } else if unused {
+        return handle_deps_unused(&deps_index, &format, pretty_json, limit);
+    } else if islands {
+        return handle_deps_islands(&deps_index, &format, pretty_json);
+    }
+
+    // File-based operations require a file path
+    let file_path = file.ok_or_else(|| {
+        anyhow::anyhow!(
+            "No file specified.\n\
+             \n\
+             Usage:\n\
+             $ rfx deps <file>              # Show dependencies\n\
+             $ rfx deps <file> --reverse    # Show dependents\n\
+             $ rfx deps --circular          # Find cycles\n\
+             $ rfx deps --hotspots          # Most-imported files"
+        )
+    })?;
+
+    // Convert file path to string
+    let file_str = file_path.to_string_lossy().to_string();
+
+    // Get file ID
+    let file_id = deps_index.get_file_id_by_path(&file_str)?
+        .ok_or_else(|| anyhow::anyhow!("File '{}' not found in index", file_str))?;
+
+    // Filter function based on flags
+    let import_filter = move |import_type: &ImportType| -> bool {
+        if only_internal && *import_type != ImportType::Internal {
+            return false;
+        }
+        if only_external && *import_type != ImportType::External {
+            return false;
+        }
+        if only_stdlib && *import_type != ImportType::Stdlib {
+            return false;
+        }
+        true
+    };
+
+    if reverse {
+        // Show dependents (who imports this file)
+        let dependents = deps_index.get_dependents(file_id)?;
+        let paths = deps_index.get_file_paths(&dependents)?;
+
+        match format.as_str() {
+            "json" => {
+                let output: Vec<_> = dependents.iter()
+                    .filter_map(|id| paths.get(id).map(|path| serde_json::json!({
+                        "file_id": id,
+                        "path": path,
+                    })))
+                    .collect();
+
+                let json_str = if pretty_json {
+                    serde_json::to_string_pretty(&output)?
+                } else {
+                    serde_json::to_string(&output)?
+                };
+                println!("{}", json_str);
+                eprintln!("Found {} files that import {}", dependents.len(), file_str);
+            }
+            "tree" => {
+                println!("Files that import {}:", file_str);
+                for (id, path) in &paths {
+                    if dependents.contains(id) {
+                        println!("  └─ {}", path);
+                    }
+                }
+                eprintln!("\nFound {} dependents", dependents.len());
+            }
+            "table" => {
+                println!("ID     Path");
+                println!("-----  ----");
+                for id in &dependents {
+                    if let Some(path) = paths.get(id) {
+                        println!("{:<5}  {}", id, path);
+                    }
+                }
+                eprintln!("\nFound {} dependents", dependents.len());
+            }
+            _ => {
+                anyhow::bail!("Unknown format '{}'. Supported: json, tree, table, dot", format);
+            }
+        }
+    } else {
+        // Show dependencies (what this file imports)
+        if depth == 1 {
+            // Direct dependencies only
+            let deps = deps_index.get_dependencies(file_id)?;
+            let filtered_deps: Vec<_> = deps.into_iter()
+                .filter(|d| import_filter(&d.import_type))
+                .collect();
+
+            match format.as_str() {
+                "json" => {
+                    let output: Vec<_> = filtered_deps.iter()
+                        .map(|dep| serde_json::json!({
+                            "imported_path": dep.imported_path,
+                            "resolved_file_id": dep.resolved_file_id,
+                            "import_type": match dep.import_type {
+                                ImportType::Internal => "internal",
+                                ImportType::External => "external",
+                                ImportType::Stdlib => "stdlib",
+                            },
+                            "line": dep.line_number,
+                            "symbols": dep.imported_symbols,
+                        }))
+                        .collect();
+
+                    let json_str = if pretty_json {
+                        serde_json::to_string_pretty(&output)?
+                    } else {
+                        serde_json::to_string(&output)?
+                    };
+                    println!("{}", json_str);
+                    eprintln!("Found {} dependencies for {}", filtered_deps.len(), file_str);
+                }
+                "tree" => {
+                    println!("Dependencies of {}:", file_str);
+                    for dep in &filtered_deps {
+                        let type_label = match dep.import_type {
+                            ImportType::Internal => "[internal]",
+                            ImportType::External => "[external]",
+                            ImportType::Stdlib => "[stdlib]",
+                        };
+                        println!("  └─ {} {} (line {})", dep.imported_path, type_label, dep.line_number);
+                    }
+                    eprintln!("\nFound {} dependencies", filtered_deps.len());
+                }
+                "table" => {
+                    println!("Path                          Type       Line");
+                    println!("----------------------------  ---------  ----");
+                    for dep in &filtered_deps {
+                        let type_str = match dep.import_type {
+                            ImportType::Internal => "internal",
+                            ImportType::External => "external",
+                            ImportType::Stdlib => "stdlib",
+                        };
+                        println!("{:<28}  {:<9}  {}", dep.imported_path, type_str, dep.line_number);
+                    }
+                    eprintln!("\nFound {} dependencies", filtered_deps.len());
+                }
+                _ => {
+                    anyhow::bail!("Unknown format '{}'. Supported: json, tree, table, dot", format);
+                }
+            }
+        } else {
+            // Transitive dependencies (depth > 1)
+            let transitive = deps_index.get_transitive_deps(file_id, depth)?;
+            let file_ids: Vec<_> = transitive.keys().copied().collect();
+            let paths = deps_index.get_file_paths(&file_ids)?;
+
+            match format.as_str() {
+                "json" => {
+                    let output: Vec<_> = transitive.iter()
+                        .filter_map(|(id, d)| {
+                            paths.get(id).map(|path| serde_json::json!({
+                                "file_id": id,
+                                "path": path,
+                                "depth": d,
+                            }))
+                        })
+                        .collect();
+
+                    let json_str = if pretty_json {
+                        serde_json::to_string_pretty(&output)?
+                    } else {
+                        serde_json::to_string(&output)?
+                    };
+                    println!("{}", json_str);
+                    eprintln!("Found {} transitive dependencies (depth {})", transitive.len(), depth);
+                }
+                "tree" => {
+                    println!("Transitive dependencies of {} (depth {}):", file_str, depth);
+                    // Group by depth for tree display
+                    let mut by_depth: std::collections::HashMap<usize, Vec<i64>> = std::collections::HashMap::new();
+                    for (id, d) in &transitive {
+                        by_depth.entry(*d).or_insert_with(Vec::new).push(*id);
+                    }
+
+                    for depth_level in 0..=depth {
+                        if let Some(ids) = by_depth.get(&depth_level) {
+                            let indent = "  ".repeat(depth_level);
+                            for id in ids {
+                                if let Some(path) = paths.get(id) {
+                                    if depth_level == 0 {
+                                        println!("{}{} (self)", indent, path);
+                                    } else {
+                                        println!("{}└─ {}", indent, path);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    eprintln!("\nFound {} transitive dependencies", transitive.len());
+                }
+                "table" => {
+                    println!("Depth  File ID  Path");
+                    println!("-----  -------  ----");
+                    let mut sorted: Vec<_> = transitive.iter().collect();
+                    sorted.sort_by_key(|(_, d)| *d);
+                    for (id, d) in sorted {
+                        if let Some(path) = paths.get(id) {
+                            println!("{:<5}  {:<7}  {}", d, id, path);
+                        }
+                    }
+                    eprintln!("\nFound {} transitive dependencies", transitive.len());
+                }
+                _ => {
+                    anyhow::bail!("Unknown format '{}'. Supported: json, tree, table, dot", format);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle --circular flag (detect cycles)
+fn handle_deps_circular(
+    deps_index: &crate::dependency::DependencyIndex,
+    format: &str,
+    pretty_json: bool,
+) -> Result<()> {
+    let cycles = deps_index.detect_circular_dependencies()?;
+
+    if cycles.is_empty() {
+        println!("No circular dependencies found.");
+        return Ok(());
+    }
+
+    match format {
+        "json" => {
+            let file_ids: Vec<i64> = cycles.iter().flat_map(|c| c.iter()).copied().collect();
+            let paths = deps_index.get_file_paths(&file_ids)?;
+
+            let output: Vec<_> = cycles.iter()
+                .map(|cycle| {
+                    let cycle_paths: Vec<_> = cycle.iter()
+                        .filter_map(|id| paths.get(id).cloned())
+                        .collect();
+                    serde_json::json!({
+                        "file_ids": cycle,
+                        "paths": cycle_paths,
+                    })
+                })
+                .collect();
+
+            let json_str = if pretty_json {
+                serde_json::to_string_pretty(&output)?
+            } else {
+                serde_json::to_string(&output)?
+            };
+            println!("{}", json_str);
+            eprintln!("Found {} circular dependencies", cycles.len());
+        }
+        "tree" => {
+            println!("Circular Dependencies Found:");
+            let file_ids: Vec<i64> = cycles.iter().flat_map(|c| c.iter()).copied().collect();
+            let paths = deps_index.get_file_paths(&file_ids)?;
+
+            for (idx, cycle) in cycles.iter().enumerate() {
+                println!("\nCycle {}:", idx + 1);
+                for id in cycle {
+                    if let Some(path) = paths.get(id) {
+                        println!("  → {}", path);
+                    }
+                }
+                // Show cycle completion
+                if let Some(first_id) = cycle.first() {
+                    if let Some(path) = paths.get(first_id) {
+                        println!("  → {} (cycle completes)", path);
+                    }
+                }
+            }
+            eprintln!("\nFound {} cycles", cycles.len());
+        }
+        "table" => {
+            println!("Cycle  Files in Cycle");
+            println!("-----  --------------");
+            let file_ids: Vec<i64> = cycles.iter().flat_map(|c| c.iter()).copied().collect();
+            let paths = deps_index.get_file_paths(&file_ids)?;
+
+            for (idx, cycle) in cycles.iter().enumerate() {
+                let cycle_str = cycle.iter()
+                    .filter_map(|id| paths.get(id).map(|p| p.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(" → ");
+                println!("{:<5}  {}", idx + 1, cycle_str);
+            }
+            eprintln!("\nFound {} cycles", cycles.len());
+        }
+        _ => {
+            anyhow::bail!("Unknown format '{}'. Supported: json, tree, table", format);
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle --hotspots flag (most-imported files)
+fn handle_deps_hotspots(
+    deps_index: &crate::dependency::DependencyIndex,
+    format: &str,
+    pretty_json: bool,
+    limit: Option<usize>,
+) -> Result<()> {
+    let hotspots = deps_index.find_hotspots(limit)?;
+
+    if hotspots.is_empty() {
+        println!("No hotspots found.");
+        return Ok(());
+    }
+
+    let file_ids: Vec<i64> = hotspots.iter().map(|(id, _)| *id).collect();
+    let paths = deps_index.get_file_paths(&file_ids)?;
+
+    match format {
+        "json" => {
+            let output: Vec<_> = hotspots.iter()
+                .filter_map(|(id, count)| {
+                    paths.get(id).map(|path| serde_json::json!({
+                        "file_id": id,
+                        "path": path,
+                        "import_count": count,
+                    }))
+                })
+                .collect();
+
+            let json_str = if pretty_json {
+                serde_json::to_string_pretty(&output)?
+            } else {
+                serde_json::to_string(&output)?
+            };
+            println!("{}", json_str);
+            eprintln!("Found {} hotspots", hotspots.len());
+        }
+        "tree" => {
+            println!("Hotspots (Most-Imported Files):");
+            for (idx, (id, count)) in hotspots.iter().enumerate() {
+                if let Some(path) = paths.get(id) {
+                    println!("  {}. {} ({} imports)", idx + 1, path, count);
+                }
+            }
+            eprintln!("\nFound {} hotspots", hotspots.len());
+        }
+        "table" => {
+            println!("Rank  Imports  File");
+            println!("----  -------  ----");
+            for (idx, (id, count)) in hotspots.iter().enumerate() {
+                if let Some(path) = paths.get(id) {
+                    println!("{:<4}  {:<7}  {}", idx + 1, count, path);
+                }
+            }
+            eprintln!("\nFound {} hotspots", hotspots.len());
+        }
+        _ => {
+            anyhow::bail!("Unknown format '{}'. Supported: json, tree, table", format);
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle --unused flag (orphaned files)
+fn handle_deps_unused(
+    deps_index: &crate::dependency::DependencyIndex,
+    format: &str,
+    pretty_json: bool,
+    limit: Option<usize>,
+) -> Result<()> {
+    let mut unused = deps_index.find_unused_files()?;
+
+    // Apply limit if specified
+    if let Some(lim) = limit {
+        unused.truncate(lim);
+    }
+
+    if unused.is_empty() {
+        println!("No unused files found (all files have incoming dependencies).");
+        return Ok(());
+    }
+
+    let paths = deps_index.get_file_paths(&unused)?;
+
+    match format {
+        "json" => {
+            let output: Vec<_> = unused.iter()
+                .filter_map(|id| {
+                    paths.get(id).map(|path| serde_json::json!({
+                        "file_id": id,
+                        "path": path,
+                    }))
+                })
+                .collect();
+
+            let json_str = if pretty_json {
+                serde_json::to_string_pretty(&output)?
+            } else {
+                serde_json::to_string(&output)?
+            };
+            println!("{}", json_str);
+            eprintln!("Found {} unused files", unused.len());
+        }
+        "tree" => {
+            println!("Unused Files (No Incoming Dependencies):");
+            for (idx, id) in unused.iter().enumerate() {
+                if let Some(path) = paths.get(id) {
+                    println!("  {}. {}", idx + 1, path);
+                }
+            }
+            eprintln!("\nFound {} unused files", unused.len());
+        }
+        "table" => {
+            println!("File ID  Path");
+            println!("-------  ----");
+            for id in &unused {
+                if let Some(path) = paths.get(id) {
+                    println!("{:<7}  {}", id, path);
+                }
+            }
+            eprintln!("\nFound {} unused files", unused.len());
+        }
+        _ => {
+            anyhow::bail!("Unknown format '{}'. Supported: json, tree, table", format);
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle --islands flag (disconnected components)
+fn handle_deps_islands(
+    deps_index: &crate::dependency::DependencyIndex,
+    format: &str,
+    pretty_json: bool,
+) -> Result<()> {
+    let islands = deps_index.find_islands()?;
+
+    if islands.is_empty() {
+        println!("No islands found.");
+        return Ok(());
+    }
+
+    // Get all file IDs from all islands
+    let file_ids: Vec<i64> = islands.iter().flat_map(|island| island.iter()).copied().collect();
+    let paths = deps_index.get_file_paths(&file_ids)?;
+
+    match format {
+        "json" => {
+            let output: Vec<_> = islands.iter()
+                .enumerate()
+                .map(|(idx, island)| {
+                    let island_paths: Vec<_> = island.iter()
+                        .filter_map(|id| paths.get(id).cloned())
+                        .collect();
+                    serde_json::json!({
+                        "island_id": idx + 1,
+                        "size": island.len(),
+                        "file_ids": island,
+                        "paths": island_paths,
+                    })
+                })
+                .collect();
+
+            let json_str = if pretty_json {
+                serde_json::to_string_pretty(&output)?
+            } else {
+                serde_json::to_string(&output)?
+            };
+            println!("{}", json_str);
+            eprintln!("Found {} islands (disconnected components)", islands.len());
+        }
+        "tree" => {
+            println!("Islands (Disconnected Components):");
+            for (idx, island) in islands.iter().enumerate() {
+                println!("\nIsland {} ({} files):", idx + 1, island.len());
+                for id in island {
+                    if let Some(path) = paths.get(id) {
+                        println!("  ├─ {}", path);
+                    }
+                }
+            }
+            eprintln!("\nFound {} islands", islands.len());
+        }
+        "table" => {
+            println!("Island  Size  Files");
+            println!("------  ----  -----");
+            for (idx, island) in islands.iter().enumerate() {
+                let island_files = island.iter()
+                    .filter_map(|id| paths.get(id).map(|p| p.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println!("{:<6}  {:<4}  {}", idx + 1, island.len(), island_files);
+            }
+            eprintln!("\nFound {} islands", islands.len());
+        }
+        _ => {
+            anyhow::bail!("Unknown format '{}'. Supported: json, tree, table", format);
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle --analyze flag (full report)
+fn handle_deps_analyze(
+    deps_index: &crate::dependency::DependencyIndex,
+    format: &str,
+    pretty_json: bool,
+    limit: Option<usize>,
+) -> Result<()> {
+    println!("Running comprehensive dependency analysis...\n");
+
+    // Run all analyses
+    println!("1. Circular Dependencies:");
+    handle_deps_circular(deps_index, format, pretty_json)?;
+
+    println!("\n2. Hotspots (Most-Imported Files):");
+    handle_deps_hotspots(deps_index, format, pretty_json, limit)?;
+
+    println!("\n3. Unused Files:");
+    handle_deps_unused(deps_index, format, pretty_json, limit)?;
+
+    println!("\nAnalysis complete!");
     Ok(())
 }
