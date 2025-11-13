@@ -932,3 +932,858 @@ Dependency tracking is a **high-value addition** to Reflex that significantly en
 **Total Effort:** 5-7 weeks for complete implementation (all phases)
 
 **Expected Impact:** 10-100x faster dependency lookups compared to grep, with accurate results and structured output optimized for AI agents.
+
+---
+
+## IMPLEMENTATION PLAN (2025-11-12)
+
+### Current Status Assessment
+
+#### ✅ COMPLETE (100%)
+- **Database schema** (`file_dependencies` table) - fully implemented in `src/cache.rs`
+- **Dependency storage** (`DependencyIndex`) - complete in `src/dependency.rs` (963 lines)
+- **Graph algorithms** - all core algorithms implemented:
+  - Direct dependencies: `get_dependencies(file_id)`
+  - Reverse lookup: `get_dependents(file_id)`
+  - Transitive deps: `get_transitive_deps(file_id, max_depth)` (BFS)
+  - Circular detection: `detect_circular_dependencies()` (DFS)
+  - Hotspot detection: `find_hotspots(limit)`
+  - Unused files: `find_unused_files()`
+  - Path resolution: `get_file_paths()`, `get_file_path()`
+  - Batch operations: `batch_insert_dependencies()`, `clear_dependencies()`
+- **Import extraction** - working for all languages:
+  - Rust: `src/parsers/rust.rs::extract_rust_imports()`
+  - Python: `src/parsers/python.rs::extract_python_imports()`
+  - TypeScript/JavaScript: `src/parsers/typescript.rs::extract_typescript_imports()`
+  - Go: `src/parsers/go.rs::extract_go_imports()`
+  - Java: `src/parsers/java.rs::extract_java_imports()`
+  - Kotlin: `src/parsers/kotlin.rs::extract_kotlin_imports()`
+  - Zig: `src/parsers/zig.rs::extract_zig_imports()`
+  - Vue: `src/parsers/vue.rs::extract_vue_imports()`
+  - Svelte: `src/parsers/svelte.rs::extract_svelte_imports()`
+- **Dependency classification** - working for all languages:
+  - Internal/External/Stdlib classification
+  - Package-based reclassification (Rust, Python, Java, Kotlin, Ruby)
+  - Indexer integration in `src/indexer.rs`
+- **Query integration** - `--dependencies` flag implemented:
+  - CLI support: `rfx query "pattern" --dependencies`
+  - HTTP API support: `GET /query?dependencies=true`
+  - MCP support (via query filter)
+
+#### ❌ MISSING (0%)
+- **`rfx deps` CLI command** - NOT in `src/cli.rs::Command` enum
+- **Output formatters** - no tree/DOT/table formatters for deps
+- **Command handlers** - no `handle_deps()` function
+- **Testing** - no integration tests for full workflow
+
+---
+
+### Implementation Strategy
+
+#### Phase 1: Basic `rfx deps` Command (MVP)
+**Goal:** Get `rfx deps <file>` working with JSON output
+
+**Tasks:**
+1. Add `Deps` variant to `Command` enum in `src/cli.rs`
+2. Create `handle_deps()` function
+3. Implement basic file operations:
+   - `rfx deps <file>` - show direct dependencies
+   - `rfx deps <file> --reverse` - show dependents
+   - `rfx deps <file> --depth N` - transitive traversal
+4. JSON output only (reuse existing models)
+
+**Files to modify:**
+- `src/cli.rs` (lines 34-297: Command enum, lines 299-346: execute() match)
+
+**Estimated time:** 2-3 hours
+
+#### Phase 2: Output Formatters
+**Goal:** Add tree, table, and DOT format output
+
+**Tasks:**
+1. Create `src/dependency_formatter.rs` module
+2. Implement formatters:
+   - `format_tree()` - tree visualization with Unicode box drawing
+   - `format_table()` - tabular output for hotspots/unused
+   - `format_dot()` - Graphviz DOT format
+3. Add `--tree` and `--format` flags to deps command
+4. Pretty-print for human readability
+
+**New file:**
+- `src/dependency_formatter.rs` (~300 lines)
+
+**Files to modify:**
+- `src/cli.rs` (add format flags)
+- `src/lib.rs` (add `pub mod dependency_formatter;`)
+
+**Estimated time:** 3-4 hours
+
+#### Phase 3: Graph-Wide Analysis Commands
+**Goal:** Implement `--circular`, `--hotspots`, `--unused`, `--analyze`
+
+**Tasks:**
+1. Extend `handle_deps()` with graph-wide operations
+2. Implement subcommands:
+   - `rfx deps --circular` - detect and display cycles
+   - `rfx deps --hotspots` - show most-imported files
+   - `rfx deps --unused` - find orphaned files
+   - `rfx deps --analyze` - comprehensive report
+3. Add `--limit` flag for controlling result count
+4. Pretty formatting for each operation
+
+**Files to modify:**
+- `src/cli.rs` (add graph-wide flags)
+
+**Estimated time:** 2-3 hours
+
+#### Phase 4: Testing & Documentation
+**Goal:** Ensure correctness and usability
+
+**Tasks:**
+1. Add integration tests in `tests/deps_test.rs`
+2. Test on real codebases (Reflex itself, test projects)
+3. Update CLAUDE.md with `rfx deps` examples
+4. Add `--help` examples to CLI
+
+**New file:**
+- `tests/deps_test.rs` (~200 lines)
+
+**Files to modify:**
+- `CLAUDE.md` (add deps command documentation)
+- `src/cli.rs` (improve help text)
+
+**Estimated time:** 2-3 hours
+
+---
+
+### Detailed Implementation Specification
+
+#### 1. CLI Command Structure (`src/cli.rs`)
+
+**Add to Command enum (after Line 289):**
+
+```rust
+/// Analyze file dependencies and imports
+///
+/// Show dependencies, dependents, and perform graph analysis
+/// to understand code relationships and architecture.
+///
+/// Examples:
+///   rfx deps src/main.rs                  # Show dependencies
+///   rfx deps src/config.rs --reverse      # Show dependents
+///   rfx deps src/api.rs --depth 3         # Transitive deps
+///   rfx deps --circular                   # Find cycles
+///   rfx deps --hotspots                   # Most-imported files
+///   rfx deps --unused                     # Orphaned files
+Deps {
+    /// File path to analyze (omit for graph-wide operations)
+    file: Option<PathBuf>,
+
+    /// Show files that depend on this file (reverse lookup)
+    #[arg(short, long)]
+    reverse: bool,
+
+    /// Traversal depth for transitive dependencies (default: 1)
+    #[arg(short, long, default_value = "1")]
+    depth: usize,
+
+    /// Output format: json (default), tree, table, dot
+    #[arg(short = 'f', long, default_value = "json")]
+    format: String,
+
+    /// Pretty-print JSON output (only with --format json)
+    #[arg(long)]
+    pretty: bool,
+
+    /// Filter to internal dependencies only
+    #[arg(long)]
+    only_internal: bool,
+
+    /// Filter to external dependencies only
+    #[arg(long)]
+    only_external: bool,
+
+    /// Filter to stdlib dependencies only
+    #[arg(long)]
+    only_stdlib: bool,
+
+    /// Find circular dependencies (graph-wide)
+    #[arg(long, conflicts_with = "file")]
+    circular: bool,
+
+    /// Find most-imported files (hotspots)
+    #[arg(long, conflicts_with = "file")]
+    hotspots: bool,
+
+    /// Find unused files (no incoming dependencies)
+    #[arg(long, conflicts_with = "file")]
+    unused: bool,
+
+    /// Find disconnected components (islands)
+    #[arg(long, conflicts_with = "file")]
+    islands: bool,
+
+    /// Full analysis report (runs all analyses)
+    #[arg(long, conflicts_with = "file")]
+    analyze: bool,
+
+    /// Maximum number of results to return
+    #[arg(short = 'n', long)]
+    limit: Option<usize>,
+}
+```
+
+**Add to execute() match (after Line 342):**
+
+```rust
+Some(Command::Deps { file, reverse, depth, format, pretty, only_internal, only_external, only_stdlib, circular, hotspots, unused, islands, analyze, limit }) => {
+    handle_deps(file, reverse, depth, format, pretty, only_internal, only_external, only_stdlib, circular, hotspots, unused, islands, analyze, limit)
+}
+```
+
+#### 2. Command Handler (`src/cli.rs`, after Line 1427)
+
+**Add handler function:**
+
+```rust
+/// Handle the `deps` subcommand
+fn handle_deps(
+    file: Option<PathBuf>,
+    reverse: bool,
+    depth: usize,
+    format: String,
+    pretty_json: bool,
+    only_internal: bool,
+    only_external: bool,
+    only_stdlib: bool,
+    circular: bool,
+    hotspots: bool,
+    unused: bool,
+    islands: bool,
+    analyze: bool,
+    limit: Option<usize>,
+) -> Result<()> {
+    use crate::dependency::DependencyIndex;
+    use crate::models::ImportType;
+
+    log::info!("Starting deps command");
+
+    let cache = CacheManager::new(".");
+
+    if !cache.exists() {
+        anyhow::bail!(
+            "No index found in current directory.\n\
+             \n\
+             Run 'rfx index' to build the code search index first.\n\
+             \n\
+             Example:\n\
+             $ rfx index          # Index current directory\n\
+             $ rfx deps <file>    # Analyze dependencies"
+        );
+    }
+
+    let deps_index = DependencyIndex::new(cache);
+
+    // Determine operation mode
+    if analyze {
+        // Run full analysis
+        return handle_deps_analyze(&deps_index, &format, pretty_json, limit);
+    } else if circular {
+        return handle_deps_circular(&deps_index, &format, pretty_json);
+    } else if hotspots {
+        return handle_deps_hotspots(&deps_index, &format, pretty_json, limit);
+    } else if unused {
+        return handle_deps_unused(&deps_index, &format, pretty_json, limit);
+    } else if islands {
+        return handle_deps_islands(&deps_index, &format, pretty_json);
+    }
+
+    // File-based operations require a file path
+    let file_path = file.ok_or_else(|| {
+        anyhow::anyhow!(
+            "No file specified.\n\
+             \n\
+             Usage:\n\
+             $ rfx deps <file>              # Show dependencies\n\
+             $ rfx deps <file> --reverse    # Show dependents\n\
+             $ rfx deps --circular          # Find cycles\n\
+             $ rfx deps --hotspots          # Most-imported files"
+        )
+    })?;
+
+    // Convert file path to string
+    let file_str = file_path.to_string_lossy().to_string();
+
+    // Get file ID
+    let file_id = deps_index.get_file_id_by_path(&file_str)?
+        .ok_or_else(|| anyhow::anyhow!("File '{}' not found in index", file_str))?;
+
+    // Filter function based on flags
+    let import_filter = move |import_type: &ImportType| -> bool {
+        if only_internal && *import_type != ImportType::Internal {
+            return false;
+        }
+        if only_external && *import_type != ImportType::External {
+            return false;
+        }
+        if only_stdlib && *import_type != ImportType::Stdlib {
+            return false;
+        }
+        true
+    };
+
+    if reverse {
+        // Show dependents (who imports this file)
+        let dependents = deps_index.get_dependents(file_id)?;
+        let paths = deps_index.get_file_paths(&dependents)?;
+
+        match format.as_str() {
+            "json" => {
+                let output: Vec<_> = dependents.iter()
+                    .filter_map(|id| paths.get(id).map(|path| serde_json::json!({
+                        "file_id": id,
+                        "path": path,
+                    })))
+                    .collect();
+
+                let json_str = if pretty_json {
+                    serde_json::to_string_pretty(&output)?
+                } else {
+                    serde_json::to_string(&output)?
+                };
+                println!("{}", json_str);
+                eprintln!("Found {} files that import {}", dependents.len(), file_str);
+            }
+            "tree" => {
+                println!("Files that import {}:", file_str);
+                for (id, path) in &paths {
+                    if dependents.contains(id) {
+                        println!("  └─ {}", path);
+                    }
+                }
+                eprintln!("\nFound {} dependents", dependents.len());
+            }
+            "table" => {
+                println!("ID     Path");
+                println!("-----  ----");
+                for id in &dependents {
+                    if let Some(path) = paths.get(id) {
+                        println!("{:<5}  {}", id, path);
+                    }
+                }
+                eprintln!("\nFound {} dependents", dependents.len());
+            }
+            _ => {
+                anyhow::bail!("Unknown format '{}'. Supported: json, tree, table, dot", format);
+            }
+        }
+    } else {
+        // Show dependencies (what this file imports)
+        if depth == 1 {
+            // Direct dependencies only
+            let deps = deps_index.get_dependencies(file_id)?;
+            let filtered_deps: Vec<_> = deps.into_iter()
+                .filter(|d| import_filter(&d.import_type))
+                .collect();
+
+            match format.as_str() {
+                "json" => {
+                    let output: Vec<_> = filtered_deps.iter()
+                        .map(|dep| serde_json::json!({
+                            "imported_path": dep.imported_path,
+                            "resolved_file_id": dep.resolved_file_id,
+                            "import_type": match dep.import_type {
+                                ImportType::Internal => "internal",
+                                ImportType::External => "external",
+                                ImportType::Stdlib => "stdlib",
+                            },
+                            "line": dep.line_number,
+                            "symbols": dep.imported_symbols,
+                        }))
+                        .collect();
+
+                    let json_str = if pretty_json {
+                        serde_json::to_string_pretty(&output)?
+                    } else {
+                        serde_json::to_string(&output)?
+                    };
+                    println!("{}", json_str);
+                    eprintln!("Found {} dependencies for {}", filtered_deps.len(), file_str);
+                }
+                "tree" => {
+                    println!("Dependencies of {}:", file_str);
+                    for dep in &filtered_deps {
+                        let type_label = match dep.import_type {
+                            ImportType::Internal => "[internal]",
+                            ImportType::External => "[external]",
+                            ImportType::Stdlib => "[stdlib]",
+                        };
+                        println!("  └─ {} {} (line {})", dep.imported_path, type_label, dep.line_number);
+                    }
+                    eprintln!("\nFound {} dependencies", filtered_deps.len());
+                }
+                "table" => {
+                    println!("Path                          Type       Line");
+                    println!("----------------------------  ---------  ----");
+                    for dep in &filtered_deps {
+                        let type_str = match dep.import_type {
+                            ImportType::Internal => "internal",
+                            ImportType::External => "external",
+                            ImportType::Stdlib => "stdlib",
+                        };
+                        println!("{:<28}  {:<9}  {}", dep.imported_path, type_str, dep.line_number);
+                    }
+                    eprintln!("\nFound {} dependencies", filtered_deps.len());
+                }
+                _ => {
+                    anyhow::bail!("Unknown format '{}'. Supported: json, tree, table, dot", format);
+                }
+            }
+        } else {
+            // Transitive dependencies (depth > 1)
+            let transitive = deps_index.get_transitive_deps(file_id, depth)?;
+            let file_ids: Vec<_> = transitive.keys().copied().collect();
+            let paths = deps_index.get_file_paths(&file_ids)?;
+
+            match format.as_str() {
+                "json" => {
+                    let output: Vec<_> = transitive.iter()
+                        .filter_map(|(id, d)| {
+                            paths.get(id).map(|path| serde_json::json!({
+                                "file_id": id,
+                                "path": path,
+                                "depth": d,
+                            }))
+                        })
+                        .collect();
+
+                    let json_str = if pretty_json {
+                        serde_json::to_string_pretty(&output)?
+                    } else {
+                        serde_json::to_string(&output)?
+                    };
+                    println!("{}", json_str);
+                    eprintln!("Found {} transitive dependencies (depth {})", transitive.len(), depth);
+                }
+                "tree" => {
+                    println!("Transitive dependencies of {} (depth {}):", file_str, depth);
+                    // Group by depth for tree display
+                    let mut by_depth: std::collections::HashMap<usize, Vec<i64>> = std::collections::HashMap::new();
+                    for (id, d) in &transitive {
+                        by_depth.entry(*d).or_insert_with(Vec::new).push(*id);
+                    }
+
+                    for depth_level in 0..=depth {
+                        if let Some(ids) = by_depth.get(&depth_level) {
+                            let indent = "  ".repeat(depth_level);
+                            for id in ids {
+                                if let Some(path) = paths.get(id) {
+                                    if depth_level == 0 {
+                                        println!("{}{} (self)", indent, path);
+                                    } else {
+                                        println!("{}└─ {}", indent, path);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    eprintln!("\nFound {} transitive dependencies", transitive.len());
+                }
+                "table" => {
+                    println!("Depth  File ID  Path");
+                    println!("-----  -------  ----");
+                    let mut sorted: Vec<_> = transitive.iter().collect();
+                    sorted.sort_by_key(|(_, d)| *d);
+                    for (id, d) in sorted {
+                        if let Some(path) = paths.get(id) {
+                            println!("{:<5}  {:<7}  {}", d, id, path);
+                        }
+                    }
+                    eprintln!("\nFound {} transitive dependencies", transitive.len());
+                }
+                _ => {
+                    anyhow::bail!("Unknown format '{}'. Supported: json, tree, table, dot", format);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle --circular flag (detect cycles)
+fn handle_deps_circular(
+    deps_index: &DependencyIndex,
+    format: &str,
+    pretty_json: bool,
+) -> Result<()> {
+    let cycles = deps_index.detect_circular_dependencies()?;
+
+    if cycles.is_empty() {
+        println!("No circular dependencies found.");
+        return Ok(());
+    }
+
+    match format {
+        "json" => {
+            let file_ids: Vec<i64> = cycles.iter().flat_map(|c| c.iter()).copied().collect();
+            let paths = deps_index.get_file_paths(&file_ids)?;
+
+            let output: Vec<_> = cycles.iter()
+                .map(|cycle| {
+                    let cycle_paths: Vec<_> = cycle.iter()
+                        .filter_map(|id| paths.get(id).cloned())
+                        .collect();
+                    serde_json::json!({
+                        "file_ids": cycle,
+                        "paths": cycle_paths,
+                    })
+                })
+                .collect();
+
+            let json_str = if pretty_json {
+                serde_json::to_string_pretty(&output)?
+            } else {
+                serde_json::to_string(&output)?
+            };
+            println!("{}", json_str);
+            eprintln!("Found {} circular dependencies", cycles.len());
+        }
+        "tree" => {
+            println!("Circular Dependencies Found:");
+            let file_ids: Vec<i64> = cycles.iter().flat_map(|c| c.iter()).copied().collect();
+            let paths = deps_index.get_file_paths(&file_ids)?;
+
+            for (idx, cycle) in cycles.iter().enumerate() {
+                println!("\nCycle {}:", idx + 1);
+                for id in cycle {
+                    if let Some(path) = paths.get(id) {
+                        println!("  → {}", path);
+                    }
+                }
+                // Show cycle completion
+                if let Some(first_id) = cycle.first() {
+                    if let Some(path) = paths.get(first_id) {
+                        println!("  → {} (cycle completes)", path);
+                    }
+                }
+            }
+            eprintln!("\nFound {} cycles", cycles.len());
+        }
+        "table" => {
+            println!("Cycle  Files in Cycle");
+            println!("-----  --------------");
+            let file_ids: Vec<i64> = cycles.iter().flat_map(|c| c.iter()).copied().collect();
+            let paths = deps_index.get_file_paths(&file_ids)?;
+
+            for (idx, cycle) in cycles.iter().enumerate() {
+                let cycle_str = cycle.iter()
+                    .filter_map(|id| paths.get(id).map(|p| p.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(" → ");
+                println!("{:<5}  {}", idx + 1, cycle_str);
+            }
+            eprintln!("\nFound {} cycles", cycles.len());
+        }
+        _ => {
+            anyhow::bail!("Unknown format '{}'. Supported: json, tree, table", format);
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle --hotspots flag (most-imported files)
+fn handle_deps_hotspots(
+    deps_index: &DependencyIndex,
+    format: &str,
+    pretty_json: bool,
+    limit: Option<usize>,
+) -> Result<()> {
+    let hotspots = deps_index.find_hotspots(limit)?;
+
+    if hotspots.is_empty() {
+        println!("No hotspots found.");
+        return Ok(());
+    }
+
+    let file_ids: Vec<i64> = hotspots.iter().map(|(id, _)| *id).collect();
+    let paths = deps_index.get_file_paths(&file_ids)?;
+
+    match format {
+        "json" => {
+            let output: Vec<_> = hotspots.iter()
+                .filter_map(|(id, count)| {
+                    paths.get(id).map(|path| serde_json::json!({
+                        "file_id": id,
+                        "path": path,
+                        "import_count": count,
+                    }))
+                })
+                .collect();
+
+            let json_str = if pretty_json {
+                serde_json::to_string_pretty(&output)?
+            } else {
+                serde_json::to_string(&output)?
+            };
+            println!("{}", json_str);
+            eprintln!("Found {} hotspots", hotspots.len());
+        }
+        "tree" => {
+            println!("Hotspots (Most-Imported Files):");
+            for (idx, (id, count)) in hotspots.iter().enumerate() {
+                if let Some(path) = paths.get(id) {
+                    println!("  {}. {} ({} imports)", idx + 1, path, count);
+                }
+            }
+            eprintln!("\nFound {} hotspots", hotspots.len());
+        }
+        "table" => {
+            println!("Rank  Imports  File");
+            println!("----  -------  ----");
+            for (idx, (id, count)) in hotspots.iter().enumerate() {
+                if let Some(path) = paths.get(id) {
+                    println!("{:<4}  {:<7}  {}", idx + 1, count, path);
+                }
+            }
+            eprintln!("\nFound {} hotspots", hotspots.len());
+        }
+        _ => {
+            anyhow::bail!("Unknown format '{}'. Supported: json, tree, table", format);
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle --unused flag (orphaned files)
+fn handle_deps_unused(
+    deps_index: &DependencyIndex,
+    format: &str,
+    pretty_json: bool,
+    limit: Option<usize>,
+) -> Result<()> {
+    let mut unused = deps_index.find_unused_files()?;
+
+    // Apply limit if specified
+    if let Some(lim) = limit {
+        unused.truncate(lim);
+    }
+
+    if unused.is_empty() {
+        println!("No unused files found (all files have incoming dependencies).");
+        return Ok(());
+    }
+
+    let paths = deps_index.get_file_paths(&unused)?;
+
+    match format {
+        "json" => {
+            let output: Vec<_> = unused.iter()
+                .filter_map(|id| {
+                    paths.get(id).map(|path| serde_json::json!({
+                        "file_id": id,
+                        "path": path,
+                    }))
+                })
+                .collect();
+
+            let json_str = if pretty_json {
+                serde_json::to_string_pretty(&output)?
+            } else {
+                serde_json::to_string(&output)?
+            };
+            println!("{}", json_str);
+            eprintln!("Found {} unused files", unused.len());
+        }
+        "tree" => {
+            println!("Unused Files (No Incoming Dependencies):");
+            for (idx, id) in unused.iter().enumerate() {
+                if let Some(path) = paths.get(id) {
+                    println!("  {}. {}", idx + 1, path);
+                }
+            }
+            eprintln!("\nFound {} unused files", unused.len());
+        }
+        "table" => {
+            println!("File ID  Path");
+            println!("-------  ----");
+            for id in &unused {
+                if let Some(path) = paths.get(id) {
+                    println!("{:<7}  {}", id, path);
+                }
+            }
+            eprintln!("\nFound {} unused files", unused.len());
+        }
+        _ => {
+            anyhow::bail!("Unknown format '{}'. Supported: json, tree, table", format);
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle --islands flag (disconnected components)
+fn handle_deps_islands(
+    _deps_index: &DependencyIndex,
+    _format: &str,
+    _pretty_json: bool,
+) -> Result<()> {
+    // TODO: Implement connected components analysis using Union-Find or DFS
+    anyhow::bail!("--islands is not yet implemented. Coming soon!")
+}
+
+/// Handle --analyze flag (full report)
+fn handle_deps_analyze(
+    deps_index: &DependencyIndex,
+    format: &str,
+    pretty_json: bool,
+    limit: Option<usize>,
+) -> Result<()> {
+    println!("Running comprehensive dependency analysis...\n");
+
+    // Run all analyses
+    println!("1. Circular Dependencies:");
+    handle_deps_circular(deps_index, format, pretty_json)?;
+
+    println!("\n2. Hotspots (Most-Imported Files):");
+    handle_deps_hotspots(deps_index, format, pretty_json, limit)?;
+
+    println!("\n3. Unused Files:");
+    handle_deps_unused(deps_index, format, pretty_json, limit)?;
+
+    println!("\nAnalysis complete!");
+    Ok(())
+}
+```
+
+---
+
+### Testing Plan
+
+#### Manual Testing Steps
+1. **Basic operations:**
+   ```bash
+   rfx deps src/main.rs
+   rfx deps src/main.rs --reverse
+   rfx deps src/main.rs --depth 2
+   rfx deps src/main.rs --format tree
+   rfx deps src/main.rs --format table
+   ```
+
+2. **Graph-wide operations:**
+   ```bash
+   rfx deps --circular
+   rfx deps --hotspots --limit 10
+   rfx deps --unused
+   rfx deps --analyze
+   ```
+
+3. **Filters:**
+   ```bash
+   rfx deps src/main.rs --only-internal
+   rfx deps src/main.rs --only-external
+   rfx deps src/main.rs --reverse --format tree
+   ```
+
+4. **Edge cases:**
+   ```bash
+   rfx deps nonexistent.rs  # Should error gracefully
+   rfx deps src/main.rs --depth 0  # Should show self only
+   rfx deps --circular --format json --pretty
+   ```
+
+#### Integration Test Outline (`tests/deps_test.rs`)
+```rust
+#[test]
+fn test_deps_direct() {
+    // Create test project with known dependencies
+    // Index it
+    // Run rfx deps and verify output
+}
+
+#[test]
+fn test_deps_reverse() {
+    // Verify reverse lookups return correct dependents
+}
+
+#[test]
+fn test_deps_transitive() {
+    // Verify transitive traversal with depth=3
+}
+
+#[test]
+fn test_deps_circular() {
+    // Create project with circular deps
+    // Verify detection works
+}
+
+#[test]
+fn test_deps_hotspots() {
+    // Verify hotspot ranking
+}
+
+#[test]
+fn test_deps_unused() {
+    // Create orphaned file
+    // Verify it's detected
+}
+```
+
+---
+
+### Success Criteria
+
+**The implementation is complete when:**
+1. ✅ `rfx deps <file>` shows direct dependencies in JSON format
+2. ✅ `rfx deps <file> --reverse` shows dependents
+3. ✅ `rfx deps <file> --depth N` traverses to depth N
+4. ✅ `rfx deps <file> --format tree` displays tree visualization
+5. ✅ `rfx deps <file> --format table` displays tabular output
+6. ✅ `rfx deps --circular` detects and displays cycles
+7. ✅ `rfx deps --hotspots` ranks most-imported files
+8. ✅ `rfx deps --unused` finds orphaned files
+9. ✅ `rfx deps --analyze` runs comprehensive report
+10. ✅ All filters work: `--only-internal`, `--only-external`, `--only-stdlib`
+11. ✅ Error handling is graceful (file not found, no index, etc.)
+12. ✅ Integration tests pass
+13. ✅ Documentation updated in CLAUDE.md
+
+---
+
+### Estimated Time to Completion
+
+**Phase 1:** 2-3 hours (basic command + JSON output)
+**Phase 2:** 3-4 hours (formatters: tree, table, dot)
+**Phase 3:** 2-3 hours (graph-wide operations)
+**Phase 4:** 2-3 hours (testing + docs)
+
+**Total:** 9-13 hours (~1-2 days of focused work)
+
+---
+
+### Open Questions
+
+1. **DOT format support:** Should we implement Graphviz DOT format in Phase 2, or defer to Phase 6?
+   - **Recommendation:** Defer to Phase 6 (low priority, requires additional dependencies)
+
+2. **--islands implementation:** Connected components analysis requires Union-Find or multi-source BFS
+   - **Recommendation:** Implement in Phase 3 or defer to Phase 6
+
+3. **Caching strategy:** Should we cache graph traversal results for repeated queries?
+   - **Recommendation:** Not needed for MVP - queries are fast enough (<50ms)
+
+4. **MCP integration:** Should `rfx deps` be exposed via MCP server?
+   - **Recommendation:** Yes, add in Phase 3 after core implementation is stable
+
+---
+
+### Next Steps
+
+**To start implementation:**
+1. Create a new git branch: `git checkout -b feature/rfx-deps-command`
+2. Begin with Phase 1: Add `Deps` command to CLI
+3. Test incrementally after each phase
+4. Document as you go (update CLAUDE.md examples)
+5. Open PR when Phases 1-3 are complete and tested

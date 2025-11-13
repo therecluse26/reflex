@@ -1140,3 +1140,285 @@ mod tests {
         assert!(matches!(classify_rust_import("tokio::runtime"), ImportType::External));
     }
 }
+
+// ============================================================================
+// Path Resolution
+// ============================================================================
+
+/// Find the crate root (directory containing Cargo.toml) by walking up from a given path
+fn find_crate_root(start_path: &str) -> Option<String> {
+    let path = std::path::Path::new(start_path);
+    let mut current = path.parent()?;
+
+    // Walk up until we find Cargo.toml
+    loop {
+        let cargo_toml = current.join("Cargo.toml");
+        if cargo_toml.exists() {
+            return Some(current.to_string_lossy().to_string());
+        }
+
+        // For test paths that don't exist, assume standard Rust structure:
+        // If we find "/src" in the path, the parent of "src" is likely the crate root
+        if current.ends_with("src") {
+            if let Some(parent) = current.parent() {
+                return Some(parent.to_string_lossy().to_string());
+            }
+        }
+
+        // Move up to parent directory
+        current = match current.parent() {
+            Some(p) if p.as_os_str().is_empty() => return None,
+            Some(p) => p,
+            None => return None,
+        };
+    }
+}
+
+/// Resolve a Rust use statement to a file path
+///
+/// Handles:
+/// - `crate::` imports: `crate::models::Language` → `src/models.rs` or `src/models/mod.rs`
+/// - `super::` imports: relative to parent module
+/// - `self::` imports: relative to current module
+/// - `mod parser;`: look for `parser.rs` or `parser/mod.rs`
+///
+/// Does NOT handle:
+/// - External crate imports (would require parsing Cargo.toml dependencies)
+/// - Stdlib imports (std::, core::, alloc::)
+pub fn resolve_rust_use_to_path(
+    import_path: &str,
+    current_file_path: Option<&str>,
+    _project_root: Option<&str>,
+) -> Option<String> {
+    // Only handle internal imports (crate::, super::, self::, or bare module names)
+    if !import_path.starts_with("crate::")
+        && !import_path.starts_with("super::")
+        && !import_path.starts_with("self::") {
+        // Check if it's a simple module name (no :: separator at all)
+        if import_path.contains("::") {
+            return None; // External or stdlib import
+        }
+        // Fall through for simple module names like "parser"
+    }
+
+    let current_file = current_file_path?;
+    let current_path = std::path::Path::new(current_file);
+
+    // Find the crate root
+    let crate_root = find_crate_root(current_file)?;
+    let crate_root_path = std::path::Path::new(&crate_root);
+
+    if import_path.starts_with("crate::") {
+        // Resolve from crate root (typically src/)
+        let module_path = import_path.strip_prefix("crate::").unwrap();
+        let parts: Vec<&str> = module_path.split("::").collect();
+
+        // Try src/ first (standard Rust project structure)
+        let src_root = crate_root_path.join("src");
+        resolve_rust_module_path(&src_root, &parts)
+    } else if import_path.starts_with("super::") {
+        // Resolve relative to parent module
+        let module_path = import_path.strip_prefix("super::").unwrap();
+        let parts: Vec<&str> = module_path.split("::").collect();
+
+        // Get parent directory (go up one level)
+        let current_dir = if current_path.file_name().unwrap() == "mod.rs" {
+            // If current file is mod.rs, go up two levels
+            current_path.parent()?.parent()?
+        } else {
+            // Otherwise, go up one level
+            current_path.parent()?
+        };
+
+        resolve_rust_module_path(current_dir, &parts)
+    } else if import_path.starts_with("self::") {
+        // Resolve relative to current module
+        let module_path = import_path.strip_prefix("self::").unwrap();
+        let parts: Vec<&str> = module_path.split("::").collect();
+
+        // Get current module directory
+        let current_dir = if current_path.file_name().unwrap() == "mod.rs" {
+            // If current file is mod.rs, use parent directory
+            current_path.parent()?
+        } else {
+            // Otherwise, use current directory
+            current_path.parent()?
+        };
+
+        resolve_rust_module_path(current_dir, &parts)
+    } else {
+        // Simple module name (e.g., "parser" in "mod parser;")
+        // Look for parser.rs or parser/mod.rs in the current directory
+        let current_dir = current_path.parent()?;
+        let module_file = current_dir.join(format!("{}.rs", import_path));
+        let module_dir = current_dir.join(import_path).join("mod.rs");
+
+        if module_file.exists() {
+            Some(module_file.to_string_lossy().to_string())
+        } else if module_dir.exists() {
+            Some(module_dir.to_string_lossy().to_string())
+        } else {
+            // Return the most likely candidate even if it doesn't exist
+            // The indexer will check if the file is actually in the index
+            Some(module_file.to_string_lossy().to_string())
+        }
+    }
+}
+
+/// Resolve a Rust module path (list of components) to a file path
+///
+/// Examples:
+/// - `["models"]` → `models.rs` or `models/mod.rs`
+/// - `["models", "language"]` → `models/language.rs` or `models/language/mod.rs`
+fn resolve_rust_module_path(base_dir: &std::path::Path, parts: &[&str]) -> Option<String> {
+    if parts.is_empty() {
+        return None;
+    }
+
+    // Build the path incrementally
+    let mut current_path = base_dir.to_path_buf();
+
+    for (i, part) in parts.iter().enumerate() {
+        if i == parts.len() - 1 {
+            // Last component - try both .rs file and mod.rs
+            let file_path = current_path.join(format!("{}.rs", part));
+            let mod_path = current_path.join(part).join("mod.rs");
+
+            log::trace!("Checking Rust module path: {}", file_path.display());
+            log::trace!("Checking Rust module path: {}", mod_path.display());
+
+            // Return the first candidate (indexer will validate it exists)
+            if file_path.exists() {
+                return Some(file_path.to_string_lossy().to_string());
+            } else if mod_path.exists() {
+                return Some(mod_path.to_string_lossy().to_string());
+            } else {
+                // Return most likely candidate even if it doesn't exist
+                return Some(file_path.to_string_lossy().to_string());
+            }
+        } else {
+            // Intermediate component - must be a directory
+            current_path = current_path.join(part);
+        }
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod path_resolution_tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_crate_import() {
+        // crate::models::Language
+        let result = resolve_rust_use_to_path(
+            "crate::models",
+            Some("/home/user/project/src/main.rs"),
+            Some("/home/user/project"),
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        // Should resolve to src/models.rs or src/models/mod.rs
+        assert!(path.contains("models.rs") || path.contains("models/mod.rs"));
+    }
+
+    #[test]
+    fn test_resolve_super_import() {
+        // super::utils from src/commands/index.rs
+        let result = resolve_rust_use_to_path(
+            "super::utils",
+            Some("/home/user/project/src/commands/index.rs"),
+            Some("/home/user/project"),
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        // Should resolve to src/utils.rs
+        assert!(path.contains("src") && path.contains("utils.rs"));
+    }
+
+    #[test]
+    fn test_resolve_self_import() {
+        // self::helper from src/models/mod.rs
+        let result = resolve_rust_use_to_path(
+            "self::helper",
+            Some("/home/user/project/src/models/mod.rs"),
+            Some("/home/user/project"),
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        // Should resolve to src/models/helper.rs
+        assert!(path.contains("models") && path.contains("helper.rs"));
+    }
+
+    #[test]
+    fn test_resolve_mod_declaration() {
+        // mod parser; from src/main.rs
+        let result = resolve_rust_use_to_path(
+            "parser",
+            Some("/home/user/project/src/main.rs"),
+            Some("/home/user/project"),
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        // Should resolve to src/parser.rs
+        assert!(path.contains("parser.rs"));
+    }
+
+    #[test]
+    fn test_resolve_nested_crate_import() {
+        // crate::models::language::Language
+        let result = resolve_rust_use_to_path(
+            "crate::models::language",
+            Some("/home/user/project/src/main.rs"),
+            Some("/home/user/project"),
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        // Should resolve to src/models/language.rs or src/models/language/mod.rs
+        assert!(path.contains("models") && (path.contains("language.rs") || path.contains("language/mod.rs")));
+    }
+
+    #[test]
+    fn test_external_import_not_supported() {
+        // anyhow::Result (external crate)
+        let result = resolve_rust_use_to_path(
+            "anyhow::Result",
+            Some("/home/user/project/src/main.rs"),
+            Some("/home/user/project"),
+        );
+
+        // Should return None for external imports
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_stdlib_import_not_supported() {
+        // std::collections::HashMap (stdlib)
+        let result = resolve_rust_use_to_path(
+            "std::collections::HashMap",
+            Some("/home/user/project/src/main.rs"),
+            Some("/home/user/project"),
+        );
+
+        // Should return None for stdlib imports
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_without_current_file() {
+        let result = resolve_rust_use_to_path(
+            "crate::models",
+            None,
+            Some("/home/user/project"),
+        );
+
+        // Should return None if no current file provided
+        assert!(result.is_none());
+    }
+}

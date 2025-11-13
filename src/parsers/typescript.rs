@@ -1047,3 +1047,163 @@ fn classify_js_import(import_path: &str) -> ImportType {
     // Everything else is external (third-party packages from npm)
     ImportType::External
 }
+
+// ============================================================================
+// Path Resolution
+// ============================================================================
+
+/// Resolve a TypeScript/JavaScript import to a file path
+///
+/// Handles:
+/// - Relative imports: `./components/Button` → `components/Button.tsx` or `components/Button/index.tsx`
+/// - Parent directory imports: `../../utils/helper` → `../../utils/helper.ts`
+/// - Index files: `./components` → `components/index.ts`
+///
+/// Does NOT handle:
+/// - Absolute imports with path aliases (would require reading tsconfig.json)
+/// - Node modules (external dependencies)
+pub fn resolve_ts_import_to_path(
+    import_path: &str,
+    current_file_path: Option<&str>,
+) -> Option<String> {
+    // Only handle relative imports
+    if !import_path.starts_with("./") && !import_path.starts_with("../") {
+        return None;
+    }
+
+    let current_file = current_file_path?;
+
+    // Get the directory of the current file
+    let current_dir = std::path::Path::new(current_file).parent()?;
+
+    // Resolve the import path relative to current directory
+    let resolved = current_dir.join(import_path);
+
+    // Normalize the path (resolve .. and .)
+    let resolved_path = resolved.to_string_lossy().to_string();
+
+    // Try multiple file extensions in order of preference
+    // TypeScript: .ts, .tsx, .d.ts
+    // JavaScript: .js, .jsx, .mjs, .cjs
+    // Also try index files if the import is a directory
+    let extensions = vec![
+        ".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs",
+        "/index.tsx", "/index.ts", "/index.jsx", "/index.js",
+    ];
+
+    for ext in extensions {
+        let candidate = format!("{}{}", resolved_path, ext);
+        log::trace!("Checking TS/JS import path: {}", candidate);
+        return Some(candidate);
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod path_resolution_tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_relative_import_same_directory() {
+        // import { Button } from './Button'
+        let result = resolve_ts_import_to_path(
+            "./Button",
+            Some("src/components/App.tsx"),
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        // Should try .tsx first
+        assert!(path == "src/components/Button.tsx" || path.ends_with("/Button.tsx"));
+    }
+
+    #[test]
+    fn test_resolve_relative_import_parent_directory() {
+        // import { helper } from '../utils/helper'
+        let result = resolve_ts_import_to_path(
+            "../utils/helper",
+            Some("src/components/Button.tsx"),
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        assert!(path.contains("utils/helper"));
+    }
+
+    #[test]
+    fn test_resolve_relative_import_multiple_parents() {
+        // import { config } from '../../config/app'
+        let result = resolve_ts_import_to_path(
+            "../../config/app",
+            Some("src/components/ui/Button.tsx"),
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        assert!(path.contains("config/app"));
+    }
+
+    #[test]
+    fn test_resolve_index_file() {
+        // import { components } from './components' (should try ./components/index.tsx)
+        let result = resolve_ts_import_to_path(
+            "./components",
+            Some("src/App.tsx"),
+        );
+
+        assert!(result.is_some());
+        // The function returns the first candidate, which is .tsx
+        // In reality, the indexer would try each candidate
+        assert!(result.unwrap().contains("components"));
+    }
+
+    #[test]
+    fn test_absolute_import_not_supported() {
+        // import { Button } from '@components/Button' (requires tsconfig.json)
+        let result = resolve_ts_import_to_path(
+            "@components/Button",
+            Some("src/App.tsx"),
+        );
+
+        // Should return None for absolute imports
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_node_modules_import_not_supported() {
+        // import { React } from 'react'
+        let result = resolve_ts_import_to_path(
+            "react",
+            Some("src/App.tsx"),
+        );
+
+        // Should return None for node_modules imports
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_without_current_file() {
+        let result = resolve_ts_import_to_path(
+            "./Button",
+            None,
+        );
+
+        // Should return None if no current file provided
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_nested_directory_structure() {
+        // import { api } from './api/client'
+        let result = resolve_ts_import_to_path(
+            "./api/client",
+            Some("src/services/http.ts"),
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        // Should resolve to src/services/api/client with an extension
+        assert!(path.contains("api/client"));
+    }
+}

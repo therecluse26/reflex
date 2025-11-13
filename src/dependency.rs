@@ -734,6 +734,140 @@ impl DependencyIndex {
             }
         }
     }
+
+    /// Get dependency resolution statistics grouped by language
+    ///
+    /// Returns statistics showing how many internal dependencies are resolved vs unresolved
+    /// for each language in the project.
+    ///
+    /// # Returns
+    ///
+    /// A vector of tuples: (language, total_deps, resolved_deps, resolution_rate)
+    pub fn get_resolution_stats(&self) -> Result<Vec<(String, usize, usize, f64)>> {
+        let db_path = self.cache.path().join("meta.db");
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for resolution stats")?;
+
+        let mut stmt = conn.prepare(
+            "SELECT
+                CASE
+                    WHEN f.path LIKE '%.py' THEN 'Python'
+                    WHEN f.path LIKE '%.go' THEN 'Go'
+                    WHEN f.path LIKE '%.ts' THEN 'TypeScript'
+                    WHEN f.path LIKE '%.rs' THEN 'Rust'
+                    WHEN f.path LIKE '%.js' OR f.path LIKE '%.jsx' THEN 'JavaScript'
+                    WHEN f.path LIKE '%.php' THEN 'PHP'
+                    WHEN f.path LIKE '%.java' THEN 'Java'
+                    WHEN f.path LIKE '%.kt' THEN 'Kotlin'
+                    WHEN f.path LIKE '%.rb' THEN 'Ruby'
+                    WHEN f.path LIKE '%.c' OR f.path LIKE '%.h' THEN 'C'
+                    WHEN f.path LIKE '%.cpp' OR f.path LIKE '%.cc' OR f.path LIKE '%.hpp' THEN 'C++'
+                    WHEN f.path LIKE '%.cs' THEN 'C#'
+                    WHEN f.path LIKE '%.zig' THEN 'Zig'
+                    ELSE 'Other'
+                END as language,
+                COUNT(*) as total,
+                SUM(CASE WHEN d.resolved_file_id IS NOT NULL THEN 1 ELSE 0 END) as resolved
+            FROM file_dependencies d
+            JOIN files f ON d.file_id = f.id
+            WHERE d.import_type = 'internal'
+            GROUP BY language
+            ORDER BY language",
+        )?;
+
+        let mut stats = Vec::new();
+
+        let rows = stmt.query_map([], |row| {
+            let language: String = row.get(0)?;
+            let total: i64 = row.get(1)?;
+            let resolved: i64 = row.get(2)?;
+            let rate = if total > 0 {
+                (resolved as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            Ok((language, total as usize, resolved as usize, rate))
+        })?;
+
+        for row in rows {
+            stats.push(row?);
+        }
+
+        Ok(stats)
+    }
+
+    /// Get all internal dependencies with their resolution status
+    ///
+    /// Returns detailed information about each internal dependency including source file,
+    /// imported path, and whether it was successfully resolved.
+    ///
+    /// # Returns
+    ///
+    /// A vector of tuples: (source_file, imported_path, resolved_file_path)
+    /// where resolved_file_path is None if the dependency couldn't be resolved.
+    pub fn get_all_internal_dependencies(&self) -> Result<Vec<(String, String, Option<String>)>> {
+        let db_path = self.cache.path().join("meta.db");
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for internal dependencies")?;
+
+        let mut stmt = conn.prepare(
+            "SELECT
+                f.path,
+                d.imported_path,
+                f2.path as resolved_path
+            FROM file_dependencies d
+            JOIN files f ON d.file_id = f.id
+            LEFT JOIN files f2 ON d.resolved_file_id = f2.id
+            WHERE d.import_type = 'internal'
+            ORDER BY f.path",
+        )?;
+
+        let mut deps = Vec::new();
+
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+
+        for row in rows {
+            deps.push(row?);
+        }
+
+        Ok(deps)
+    }
+
+    /// Get total count of dependencies by type (for debugging)
+    pub fn get_dependency_count_by_type(&self) -> Result<Vec<(String, usize)>> {
+        let db_path = self.cache.path().join("meta.db");
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for dependency count")?;
+
+        let mut stmt = conn.prepare(
+            "SELECT import_type, COUNT(*) as count
+             FROM file_dependencies
+             GROUP BY import_type
+             ORDER BY import_type",
+        )?;
+
+        let mut counts = Vec::new();
+
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)? as usize,
+            ))
+        })?;
+
+        for row in rows {
+            counts.push(row?);
+        }
+
+        Ok(counts)
+    }
 }
 
 /// Generate path variants for an import path
