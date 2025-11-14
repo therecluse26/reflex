@@ -1548,7 +1548,7 @@ fn handle_deps(
     } else if unused {
         return handle_deps_unused(&deps_index, &format, pretty_json, limit);
     } else if islands {
-        return handle_deps_islands(&deps_index, &format, pretty_json);
+        return handle_deps_islands(&deps_index, &format, pretty_json, limit);
     }
 
     // File-based operations require a file path
@@ -1982,8 +1982,14 @@ fn handle_deps_islands(
     deps_index: &crate::dependency::DependencyIndex,
     format: &str,
     pretty_json: bool,
+    limit: Option<usize>,
 ) -> Result<()> {
-    let islands = deps_index.find_islands()?;
+    let mut islands = deps_index.find_islands()?;
+
+    // Apply limit to number of islands
+    if let Some(lim) = limit {
+        islands.truncate(lim);
+    }
 
     if islands.is_empty() {
         println!("No islands found.");

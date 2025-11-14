@@ -8,6 +8,7 @@
 
 pub mod rust;
 pub mod typescript;
+pub mod tsconfig;
 pub mod vue;
 pub mod svelte;
 pub mod php;

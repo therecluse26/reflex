@@ -50,6 +50,43 @@ struct FileProcessingResult {
     dependencies: Vec<ImportInfo>,
 }
 
+/// Find the nearest tsconfig.json for a given source file
+///
+/// Walks up the directory tree from the source file to find the nearest tsconfig directory.
+/// Returns a reference to the PathAliasMap if found.
+fn find_nearest_tsconfig<'a>(
+    file_path: &str,
+    root: &Path,
+    tsconfigs: &'a HashMap<PathBuf, crate::parsers::tsconfig::PathAliasMap>,
+) -> Option<&'a crate::parsers::tsconfig::PathAliasMap> {
+    // Convert file_path to absolute path (relative to root)
+    let abs_file_path = if Path::new(file_path).is_absolute() {
+        PathBuf::from(file_path)
+    } else {
+        root.join(file_path)
+    };
+
+    // Start from the file's directory and walk up
+    let mut current_dir = abs_file_path.parent()?;
+
+    loop {
+        // Check if we have a tsconfig for this directory
+        if let Some(alias_map) = tsconfigs.get(current_dir) {
+            return Some(alias_map);
+        }
+
+        // Move up one directory
+        current_dir = current_dir.parent()?;
+
+        // Stop if we've reached the root
+        if current_dir == root || !current_dir.starts_with(root) {
+            break;
+        }
+    }
+
+    None
+}
+
 /// Manages the indexing process
 pub struct Indexer {
     cache: CacheManager,
@@ -126,6 +163,23 @@ impl Indexer {
         let files = self.discover_files(root)?;
         let total_files = files.len();
         log::info!("Discovered {} files to index", total_files);
+
+        // Step 1.4: Parse tsconfig.json files for TypeScript/Vue path alias resolution
+        // Must be done before parallel processing so it's available during dependency extraction
+        let tsconfigs = crate::parsers::tsconfig::parse_all_tsconfigs(root)
+            .unwrap_or_else(|e| {
+                log::warn!("Failed to parse tsconfig.json files: {}", e);
+                HashMap::new()
+            });
+        if !tsconfigs.is_empty() {
+            log::info!("Found {} tsconfig.json files", tsconfigs.len());
+            for (config_dir, alias_map) in &tsconfigs {
+                log::debug!("  {} (base_url: {:?}, {} aliases)",
+                           config_dir.display(),
+                           alias_map.base_url,
+                           alias_map.aliases.len());
+            }
+        }
 
         // Step 1.5: Quick incremental check - are all files unchanged?
         // If yes, skip expensive rebuild entirely and return cached stats
@@ -330,7 +384,9 @@ impl Indexer {
                         }
                     }
                     Language::TypeScript | Language::JavaScript => {
-                        match TypeScriptDependencyExtractor::extract_dependencies(&content) {
+                        // Find nearest tsconfig for path alias resolution
+                        let alias_map = find_nearest_tsconfig(&path_str, root, &tsconfigs);
+                        match TypeScriptDependencyExtractor::extract_dependencies_with_alias_map(&content, alias_map) {
                             Ok(deps) => deps,
                             Err(e) => {
                                 log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
@@ -420,7 +476,9 @@ impl Indexer {
                         }
                     }
                     Language::Vue => {
-                        match VueDependencyExtractor::extract_dependencies(&content) {
+                        // Find nearest tsconfig for path alias resolution
+                        let alias_map = find_nearest_tsconfig(&path_str, root, &tsconfigs);
+                        match VueDependencyExtractor::extract_dependencies_with_alias_map(&content, alias_map) {
                             Ok(deps) => deps,
                             Err(e) => {
                                 log::warn!("Failed to extract dependencies from {}: {}", path_str, e);
@@ -639,6 +697,22 @@ impl Indexer {
                 log::info!("Found {} PSR-4 mappings from composer.json files", php_psr4_mappings.len());
                 for mapping in &php_psr4_mappings {
                     log::debug!("  {} => {} (project: {})", mapping.namespace_prefix, mapping.directory, mapping.project_root);
+                }
+            }
+
+            // Find and parse all tsconfig.json files for TypeScript/Vue projects (monorepo support)
+            let tsconfigs = crate::parsers::tsconfig::parse_all_tsconfigs(root)
+                .unwrap_or_else(|e| {
+                    log::warn!("Failed to parse tsconfig.json files: {}", e);
+                    HashMap::new()
+                });
+            if !tsconfigs.is_empty() {
+                log::info!("Found {} tsconfig.json files", tsconfigs.len());
+                for (config_dir, alias_map) in &tsconfigs {
+                    log::debug!("  {} (base_url: {:?}, {} aliases)",
+                               config_dir.display(),
+                               alias_map.base_url,
+                               alias_map.aliases.len());
                 }
             }
 
@@ -866,10 +940,12 @@ impl Indexer {
                             || file_path.ends_with(".js") || file_path.ends_with(".jsx")
                             || file_path.ends_with(".mts") || file_path.ends_with(".cts")
                             || file_path.ends_with(".mjs") || file_path.ends_with(".cjs") {
-                        // Resolve TypeScript/JavaScript dependencies (relative imports only)
+                        // Resolve TypeScript/JavaScript dependencies (relative imports and path aliases)
+                        let alias_map = find_nearest_tsconfig(&file_path, root, &tsconfigs);
                         if let Some(candidates_str) = crate::parsers::typescript::resolve_ts_import_to_path(
                             &import_info.imported_path,
                             Some(&file_path),
+                            alias_map,
                         ) {
                             // Parse pipe-delimited candidates (e.g., "path.tsx|path.ts|path.jsx|path.js")
                             let candidates: Vec<&str> = candidates_str.split('|').collect();
@@ -877,10 +953,20 @@ impl Indexer {
                             // Try each candidate in order until we find one in the database
                             let mut resolved_id = None;
                             for candidate_path in candidates {
-                                match dep_index.get_file_id_by_path(candidate_path)? {
+                                // Normalize path to be relative to project root
+                                // Convert absolute paths to relative (without requiring file to exist)
+                                let normalized_candidate = if let Ok(rel_path) = std::path::Path::new(candidate_path).strip_prefix(root) {
+                                    rel_path.to_string_lossy().to_string()
+                                } else {
+                                    // Not an absolute path or not under root - use as-is
+                                    candidate_path.to_string()
+                                };
+
+                                log::debug!("Looking up TS/JS candidate: '{}' (from '{}')", normalized_candidate, candidate_path);
+                                match dep_index.get_file_id_by_path(&normalized_candidate)? {
                                     Some(id) => {
-                                        log::trace!("Resolved TS/JS dependency: {} -> {} (file_id={})",
-                                                   import_info.imported_path, candidate_path, id);
+                                        log::debug!("Resolved TS/JS dependency: {} -> {} (file_id={})",
+                                                   import_info.imported_path, normalized_candidate, id);
                                         resolved_id = Some(id);
                                         break; // Found a match, stop trying
                                     }
@@ -1092,9 +1178,11 @@ impl Indexer {
                         }
                     } else if file_path.ends_with(".vue") || file_path.ends_with(".svelte") {
                         // Resolve Vue/Svelte dependencies (use TypeScript/JavaScript resolver for imports in <script> blocks)
+                        let alias_map = find_nearest_tsconfig(&file_path, root, &tsconfigs);
                         if let Some(candidates_str) = crate::parsers::typescript::resolve_ts_import_to_path(
                             &import_info.imported_path,
                             Some(&file_path),
+                            alias_map,
                         ) {
                             // Parse pipe-delimited candidates (e.g., "path.tsx|path.ts|path.jsx|path.js")
                             let candidates: Vec<&str> = candidates_str.split('|').collect();
@@ -1102,7 +1190,16 @@ impl Indexer {
                             // Try each candidate in order until we find one in the database
                             let mut resolved_id = None;
                             for candidate_path in candidates {
-                                match dep_index.get_file_id_by_path(candidate_path)? {
+                                // Normalize path to be relative to project root
+                                // Convert absolute paths to relative (without requiring file to exist)
+                                let normalized_candidate = if let Ok(rel_path) = std::path::Path::new(candidate_path).strip_prefix(root) {
+                                    rel_path.to_string_lossy().to_string()
+                                } else {
+                                    // Not an absolute path or not under root - use as-is
+                                    candidate_path.to_string()
+                                };
+
+                                match dep_index.get_file_id_by_path(&normalized_candidate)? {
                                     Some(id) => {
                                         log::trace!("Resolved Vue/Svelte dependency: {} -> {} (file_id={})",
                                                    import_info.imported_path, candidate_path, id);
