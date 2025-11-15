@@ -50,8 +50,8 @@ pub mod watcher;
 pub use cache::CacheManager;
 pub use indexer::Indexer;
 pub use models::{
-    Dependency, DependencyInfo, ImportType, IndexConfig, IndexStats, IndexStatus, IndexWarning,
-    IndexWarningDetails, IndexedFile, Language, QueryResponse, SearchResult, Span, SymbolKind,
+    Dependency, DependencyInfo, FileGroupedResult, ImportType, IndexConfig, IndexStats, IndexStatus, IndexWarning,
+    IndexWarningDetails, IndexedFile, Language, MatchResult, QueryResponse, SearchResult, Span, SymbolKind,
 };
 pub use query::{QueryEngine, QueryFilter};
 pub use watcher::{watch, WatchConfig};

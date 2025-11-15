@@ -866,43 +866,82 @@ fn handle_query(
 
     // Execute query and get pagination metadata
     // Handle errors specially for JSON output mode
-    let query_result = if use_ast {
+    let (query_response, mut flat_results, total_results, has_more) = if use_ast {
         // AST query: pattern is the S-expression, scan all files
-        engine.search_ast_all_files(&pattern, filter.clone())
-            .map(|ast_results| {
+        match engine.search_ast_all_files(&pattern, filter.clone()) {
+            Ok(ast_results) => {
                 let count = ast_results.len();
-                (ast_results, count, false)
-            })
+                (None, ast_results, count, false)
+            }
+            Err(e) => {
+                if as_json {
+                    // Output error as JSON
+                    let error_response = serde_json::json!({
+                        "error": e.to_string(),
+                        "query_too_broad": e.to_string().contains("Query too broad")
+                    });
+                    let json_output = if pretty_json {
+                        serde_json::to_string_pretty(&error_response)?
+                    } else {
+                        serde_json::to_string(&error_response)?
+                    };
+                    println!("{}", json_output);
+                    std::process::exit(1);
+                } else {
+                    return Err(e);
+                }
+            }
+        }
     } else {
         // Use metadata-aware search for all queries (to get pagination info)
-        engine.search_with_metadata(&pattern, filter.clone())
-            .map(|response| {
+        match engine.search_with_metadata(&pattern, filter.clone()) {
+            Ok(response) => {
                 let total = response.pagination.total;
                 let has_more = response.pagination.has_more;
-                (response.results, total, has_more)
-            })
-    };
 
-    // Handle errors with JSON formatting when --json is set
-    let (mut results, total_results, has_more) = match query_result {
-        Ok(data) => data,
-        Err(e) => {
-            if as_json {
-                // Output error as JSON
-                let error_response = serde_json::json!({
-                    "error": e.to_string(),
-                    "query_too_broad": e.to_string().contains("Query too broad")
-                });
-                let json_output = if pretty_json {
-                    serde_json::to_string_pretty(&error_response)?
+                // Extract flat results from either grouped_results or results field
+                let flat = if let Some(grouped) = &response.grouped_results {
+                    // Flatten grouped results to SearchResult vec for plain text formatting
+                    grouped.iter()
+                        .flat_map(|file_group| {
+                            file_group.matches.iter().map(move |m| {
+                                crate::models::SearchResult {
+                                    path: file_group.path.clone(),
+                                    lang: crate::models::Language::Unknown, // Will be set by formatter if needed
+                                    kind: m.kind.clone(),
+                                    symbol: m.symbol.clone(),
+                                    span: m.span.clone(),
+                                    preview: m.preview.clone(),
+                                    dependencies: file_group.dependencies.clone(),
+                                }
+                            })
+                        })
+                        .collect()
+                } else if let Some(results) = &response.results {
+                    results.clone()
                 } else {
-                    serde_json::to_string(&error_response)?
+                    Vec::new()
                 };
-                println!("{}", json_output);
-                std::process::exit(1);
-            } else {
-                // Plain text error (default behavior)
-                return Err(e);
+
+                (Some(response), flat, total, has_more)
+            }
+            Err(e) => {
+                if as_json {
+                    // Output error as JSON
+                    let error_response = serde_json::json!({
+                        "error": e.to_string(),
+                        "query_too_broad": e.to_string().contains("Query too broad")
+                    });
+                    let json_output = if pretty_json {
+                        serde_json::to_string_pretty(&error_response)?
+                    } else {
+                        serde_json::to_string(&error_response)?
+                    };
+                    println!("{}", json_output);
+                    std::process::exit(1);
+                } else {
+                    return Err(e);
+                }
             }
         }
     };
@@ -910,7 +949,7 @@ fn handle_query(
     // Apply preview truncation unless --no-truncate is set
     if !no_truncate {
         const MAX_PREVIEW_LENGTH: usize = 100;
-        for result in &mut results {
+        for result in &mut flat_results {
             result.preview = truncate_preview(&result.preview, MAX_PREVIEW_LENGTH);
         }
     }
@@ -939,7 +978,7 @@ fn handle_query(
             println!("{}", json_output);
         } else if paths_only {
             // Paths-only JSON mode: output array of {path, line} objects
-            let locations: Vec<serde_json::Value> = results.iter()
+            let locations: Vec<serde_json::Value> = flat_results.iter()
                 .map(|r| serde_json::json!({
                     "path": r.path,
                     "line": r.span.start_line
@@ -954,7 +993,35 @@ fn handle_query(
             eprintln!("Found {} unique files in {}", locations.len(), timing_str);
         } else {
             // Get or build QueryResponse for JSON output
-            let mut response = if use_ast {
+            let mut response = if let Some(resp) = query_response {
+                // We already have a response from search_with_metadata
+                // Apply truncation to the response (the flat_results were already truncated)
+                let mut resp = resp;
+
+                // Apply truncation to grouped_results if present
+                if !no_truncate && resp.grouped_results.is_some() {
+                    const MAX_PREVIEW_LENGTH: usize = 100;
+                    if let Some(ref mut grouped) = resp.grouped_results {
+                        for file_group in grouped.iter_mut() {
+                            for m in file_group.matches.iter_mut() {
+                                m.preview = truncate_preview(&m.preview, MAX_PREVIEW_LENGTH);
+                            }
+                        }
+                    }
+                }
+
+                // Apply truncation to flat results if present
+                if !no_truncate && resp.results.is_some() {
+                    const MAX_PREVIEW_LENGTH: usize = 100;
+                    if let Some(ref mut results) = resp.results {
+                        for result in results.iter_mut() {
+                            result.preview = truncate_preview(&result.preview, MAX_PREVIEW_LENGTH);
+                        }
+                    }
+                }
+
+                resp
+            } else {
                 // For AST queries, build a response with minimal metadata
                 use crate::models::{PaginationInfo, IndexStatus};
                 crate::models::QueryResponse {
@@ -963,26 +1030,25 @@ fn handle_query(
                     can_trust_results: true,
                     warning: None,
                     pagination: PaginationInfo {
-                        total: results.len(),
-                        count: results.len(),
+                        total: flat_results.len(),
+                        count: flat_results.len(),
                         offset: offset.unwrap_or(0),
                         limit,
                         has_more: false, // AST already applied pagination
                     },
-                    results,
+                    grouped_results: None,
+                    results: Some(flat_results.clone()),
                 }
-            } else {
-                // Use search_with_metadata which already has pagination info
-                let mut response = engine.search_with_metadata(&pattern, filter)?;
-                // Replace results with truncated ones (search_with_metadata returns non-truncated)
-                response.results = results;
-                response
             };
 
             // Generate AI instruction if in AI mode
             if ai_mode {
+                let result_count = response.results.as_ref().map(|r| r.len())
+                    .or_else(|| response.grouped_results.as_ref().map(|g| g.iter().map(|fg| fg.matches.len()).sum()))
+                    .unwrap_or(0);
+
                 response.ai_instruction = crate::query::generate_ai_instruction(
-                    response.results.len(),
+                    result_count,
                     response.pagination.total,
                     response.pagination.has_more,
                     symbols_mode,
@@ -1001,45 +1067,49 @@ fn handle_query(
                 serde_json::to_string(&response)?
             };
             println!("{}", json_output);
-            eprintln!("Found {} results in {}", response.results.len(), timing_str);
+
+            let result_count = response.results.as_ref().map(|r| r.len())
+                .or_else(|| response.grouped_results.as_ref().map(|g| g.iter().map(|fg| fg.matches.len()).sum()))
+                .unwrap_or(0);
+            eprintln!("Found {} results in {}", result_count, timing_str);
         }
     } else {
         // Standard output with formatting
         if count_only {
-            println!("Found {} results in {}", results.len(), timing_str);
+            println!("Found {} results in {}", flat_results.len(), timing_str);
             return Ok(());
         }
 
         if paths_only {
             // Paths-only plain text mode: output one path per line
-            if results.is_empty() {
+            if flat_results.is_empty() {
                 eprintln!("No results found (searched in {}).", timing_str);
             } else {
-                for result in &results {
+                for result in &flat_results {
                     println!("{}", result.path);
                 }
-                eprintln!("Found {} unique files in {}", results.len(), timing_str);
+                eprintln!("Found {} unique files in {}", flat_results.len(), timing_str);
             }
         } else {
             // Standard result formatting
-            if results.is_empty() {
+            if flat_results.is_empty() {
                 println!("No results found (searched in {}).", timing_str);
             } else {
                 // Use formatter for pretty output
                 let formatter = crate::formatter::OutputFormatter::new(plain);
-                formatter.format_results(&results, &pattern)?;
+                formatter.format_results(&flat_results, &pattern)?;
 
                 // Print summary at the bottom with pagination details
-                if total_results > results.len() {
+                if total_results > flat_results.len() {
                     // Results were paginated - show detailed count
-                    println!("\nFound {} results ({} total) in {}", results.len(), total_results, timing_str);
+                    println!("\nFound {} results ({} total) in {}", flat_results.len(), total_results, timing_str);
                     // Show pagination hint if there are more results available
                     if has_more {
                         println!("Use --limit and --offset to paginate");
                     }
                 } else {
                     // All results shown - simple count
-                    println!("\nFound {} results in {}", results.len(), timing_str);
+                    println!("\nFound {} results in {}", flat_results.len(), timing_str);
                 }
             }
         }

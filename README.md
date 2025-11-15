@@ -98,7 +98,7 @@ Search the codebase. Run `rfx query --help` for full options.
 - `--regex, -r` - Treat pattern as regex
 - `--lang <LANG>` - Filter by language
 - `--kind <KIND>` - Filter by symbol kind (function, class, struct, etc.)
-- `--dependencies` - Include dependency information (currently Rust only)
+- `--dependencies` - Include dependency information (supports: Rust, TypeScript, JavaScript, Python, Go, Java, C, C++, C#, PHP, Ruby, Kotlin)
 - `--paths, -p` - Return only file paths (no content)
 - `--json` - Output as JSON
 - `--limit <N>` - Limit number of results
@@ -240,13 +240,48 @@ rfx analyze --circular --json
 }
 ```
 
+### `rfx deps`
+
+Analyze dependencies for a specific file. Shows what a file imports (dependencies) or what imports it (dependents).
+
+**Key Options:**
+- `--reverse` - Show files that depend on this file (reverse lookup)
+- `--depth N` - Traverse N levels deep for transitive dependencies (default: 1)
+- `--format` - Output format: tree, table, json (default: tree)
+- `--json` - Output as JSON
+- `--pretty` - Pretty-print JSON output
+
+**Examples:**
+```bash
+# Show direct dependencies
+rfx deps src/main.rs
+
+# Show files that import this file (reverse lookup)
+rfx deps src/config.rs --reverse
+
+# Show transitive dependencies (depth 3)
+rfx deps src/api.rs --depth 3
+
+# JSON output
+rfx deps src/main.rs --json
+
+# Pretty-printed JSON
+rfx deps src/main.rs --json --pretty
+
+# Table format
+rfx deps src/main.rs --format table
+```
+
+**Supported Languages:** Rust, TypeScript, JavaScript, Python, Go, Java, C, C++, C#, PHP, Ruby, Kotlin
+
+**Note:** Only static imports (string literals) are tracked. Dynamic imports are filtered by design. See [CLAUDE.md](CLAUDE.md) for details.
+
 ### Other Commands
 
 - `rfx stats` - Display index statistics
 - `rfx clear` - Clear the search index
 - `rfx list-files` - List all indexed files
 - `rfx watch` - Watch for file changes and auto-reindex
-- `rfx deps <file>` - Analyze dependencies for a specific file
 
 Run `rfx <command> --help` for detailed options.
 

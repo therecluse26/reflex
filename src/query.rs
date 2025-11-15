@@ -94,7 +94,8 @@ impl QueryEngine {
         Self { cache }
     }
 
-    /// Load dependencies for search results if requested
+    /// Load dependencies for search results if requested (legacy - per result)
+    /// Deprecated: Use group_and_load_dependencies for file-level grouping
     fn load_dependencies(&self, results: &mut [SearchResult], include_deps: bool) -> Result<()> {
         if !include_deps || results.is_empty() {
             return Ok(());
@@ -144,6 +145,98 @@ impl QueryEngine {
         Ok(())
     }
 
+    /// Group search results by file and load dependencies at file level
+    /// Returns file-grouped results with dependencies populated once per file
+    fn group_and_load_dependencies(
+        &self,
+        results: Vec<SearchResult>,
+        include_deps: bool,
+    ) -> Result<Vec<crate::models::FileGroupedResult>> {
+        use std::collections::HashMap;
+        use crate::models::{FileGroupedResult, MatchResult};
+
+        if results.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Group results by file path
+        let mut grouped: HashMap<String, Vec<SearchResult>> = HashMap::new();
+        for result in results {
+            grouped
+                .entry(result.path.clone())
+                .or_default()
+                .push(result);
+        }
+
+        // Create dependency index if needed
+        let dep_index = if include_deps {
+            let workspace_root = self.cache.path().parent()
+                .ok_or_else(|| anyhow::anyhow!("Cache path has no parent"))?;
+            let cache_for_deps = CacheManager::new(workspace_root);
+            Some(crate::dependency::DependencyIndex::new(cache_for_deps))
+        } else {
+            None
+        };
+
+        // Convert to FileGroupedResult and load dependencies
+        let mut file_results: Vec<FileGroupedResult> = grouped
+            .into_iter()
+            .map(|(path, file_matches)| {
+                // Load dependencies for this file (once per file, not per result)
+                let dependencies = if let Some(dep_idx) = &dep_index {
+                    let normalized_path = path.strip_prefix("./").unwrap_or(&path);
+                    match self.cache.get_file_id(normalized_path) {
+                        Ok(Some(file_id)) => {
+                            match dep_idx.get_dependencies_info(file_id) {
+                                Ok(dep_infos) if !dep_infos.is_empty() => {
+                                    log::debug!("Loaded {} dependencies for file: {}", dep_infos.len(), path);
+                                    Some(dep_infos)
+                                }
+                                Ok(_) => None,
+                                Err(e) => {
+                                    log::warn!("Failed to get dependencies for {}: {}", path, e);
+                                    None
+                                }
+                            }
+                        }
+                        Ok(None) => {
+                            log::warn!("No file_id found for path: {}", path);
+                            None
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to get file_id for path {}: {}", path, e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                // Convert SearchResults to MatchResults (strip path and dependencies)
+                let matches: Vec<MatchResult> = file_matches
+                    .into_iter()
+                    .map(|r| MatchResult {
+                        kind: r.kind,
+                        symbol: r.symbol,
+                        span: r.span,
+                        preview: r.preview,
+                    })
+                    .collect();
+
+                FileGroupedResult {
+                    path,
+                    dependencies,
+                    matches,
+                }
+            })
+            .collect();
+
+        // Sort by path for deterministic output
+        file_results.sort_by(|a, b| a.path.cmp(&b.path));
+
+        Ok(file_results)
+    }
+
     /// Execute a query and return matching results with index metadata
     ///
     /// This is the preferred method for programmatic/JSON output as it includes
@@ -170,10 +263,7 @@ impl QueryEngine {
         let (status, can_trust_results, warning) = self.get_index_status()?;
 
         // Execute the search
-        let (mut results, total) = self.search_internal(pattern, filter.clone())?;
-
-        // Load dependencies if requested
-        self.load_dependencies(&mut results, filter.include_dependencies)?;
+        let (results, total) = self.search_internal(pattern, filter.clone())?;
 
         // Build pagination metadata
         use crate::models::PaginationInfo;
@@ -185,13 +275,23 @@ impl QueryEngine {
             has_more: total > filter.offset.unwrap_or(0) + results.len(),
         };
 
+        // Use grouped format when dependencies are requested (or always for cleaner output)
+        // This groups results by file and loads dependencies once per file
+        let (grouped_results, flat_results) = if filter.include_dependencies {
+            let grouped = self.group_and_load_dependencies(results, filter.include_dependencies)?;
+            (Some(grouped), None)
+        } else {
+            (None, Some(results))
+        };
+
         Ok(QueryResponse {
             ai_instruction: None,  // AI instruction is generated by CLI/MCP layer, not here
             status,
             can_trust_results,
             warning,
             pagination,
-            results,
+            grouped_results,
+            results: flat_results,
         })
     }
 
