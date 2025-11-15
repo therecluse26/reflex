@@ -1000,7 +1000,8 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let cache = CacheManager::new(".");
             let deps_index = DependencyIndex::new(cache);
 
-            let hotspots = deps_index.find_hotspots(limit)?;
+            // Use default min_dependents of 2
+            let hotspots = deps_index.find_hotspots(limit, 2)?;
 
             // Get paths for all file IDs
             let file_ids: Vec<i64> = hotspots.iter().map(|(id, _)| *id).collect();

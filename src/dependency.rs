@@ -473,7 +473,12 @@ impl DependencyIndex {
     /// Returns a list of (file_id, count) tuples sorted by import count descending.
     ///
     /// Uses `resolved_file_id` column for instant SQL aggregation (sub-100ms).
-    pub fn find_hotspots(&self, limit: Option<usize>) -> Result<Vec<(i64, usize)>> {
+    ///
+    /// # Arguments
+    ///
+    /// * `limit` - Maximum number of hotspots to return (None = all)
+    /// * `min_dependents` - Minimum number of imports required to be a hotspot (default: 2)
+    pub fn find_hotspots(&self, limit: Option<usize>, min_dependents: usize) -> Result<Vec<(i64, usize)>> {
         let db_path = self.cache.path().join("meta.db");
         let conn = Connection::open(&db_path)
             .context("Failed to open meta.db for hotspot analysis")?;
@@ -487,11 +492,15 @@ impl DependencyIndex {
              ORDER BY count DESC"
         )?;
 
+        // Get all hotspots and filter by minimum dependent count
         let mut hotspots: Vec<(i64, usize)> = stmt
             .query_map([], |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)? as usize))
             })?
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|(_, count)| *count >= min_dependents)
+            .collect();
 
         // Apply limit if specified
         if let Some(lim) = limit {

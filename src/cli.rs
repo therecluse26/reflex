@@ -288,23 +288,81 @@ pub enum Command {
     /// }
     Mcp,
 
-    /// Analyze file dependencies and imports
+    /// Analyze codebase structure and dependencies
     ///
-    /// Show dependencies, dependents, and perform graph analysis
-    /// to understand code relationships and architecture.
+    /// Perform graph-wide dependency analysis to understand code architecture.
+    /// By default, shows a summary report with counts. Use specific flags for
+    /// detailed results.
+    ///
+    /// Examples:
+    ///   rfx analyze                                # Summary report
+    ///   rfx analyze --circular                     # Find cycles
+    ///   rfx analyze --hotspots                     # Most-imported files
+    ///   rfx analyze --hotspots --min-dependents 5  # Filter by minimum
+    ///   rfx analyze --unused                       # Orphaned files
+    ///   rfx analyze --islands                      # Disconnected components
+    Analyze {
+        /// Show circular dependencies
+        #[arg(long)]
+        circular: bool,
+
+        /// Show most-imported files (hotspots)
+        #[arg(long)]
+        hotspots: bool,
+
+        /// Minimum number of dependents for hotspots (default: 2)
+        #[arg(long, default_value = "2", requires = "hotspots")]
+        min_dependents: usize,
+
+        /// Show unused/orphaned files
+        #[arg(long)]
+        unused: bool,
+
+        /// Show disconnected components (islands)
+        #[arg(long)]
+        islands: bool,
+
+        /// Minimum island size (default: 2)
+        #[arg(long, default_value = "2", requires = "islands")]
+        min_island_size: usize,
+
+        /// Maximum island size (default: 500 or 50% of total files)
+        #[arg(long, requires = "islands")]
+        max_island_size: Option<usize>,
+
+        /// Output format: tree (default), table, dot
+        #[arg(short = 'f', long, default_value = "tree")]
+        format: String,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Pretty-print JSON output
+        #[arg(long)]
+        pretty: bool,
+
+        /// Maximum number of results
+        #[arg(short = 'n', long)]
+        limit: Option<usize>,
+
+        /// Pagination offset
+        #[arg(short = 'o', long)]
+        offset: Option<usize>,
+    },
+
+    /// Analyze dependencies for a specific file
+    ///
+    /// Show dependencies and dependents for a single file.
+    /// For graph-wide analysis, use 'rfx analyze' instead.
     ///
     /// Examples:
     ///   rfx deps src/main.rs                  # Show dependencies
     ///   rfx deps src/config.rs --reverse      # Show dependents
     ///   rfx deps src/api.rs --depth 3         # Transitive deps
-    ///   rfx deps --circular                   # Find cycles
-    ///   rfx deps --hotspots                   # Most-imported files
-    ///   rfx deps --unused                     # Orphaned files
-    ///   rfx deps --islands                    # Find subsystems (2-500 files)
-    ///   rfx deps --islands --min-island-size 5 --max-island-size 100
     Deps {
-        /// File path to analyze (omit for graph-wide operations)
-        file: Option<PathBuf>,
+        /// File path to analyze
+        file: PathBuf,
 
         /// Show files that depend on this file (reverse lookup)
         #[arg(short, long)]
@@ -315,75 +373,16 @@ pub enum Command {
         depth: usize,
 
         /// Output format: tree (default), table, dot
-        /// Use --json for JSON output instead
         #[arg(short = 'f', long, default_value = "tree")]
         format: String,
 
-        /// Output format as JSON
+        /// Output as JSON
         #[arg(long)]
         json: bool,
 
-        /// Pretty-print JSON output (only with --json)
+        /// Pretty-print JSON output
         #[arg(long)]
         pretty: bool,
-
-        /// Filter to internal dependencies only
-        #[arg(long)]
-        only_internal: bool,
-
-        /// Filter to external dependencies only
-        #[arg(long)]
-        only_external: bool,
-
-        /// Filter to stdlib dependencies only
-        #[arg(long)]
-        only_stdlib: bool,
-
-        /// Find circular dependencies (graph-wide)
-        #[arg(long, conflicts_with = "file")]
-        circular: bool,
-
-        /// Find most-imported files (hotspots)
-        #[arg(long, conflicts_with = "file")]
-        hotspots: bool,
-
-        /// Find unused files (no incoming dependencies)
-        #[arg(long, conflicts_with = "file")]
-        unused: bool,
-
-        /// Find disconnected components (islands)
-        ///
-        /// An "island" is a group of files that depend on each other but are
-        /// isolated from the rest of the codebase. By default, filters out:
-        /// - Single files (min_island_size = 2, use --unused instead)
-        /// - Large components (max_island_size = 500 or 50% of total files)
-        #[arg(long, conflicts_with = "file")]
-        islands: bool,
-
-        /// Minimum island size (default: 2)
-        ///
-        /// Islands smaller than this are filtered out (single files = unused)
-        #[arg(long, default_value = "2", requires = "islands")]
-        min_island_size: usize,
-
-        /// Maximum island size (default: 500 or 50% of total files, whichever is smaller)
-        ///
-        /// Islands larger than this are filtered out (likely the main app)
-        #[arg(long, requires = "islands")]
-        max_island_size: Option<usize>,
-
-        /// Full analysis report (runs all analyses)
-        #[arg(long, conflicts_with = "file")]
-        analyze: bool,
-
-        /// Maximum number of results to return
-        #[arg(short = 'n', long)]
-        limit: Option<usize>,
-
-        /// Pagination offset (skip first N results after sorting)
-        /// Use with --limit for pagination: --offset 0 --limit 10, then --offset 10 --limit 10
-        #[arg(short = 'o', long)]
-        offset: Option<usize>,
     },
 
     /// Internal command: Run background symbol indexing (hidden from help)
@@ -437,8 +436,11 @@ impl Cli {
             Some(Command::Mcp) => {
                 handle_mcp()
             }
-            Some(Command::Deps { file, reverse, depth, format, json, pretty, only_internal, only_external, only_stdlib, circular, hotspots, unused, islands, min_island_size, max_island_size, analyze, limit, offset }) => {
-                handle_deps(file, reverse, depth, format, json, pretty, only_internal, only_external, only_stdlib, circular, hotspots, unused, islands, min_island_size, max_island_size, analyze, limit, offset)
+            Some(Command::Analyze { circular, hotspots, min_dependents, unused, islands, min_island_size, max_island_size, format, json, pretty, limit, offset }) => {
+                handle_analyze(circular, hotspots, min_dependents, unused, islands, min_island_size, max_island_size, format, json, pretty, limit, offset)
+            }
+            Some(Command::Deps { file, reverse, depth, format, json, pretty }) => {
+                handle_deps(file, reverse, depth, format, json, pretty)
             }
             Some(Command::IndexSymbolsInternal { cache_dir }) => {
                 handle_index_symbols_internal(cache_dir)
@@ -1527,30 +1529,112 @@ fn handle_index_symbols_internal(cache_dir: PathBuf) -> Result<()> {
     Ok(())
 }
 
-/// Handle the `deps` subcommand
+/// Handle the `analyze` subcommand
 #[allow(clippy::too_many_arguments)]
+fn handle_analyze(
+    circular: bool,
+    hotspots: bool,
+    min_dependents: usize,
+    unused: bool,
+    islands: bool,
+    min_island_size: usize,
+    max_island_size: Option<usize>,
+    format: String,
+    as_json: bool,
+    pretty_json: bool,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<()> {
+    use crate::dependency::DependencyIndex;
+
+    log::info!("Starting analyze command");
+
+    let cache = CacheManager::new(".");
+
+    if !cache.exists() {
+        anyhow::bail!(
+            "No index found in current directory.\n\
+             \n\
+             Run 'rfx index' to build the code search index first.\n\
+             \n\
+             Example:\n\
+             $ rfx index             # Index current directory\n\
+             $ rfx analyze           # Run dependency analysis"
+        );
+    }
+
+    let deps_index = DependencyIndex::new(cache);
+
+    // JSON mode overrides format
+    let format = if as_json { "json" } else { &format };
+
+    // If no specific flags, show summary
+    if !circular && !hotspots && !unused && !islands {
+        return handle_analyze_summary(&deps_index, min_dependents);
+    }
+
+    // Run specific analyses based on flags
+    if circular {
+        handle_deps_circular(&deps_index, format, pretty_json)?;
+    }
+
+    if hotspots {
+        handle_deps_hotspots(&deps_index, format, pretty_json, limit, offset, min_dependents)?;
+    }
+
+    if unused {
+        handle_deps_unused(&deps_index, format, pretty_json, limit, offset)?;
+    }
+
+    if islands {
+        handle_deps_islands(&deps_index, format, pretty_json, limit, offset, min_island_size, max_island_size)?;
+    }
+
+    Ok(())
+}
+
+/// Handle analyze summary (default --analyze behavior)
+fn handle_analyze_summary(
+    deps_index: &crate::dependency::DependencyIndex,
+    min_dependents: usize,
+) -> Result<()> {
+    println!("Dependency Analysis Summary\n");
+
+    // Circular dependencies
+    let cycles = deps_index.detect_circular_dependencies()?;
+    println!("Circular Dependencies: {} cycle(s)", cycles.len());
+
+    // Hotspots
+    let hotspots = deps_index.find_hotspots(None, min_dependents)?;
+    println!("Hotspots: {} file(s) with {}+ dependents", hotspots.len(), min_dependents);
+
+    // Unused
+    let unused = deps_index.find_unused_files()?;
+    println!("Unused Files: {} file(s)", unused.len());
+
+    // Islands
+    let all_islands = deps_index.find_islands()?;
+    println!("Islands: {} disconnected component(s)", all_islands.len());
+
+    println!("\nUse specific flags for detailed results:");
+    println!("  rfx analyze --circular");
+    println!("  rfx analyze --hotspots");
+    println!("  rfx analyze --unused");
+    println!("  rfx analyze --islands");
+
+    Ok(())
+}
+
+/// Handle the `deps` subcommand
 fn handle_deps(
-    file: Option<PathBuf>,
+    file: PathBuf,
     reverse: bool,
     depth: usize,
     format: String,
     as_json: bool,
     pretty_json: bool,
-    only_internal: bool,
-    only_external: bool,
-    only_stdlib: bool,
-    circular: bool,
-    hotspots: bool,
-    unused: bool,
-    islands: bool,
-    min_island_size: usize,
-    max_island_size: Option<usize>,
-    analyze: bool,
-    limit: Option<usize>,
-    offset: Option<usize>,
 ) -> Result<()> {
     use crate::dependency::DependencyIndex;
-    use crate::models::ImportType;
 
     log::info!("Starting deps command");
 
@@ -1573,53 +1657,12 @@ fn handle_deps(
     // JSON mode overrides format
     let format = if as_json { "json" } else { &format };
 
-    // Determine operation mode
-    if analyze {
-        // Run full analysis
-        return handle_deps_analyze(&deps_index, format, pretty_json, limit);
-    } else if circular {
-        return handle_deps_circular(&deps_index, format, pretty_json);
-    } else if hotspots {
-        return handle_deps_hotspots(&deps_index, format, pretty_json, limit, offset);
-    } else if unused {
-        return handle_deps_unused(&deps_index, format, pretty_json, limit, offset);
-    } else if islands {
-        return handle_deps_islands(&deps_index, format, pretty_json, limit, offset, min_island_size, max_island_size);
-    }
-
-    // File-based operations require a file path
-    let file_path = file.ok_or_else(|| {
-        anyhow::anyhow!(
-            "No file specified.\n\
-             \n\
-             Usage:\n\
-             $ rfx deps <file>              # Show dependencies\n\
-             $ rfx deps <file> --reverse    # Show dependents\n\
-             $ rfx deps --circular          # Find cycles\n\
-             $ rfx deps --hotspots          # Most-imported files"
-        )
-    })?;
-
     // Convert file path to string
-    let file_str = file_path.to_string_lossy().to_string();
+    let file_str = file.to_string_lossy().to_string();
 
     // Get file ID
     let file_id = deps_index.get_file_id_by_path(&file_str)?
         .ok_or_else(|| anyhow::anyhow!("File '{}' not found in index", file_str))?;
-
-    // Filter function based on flags
-    let import_filter = move |import_type: &ImportType| -> bool {
-        if only_internal && *import_type != ImportType::Internal {
-            return false;
-        }
-        if only_external && *import_type != ImportType::External {
-            return false;
-        }
-        if only_stdlib && *import_type != ImportType::Stdlib {
-            return false;
-        }
-        true
-    };
 
     if reverse {
         // Show dependents (who imports this file)
@@ -1671,20 +1714,17 @@ fn handle_deps(
         if depth == 1 {
             // Direct dependencies only
             let deps = deps_index.get_dependencies(file_id)?;
-            let filtered_deps: Vec<_> = deps.into_iter()
-                .filter(|d| import_filter(&d.import_type))
-                .collect();
 
             match format.as_ref() {
                 "json" => {
-                    let output: Vec<_> = filtered_deps.iter()
+                    let output: Vec<_> = deps.iter()
                         .map(|dep| serde_json::json!({
                             "imported_path": dep.imported_path,
                             "resolved_file_id": dep.resolved_file_id,
                             "import_type": match dep.import_type {
-                                ImportType::Internal => "internal",
-                                ImportType::External => "external",
-                                ImportType::Stdlib => "stdlib",
+                                crate::models::ImportType::Internal => "internal",
+                                crate::models::ImportType::External => "external",
+                                crate::models::ImportType::Stdlib => "stdlib",
                             },
                             "line": dep.line_number,
                             "symbols": dep.imported_symbols,
@@ -1697,32 +1737,32 @@ fn handle_deps(
                         serde_json::to_string(&output)?
                     };
                     println!("{}", json_str);
-                    eprintln!("Found {} dependencies for {}", filtered_deps.len(), file_str);
+                    eprintln!("Found {} dependencies for {}", deps.len(), file_str);
                 }
                 "tree" => {
                     println!("Dependencies of {}:", file_str);
-                    for dep in &filtered_deps {
+                    for dep in &deps {
                         let type_label = match dep.import_type {
-                            ImportType::Internal => "[internal]",
-                            ImportType::External => "[external]",
-                            ImportType::Stdlib => "[stdlib]",
+                            crate::models::ImportType::Internal => "[internal]",
+                            crate::models::ImportType::External => "[external]",
+                            crate::models::ImportType::Stdlib => "[stdlib]",
                         };
                         println!("  └─ {} {} (line {})", dep.imported_path, type_label, dep.line_number);
                     }
-                    eprintln!("\nFound {} dependencies", filtered_deps.len());
+                    eprintln!("\nFound {} dependencies", deps.len());
                 }
                 "table" => {
                     println!("Path                          Type       Line");
                     println!("----------------------------  ---------  ----");
-                    for dep in &filtered_deps {
+                    for dep in &deps {
                         let type_str = match dep.import_type {
-                            ImportType::Internal => "internal",
-                            ImportType::External => "external",
-                            ImportType::Stdlib => "stdlib",
+                            crate::models::ImportType::Internal => "internal",
+                            crate::models::ImportType::External => "external",
+                            crate::models::ImportType::Stdlib => "stdlib",
                         };
                         println!("{:<28}  {:<9}  {}", dep.imported_path, type_str, dep.line_number);
                     }
-                    eprintln!("\nFound {} dependencies", filtered_deps.len());
+                    eprintln!("\nFound {} dependencies", deps.len());
                 }
                 _ => {
                     anyhow::bail!("Unknown format '{}'. Supported: json, tree, table, dot", format);
@@ -1889,8 +1929,9 @@ fn handle_deps_hotspots(
     pretty_json: bool,
     limit: Option<usize>,
     offset: Option<usize>,
+    min_dependents: usize,
 ) -> Result<()> {
-    let hotspots = deps_index.find_hotspots(limit)?;
+    let hotspots = deps_index.find_hotspots(limit, min_dependents)?;
 
     if hotspots.is_empty() {
         println!("No hotspots found.");
@@ -2171,25 +2212,3 @@ fn handle_deps_islands(
     Ok(())
 }
 
-/// Handle --analyze flag (full report)
-fn handle_deps_analyze(
-    deps_index: &crate::dependency::DependencyIndex,
-    format: &str,
-    pretty_json: bool,
-    limit: Option<usize>,
-) -> Result<()> {
-    println!("Running comprehensive dependency analysis...\n");
-
-    // Run all analyses
-    println!("1. Circular Dependencies:");
-    handle_deps_circular(deps_index, format, pretty_json)?;
-
-    println!("\n2. Hotspots (Most-Imported Files):");
-    handle_deps_hotspots(deps_index, format, pretty_json, limit, None)?;
-
-    println!("\n3. Unused Files:");
-    handle_deps_unused(deps_index, format, pretty_json, limit, None)?;
-
-    println!("\nAnalysis complete!");
-    Ok(())
-}

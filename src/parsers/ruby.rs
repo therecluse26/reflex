@@ -1261,7 +1261,7 @@ end
 
     #[test]
     fn test_dynamic_requires_filtered() {
-        let source = r#"
+        let source = r##"
             require 'json'
             require 'rails'
             require_relative '../models/user'
@@ -1272,7 +1272,7 @@ end
             require File.join('path', 'to', 'file')
             require_relative File.dirname(__FILE__) + '/dynamic'
             load "#{Rails.root}/lib/dynamic.rb"
-        "#;
+        "##;
 
         let deps = RubyDependencyExtractor::extract_dependencies(source).unwrap();
 
