@@ -42,6 +42,17 @@ pub struct ImportInfo {
     pub imported_symbols: Option<Vec<String>>,
 }
 
+/// Extracted export/re-export information (for barrel export tracking)
+#[derive(Debug, Clone)]
+pub struct ExportInfo {
+    /// Symbol being exported (None for wildcard `export * from`)
+    pub exported_symbol: Option<String>,
+    /// Source path where the symbol is re-exported from
+    pub source_path: String,
+    /// Line number where export appears
+    pub line_number: usize,
+}
+
 /// Trait for extracting dependencies from source code
 ///
 /// Each language parser can implement this trait to extract import/include

@@ -97,6 +97,42 @@ impl DependencyIndex {
         Ok(())
     }
 
+    /// Insert an export into the database
+    ///
+    /// # Arguments
+    ///
+    /// * `file_id` - Source file ID containing the export statement
+    /// * `exported_symbol` - Symbol name being exported (None for wildcard exports)
+    /// * `source_path` - Path where the symbol is re-exported from
+    /// * `resolved_source_id` - Resolved target file ID (None if unresolved)
+    /// * `line_number` - Line where export appears
+    pub fn insert_export(
+        &self,
+        file_id: i64,
+        exported_symbol: Option<String>,
+        source_path: String,
+        resolved_source_id: Option<i64>,
+        line_number: usize,
+    ) -> Result<()> {
+        let db_path = self.cache.path().join("meta.db");
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for export insert")?;
+
+        conn.execute(
+            "INSERT INTO file_exports (file_id, exported_symbol, source_path, resolved_source_id, line_number)
+             VALUES (?, ?, ?, ?, ?)",
+            rusqlite::params![
+                file_id,
+                exported_symbol,
+                source_path,
+                resolved_source_id,
+                line_number as i64,
+            ],
+        )?;
+
+        Ok(())
+    }
+
     /// Batch insert multiple dependencies in a single transaction
     ///
     /// More efficient than individual inserts for bulk operations.
@@ -464,27 +500,114 @@ impl DependencyIndex {
     ///
     /// Files that are never imported are potential candidates for deletion.
     /// Uses `resolved_file_id` column for instant SQL lookup (sub-10ms).
+    ///
+    /// **Barrel Export Resolution**: This function now follows barrel export chains
+    /// to detect files that are indirectly imported via re-exports. For example:
+    /// - `WithLabel.vue` exported by `packages/ui/components/index.ts`
+    /// - App imports `@packages/ui/components` (resolves to index.ts)
+    /// - This function follows the export chain and marks `WithLabel.vue` as used
     pub fn find_unused_files(&self) -> Result<Vec<i64>> {
         let db_path = self.cache.path().join("meta.db");
         let conn = Connection::open(&db_path)
             .context("Failed to open meta.db for unused files analysis")?;
 
-        // Get all files that are NOT referenced in resolved_file_id (instant SQL)
+        // Build set of used files by following barrel export chains
+        let mut used_files = HashSet::new();
+
+        // Step 1: Get all files directly referenced in resolved_file_id
         let mut stmt = conn.prepare(
-            "SELECT id FROM files
-             WHERE id NOT IN (
-                 SELECT DISTINCT resolved_file_id
-                 FROM file_dependencies
-                 WHERE resolved_file_id IS NOT NULL
-             )
-             ORDER BY id"
+            "SELECT DISTINCT resolved_file_id
+             FROM file_dependencies
+             WHERE resolved_file_id IS NOT NULL"
         )?;
 
-        let unused: Vec<i64> = stmt
+        let direct_imports: Vec<i64> = stmt
             .query_map([], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?;
 
+        used_files.extend(&direct_imports);
+
+        // Step 2: For each direct import, follow barrel export chains
+        for file_id in direct_imports {
+            // Resolve through barrel exports to find all indirectly used files
+            let barrel_chain = self.resolve_through_barrel_exports(file_id)?;
+            used_files.extend(barrel_chain);
+        }
+
+        // Step 3: Get all files NOT in the used set
+        let mut stmt = conn.prepare("SELECT id FROM files ORDER BY id")?;
+        let all_files: Vec<i64> = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let unused: Vec<i64> = all_files
+            .into_iter()
+            .filter(|id| !used_files.contains(id))
+            .collect();
+
         Ok(unused)
+    }
+
+    /// Resolve barrel export chains to find all files transitively exported from a given file
+    ///
+    /// Given a barrel file (e.g., `index.ts` that re-exports from other files), this function
+    /// follows the export chain to find all source files that are transitively exported.
+    ///
+    /// # Example
+    ///
+    /// If `packages/ui/components/index.ts` contains:
+    /// ```typescript
+    /// export { default as WithLabel } from './WithLabel.vue';
+    /// export { default as Button } from './Button.vue';
+    /// ```
+    ///
+    /// Then calling this with the file_id of `index.ts` will return the file IDs of
+    /// `WithLabel.vue` and `Button.vue`.
+    ///
+    /// # Arguments
+    ///
+    /// * `barrel_file_id` - File ID of the barrel file to start from
+    ///
+    /// # Returns
+    ///
+    /// Vec of file IDs that are transitively exported (includes the barrel file itself)
+    pub fn resolve_through_barrel_exports(&self, barrel_file_id: i64) -> Result<Vec<i64>> {
+        let db_path = self.cache.path().join("meta.db");
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for barrel export resolution")?;
+
+        let mut resolved_files = Vec::new();
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+
+        // Start with the barrel file itself
+        queue.push_back(barrel_file_id);
+        visited.insert(barrel_file_id);
+
+        while let Some(current_id) = queue.pop_front() {
+            resolved_files.push(current_id);
+
+            // Get all exports from this file
+            let mut stmt = conn.prepare(
+                "SELECT resolved_source_id
+                 FROM file_exports
+                 WHERE file_id = ? AND resolved_source_id IS NOT NULL"
+            )?;
+
+            let exported_files: Vec<i64> = stmt
+                .query_map([current_id], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            // Follow each exported file
+            for exported_id in exported_files {
+                if !visited.contains(&exported_id) {
+                    visited.insert(exported_id);
+                    queue.push_back(exported_id);
+                }
+            }
+        }
+
+        Ok(resolved_files)
     }
 
     /// Find disconnected components (islands) in the dependency graph

@@ -18,7 +18,7 @@ use crate::content_store::ContentWriter;
 use crate::dependency::DependencyIndex;
 use crate::models::{Dependency, IndexConfig, IndexStats, Language, ImportType};
 use crate::output;
-use crate::parsers::{DependencyExtractor, ImportInfo};
+use crate::parsers::{DependencyExtractor, ImportInfo, ExportInfo};
 use crate::parsers::rust::RustDependencyExtractor;
 use crate::parsers::python::PythonDependencyExtractor;
 use crate::parsers::typescript::TypeScriptDependencyExtractor;
@@ -48,6 +48,7 @@ struct FileProcessingResult {
     language: Language,
     line_count: usize,
     dependencies: Vec<ImportInfo>,
+    exports: Vec<ExportInfo>,
 }
 
 /// Find the nearest tsconfig.json for a given source file
@@ -237,6 +238,7 @@ impl Indexer {
         let mut files_indexed = 0;
         let mut file_metadata: Vec<(String, String, String, usize)> = Vec::new(); // For batch SQLite update
         let mut all_dependencies: Vec<(String, Vec<ImportInfo>)> = Vec::new(); // For batch dependency insertion
+        let mut all_exports: Vec<(String, Vec<ExportInfo>)> = Vec::new(); // For batch export insertion
 
         // Initialize trigram index and content store
         let mut trigram_index = TrigramIndex::new();
@@ -363,7 +365,7 @@ impl Indexer {
                 // Count lines in the file
                 let line_count = content.lines().count();
 
-                // Extract dependencies for supported languages
+                // Extract dependencies and exports for supported languages
                 let dependencies = match language {
                     Language::Rust => {
                         match RustDependencyExtractor::extract_dependencies(&content) {
@@ -499,6 +501,34 @@ impl Indexer {
                     _ => Vec::new(),
                 };
 
+                // Extract exports (for barrel export tracking)
+                let exports = match language {
+                    Language::TypeScript | Language::JavaScript => {
+                        // Find nearest tsconfig for path alias resolution
+                        let alias_map = find_nearest_tsconfig(&path_str, root, &tsconfigs);
+                        match TypeScriptDependencyExtractor::extract_export_declarations(&content, alias_map) {
+                            Ok(exports) => exports,
+                            Err(e) => {
+                                log::warn!("Failed to extract exports from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Language::Vue => {
+                        // Find nearest tsconfig for path alias resolution
+                        let alias_map = find_nearest_tsconfig(&path_str, root, &tsconfigs);
+                        match VueDependencyExtractor::extract_export_declarations(&content, alias_map) {
+                            Ok(exports) => exports,
+                            Err(e) => {
+                                log::warn!("Failed to extract exports from {}: {}", path_str, e);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    // Other languages not yet implemented for export tracking
+                    _ => Vec::new(),
+                };
+
                 // Update progress atomically
                 counter_clone.fetch_add(1, Ordering::Relaxed);
 
@@ -510,6 +540,7 @@ impl Indexer {
                     language,
                     line_count,
                     dependencies,
+                    exports,
                 })
                 })
                 .collect()
@@ -539,6 +570,11 @@ impl Indexer {
                 // Collect dependencies for batch insertion (if any)
                 if !result.dependencies.is_empty() {
                     all_dependencies.push((result.path_str.clone(), result.dependencies));
+                }
+
+                // Collect exports for batch insertion (if any)
+                if !result.exports.is_empty() {
+                    all_exports.push((result.path_str.clone(), result.exports));
                 }
 
                 new_hashes.insert(result.path_str, result.hash);
@@ -1249,6 +1285,108 @@ impl Indexer {
             }
 
             log::info!("Extracted {} dependencies", total_deps_inserted);
+        }
+
+        // Step 2.6: Insert exports (after files are inserted and have IDs)
+        if !all_exports.is_empty() {
+            *progress_status.lock().unwrap() = "Extracting exports...".to_string();
+            if show_progress {
+                pb.set_message("Extracting exports...".to_string());
+            }
+
+            // Reuse the tsconfigs parsed earlier for TypeScript/Vue path alias resolution
+            let tsconfigs = crate::parsers::tsconfig::parse_all_tsconfigs(root)
+                .unwrap_or_else(|e| {
+                    log::warn!("Failed to parse tsconfig.json files: {}", e);
+                    HashMap::new()
+                });
+
+            // Create dependency index to resolve paths and insert exports
+            let cache_for_exports = CacheManager::new(root);
+            let dep_index = DependencyIndex::new(cache_for_exports);
+
+            let mut total_exports_inserted = 0;
+
+            // Process each file's exports
+            for (file_path, export_infos) in all_exports {
+                // Get file ID from database
+                let file_id = match dep_index.get_file_id_by_path(&file_path)? {
+                    Some(id) => id,
+                    None => {
+                        log::warn!("File not found in database (skipping exports): {}", file_path);
+                        continue;
+                    }
+                };
+
+                // Resolve export source paths and insert
+                for export_info in export_infos {
+                    // Resolve export source path (same logic as imports)
+                    let resolved_source_id = if file_path.ends_with(".ts") || file_path.ends_with(".tsx")
+                            || file_path.ends_with(".js") || file_path.ends_with(".jsx")
+                            || file_path.ends_with(".mts") || file_path.ends_with(".cts")
+                            || file_path.ends_with(".mjs") || file_path.ends_with(".cjs")
+                            || file_path.ends_with(".vue") {
+                        // Resolve TypeScript/JavaScript/Vue export paths (relative imports and path aliases)
+                        let alias_map = find_nearest_tsconfig(&file_path, root, &tsconfigs);
+                        if let Some(candidates_str) = crate::parsers::typescript::resolve_ts_import_to_path(
+                            &export_info.source_path,
+                            Some(&file_path),
+                            alias_map,
+                        ) {
+                            // Parse pipe-delimited candidates (e.g., "path.tsx|path.ts|path.jsx|path.js|path.vue")
+                            let candidates: Vec<&str> = candidates_str.split('|').collect();
+
+                            // Try each candidate in order until we find one in the database
+                            let mut resolved_id = None;
+                            for candidate_path in candidates {
+                                // Normalize path to be relative to project root
+                                let normalized_candidate = if let Ok(rel_path) = std::path::Path::new(candidate_path).strip_prefix(root) {
+                                    rel_path.to_string_lossy().to_string()
+                                } else {
+                                    candidate_path.to_string()
+                                };
+
+                                match dep_index.get_file_id_by_path(&normalized_candidate)? {
+                                    Some(id) => {
+                                        log::trace!("Resolved export source: {} -> {} (file_id={})",
+                                                   export_info.source_path, normalized_candidate, id);
+                                        resolved_id = Some(id);
+                                        break; // Found a match, stop trying
+                                    }
+                                    None => {
+                                        log::trace!("Export source candidate not in index: {}", candidate_path);
+                                    }
+                                }
+                            }
+
+                            if resolved_id.is_none() {
+                                log::trace!("Export source: no matching file found in database for any candidate: {}",
+                                           candidates_str);
+                            }
+
+                            resolved_id
+                        } else {
+                            log::trace!("Could not resolve export source (non-relative or external): {}", export_info.source_path);
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    // Insert export into database
+                    dep_index.insert_export(
+                        file_id,
+                        export_info.exported_symbol,
+                        export_info.source_path,
+                        resolved_source_id,
+                        export_info.line_number,
+                    )?;
+
+                    total_exports_inserted += 1;
+                }
+            }
+
+            log::info!("Extracted {} exports", total_exports_inserted);
         }
 
         log::info!("Indexed {} files", files_indexed);

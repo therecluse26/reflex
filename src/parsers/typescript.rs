@@ -1101,6 +1101,153 @@ fn classify_js_import(import_path: &str, alias_map: Option<&crate::parsers::tsco
 }
 
 // ============================================================================
+// Export Extraction (for barrel export tracking)
+// ============================================================================
+
+use crate::parsers::ExportInfo;
+
+impl TypeScriptDependencyExtractor {
+    /// Extract export/re-export statements for barrel export tracking
+    ///
+    /// Extracts:
+    /// - `export * from './module'` (wildcard re-exports)
+    /// - `export { Named } from './module'` (named re-exports)
+    /// - `export { default as Name } from './module'` (default re-exports)
+    ///
+    /// Returns ExportInfo records with the exported symbol name (None for wildcard)
+    /// and the source path. The indexer will resolve these to file IDs.
+    pub fn extract_export_declarations(
+        source: &str,
+        alias_map: Option<&crate::parsers::tsconfig::PathAliasMap>,
+    ) -> Result<Vec<ExportInfo>> {
+        let mut parser = Parser::new();
+        let language = tree_sitter_typescript::LANGUAGE_TSX;
+
+        parser
+            .set_language(&language.into())
+            .context("Failed to set TypeScript/JavaScript language")?;
+
+        let tree = parser
+            .parse(source, None)
+            .context("Failed to parse TypeScript/JavaScript source for export extraction")?;
+
+        let root_node = tree.root_node();
+
+        let mut exports = Vec::new();
+
+        // Extract ES6 export statements with source paths
+        exports.extend(extract_export_from_statements(source, &root_node)?);
+
+        Ok(exports)
+    }
+}
+
+/// Extract export statements that re-export from other modules
+///
+/// Handles:
+/// - export * from './module'
+/// - export { Named } from './module'
+/// - export { Named as Alias } from './module'
+/// - export { default as Name } from './module.vue'
+fn extract_export_from_statements(
+    source: &str,
+    root: &tree_sitter::Node,
+) -> Result<Vec<ExportInfo>> {
+    let language = tree_sitter_typescript::LANGUAGE_TSX;
+
+    // Query for export statements with a source clause
+    let query_str = r#"
+        (export_statement
+            source: (string) @source_path) @export
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create export statement query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut exports = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut source_path = None;
+        let mut export_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "source_path" => {
+                    // Remove quotes from string literal
+                    let raw_path = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
+                    source_path = Some(raw_path.trim_matches(|c| c == '"' || c == '\'' || c == '`').to_string());
+                }
+                "export" => {
+                    export_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(path), Some(node)) = (source_path, export_node) {
+            let line_number = node.start_position().row + 1;
+
+            // Extract exported symbols from this export statement
+            let exported_symbols = extract_exported_symbols(source, &node)?;
+
+            // If no specific symbols extracted (export *), create one entry with None
+            if exported_symbols.is_empty() {
+                exports.push(ExportInfo {
+                    exported_symbol: None, // Wildcard export
+                    source_path: path,
+                    line_number,
+                });
+            } else {
+                // Create one entry per exported symbol
+                for symbol in exported_symbols {
+                    exports.push(ExportInfo {
+                        exported_symbol: Some(symbol),
+                        source_path: path.clone(),
+                        line_number,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(exports)
+}
+
+/// Extract the list of symbols being exported from an export statement
+///
+/// For `export { A, B as C } from './module'`, returns ["A", "B"]
+/// For `export * from './module'`, returns empty vec (handled by caller)
+fn extract_exported_symbols(source: &str, export_node: &tree_sitter::Node) -> Result<Vec<String>> {
+    let mut symbols = Vec::new();
+
+    // Walk children to find export_clause
+    let mut cursor = export_node.walk();
+    for child in export_node.children(&mut cursor) {
+        if child.kind() == "export_clause" {
+            // Extract individual export specifiers
+            let mut specifier_cursor = child.walk();
+            for specifier in child.children(&mut specifier_cursor) {
+                if specifier.kind() == "export_specifier" {
+                    // Get the exported name (before "as" if aliased)
+                    // For `export { foo as bar }`, we want "foo" (the original name)
+                    if let Ok(text) = specifier.utf8_text(source.as_bytes()) {
+                        // Parse "foo as bar" or just "foo"
+                        let name = text.split_whitespace().next().unwrap_or(text);
+                        symbols.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(symbols)
+}
+
+// ============================================================================
 // Path Resolution
 // ============================================================================
 
