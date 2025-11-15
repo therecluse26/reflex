@@ -48,6 +48,11 @@ impl DependencyIndex {
         Self { cache }
     }
 
+    /// Get a reference to the cache manager
+    pub fn get_cache(&self) -> &CacheManager {
+        &self.cache
+    }
+
     /// Insert a dependency into the database
     ///
     /// # Arguments

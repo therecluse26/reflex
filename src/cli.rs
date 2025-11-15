@@ -300,6 +300,8 @@ pub enum Command {
     ///   rfx deps --circular                   # Find cycles
     ///   rfx deps --hotspots                   # Most-imported files
     ///   rfx deps --unused                     # Orphaned files
+    ///   rfx deps --islands                    # Find subsystems (2-500 files)
+    ///   rfx deps --islands --min-island-size 5 --max-island-size 100
     Deps {
         /// File path to analyze (omit for graph-wide operations)
         file: Option<PathBuf>,
@@ -312,11 +314,16 @@ pub enum Command {
         #[arg(short, long, default_value = "1")]
         depth: usize,
 
-        /// Output format: json (default), tree, table, dot
-        #[arg(short = 'f', long, default_value = "json")]
+        /// Output format: tree (default), table, dot
+        /// Use --json for JSON output instead
+        #[arg(short = 'f', long, default_value = "tree")]
         format: String,
 
-        /// Pretty-print JSON output (only with --format json)
+        /// Output format as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Pretty-print JSON output (only with --json)
         #[arg(long)]
         pretty: bool,
 
@@ -345,8 +352,25 @@ pub enum Command {
         unused: bool,
 
         /// Find disconnected components (islands)
+        ///
+        /// An "island" is a group of files that depend on each other but are
+        /// isolated from the rest of the codebase. By default, filters out:
+        /// - Single files (min_island_size = 2, use --unused instead)
+        /// - Large components (max_island_size = 500 or 50% of total files)
         #[arg(long, conflicts_with = "file")]
         islands: bool,
+
+        /// Minimum island size (default: 2)
+        ///
+        /// Islands smaller than this are filtered out (single files = unused)
+        #[arg(long, default_value = "2", requires = "islands")]
+        min_island_size: usize,
+
+        /// Maximum island size (default: 500 or 50% of total files, whichever is smaller)
+        ///
+        /// Islands larger than this are filtered out (likely the main app)
+        #[arg(long, requires = "islands")]
+        max_island_size: Option<usize>,
 
         /// Full analysis report (runs all analyses)
         #[arg(long, conflicts_with = "file")]
@@ -355,6 +379,11 @@ pub enum Command {
         /// Maximum number of results to return
         #[arg(short = 'n', long)]
         limit: Option<usize>,
+
+        /// Pagination offset (skip first N results after sorting)
+        /// Use with --limit for pagination: --offset 0 --limit 10, then --offset 10 --limit 10
+        #[arg(short = 'o', long)]
+        offset: Option<usize>,
     },
 
     /// Internal command: Run background symbol indexing (hidden from help)
@@ -408,8 +437,8 @@ impl Cli {
             Some(Command::Mcp) => {
                 handle_mcp()
             }
-            Some(Command::Deps { file, reverse, depth, format, pretty, only_internal, only_external, only_stdlib, circular, hotspots, unused, islands, analyze, limit }) => {
-                handle_deps(file, reverse, depth, format, pretty, only_internal, only_external, only_stdlib, circular, hotspots, unused, islands, analyze, limit)
+            Some(Command::Deps { file, reverse, depth, format, json, pretty, only_internal, only_external, only_stdlib, circular, hotspots, unused, islands, min_island_size, max_island_size, analyze, limit, offset }) => {
+                handle_deps(file, reverse, depth, format, json, pretty, only_internal, only_external, only_stdlib, circular, hotspots, unused, islands, min_island_size, max_island_size, analyze, limit, offset)
             }
             Some(Command::IndexSymbolsInternal { cache_dir }) => {
                 handle_index_symbols_internal(cache_dir)
@@ -1505,6 +1534,7 @@ fn handle_deps(
     reverse: bool,
     depth: usize,
     format: String,
+    as_json: bool,
     pretty_json: bool,
     only_internal: bool,
     only_external: bool,
@@ -1513,8 +1543,11 @@ fn handle_deps(
     hotspots: bool,
     unused: bool,
     islands: bool,
+    min_island_size: usize,
+    max_island_size: Option<usize>,
     analyze: bool,
     limit: Option<usize>,
+    offset: Option<usize>,
 ) -> Result<()> {
     use crate::dependency::DependencyIndex;
     use crate::models::ImportType;
@@ -1537,18 +1570,21 @@ fn handle_deps(
 
     let deps_index = DependencyIndex::new(cache);
 
+    // JSON mode overrides format
+    let format = if as_json { "json" } else { &format };
+
     // Determine operation mode
     if analyze {
         // Run full analysis
-        return handle_deps_analyze(&deps_index, &format, pretty_json, limit);
+        return handle_deps_analyze(&deps_index, format, pretty_json, limit);
     } else if circular {
-        return handle_deps_circular(&deps_index, &format, pretty_json);
+        return handle_deps_circular(&deps_index, format, pretty_json);
     } else if hotspots {
-        return handle_deps_hotspots(&deps_index, &format, pretty_json, limit);
+        return handle_deps_hotspots(&deps_index, format, pretty_json, limit, offset);
     } else if unused {
-        return handle_deps_unused(&deps_index, &format, pretty_json, limit);
+        return handle_deps_unused(&deps_index, format, pretty_json, limit, offset);
     } else if islands {
-        return handle_deps_islands(&deps_index, &format, pretty_json, limit);
+        return handle_deps_islands(&deps_index, format, pretty_json, limit, offset, min_island_size, max_island_size);
     }
 
     // File-based operations require a file path
@@ -1590,7 +1626,7 @@ fn handle_deps(
         let dependents = deps_index.get_dependents(file_id)?;
         let paths = deps_index.get_file_paths(&dependents)?;
 
-        match format.as_str() {
+        match format.as_ref() {
             "json" => {
                 let output: Vec<_> = dependents.iter()
                     .filter_map(|id| paths.get(id).map(|path| serde_json::json!({
@@ -1639,7 +1675,7 @@ fn handle_deps(
                 .filter(|d| import_filter(&d.import_type))
                 .collect();
 
-            match format.as_str() {
+            match format.as_ref() {
                 "json" => {
                     let output: Vec<_> = filtered_deps.iter()
                         .map(|dep| serde_json::json!({
@@ -1698,7 +1734,7 @@ fn handle_deps(
             let file_ids: Vec<_> = transitive.keys().copied().collect();
             let paths = deps_index.get_file_paths(&file_ids)?;
 
-            match format.as_str() {
+            match format.as_ref() {
                 "json" => {
                     let output: Vec<_> = transitive.iter()
                         .filter_map(|(id, d)| {
@@ -1852,11 +1888,21 @@ fn handle_deps_hotspots(
     format: &str,
     pretty_json: bool,
     limit: Option<usize>,
+    offset: Option<usize>,
 ) -> Result<()> {
     let hotspots = deps_index.find_hotspots(limit)?;
 
     if hotspots.is_empty() {
         println!("No hotspots found.");
+        return Ok(());
+    }
+
+    // Apply offset pagination
+    let offset_val = offset.unwrap_or(0);
+    let hotspots: Vec<_> = hotspots.into_iter().skip(offset_val).collect();
+
+    if hotspots.is_empty() {
+        println!("No hotspots found at offset {}.", offset_val);
         return Ok(());
     }
 
@@ -1916,8 +1962,18 @@ fn handle_deps_unused(
     format: &str,
     pretty_json: bool,
     limit: Option<usize>,
+    offset: Option<usize>,
 ) -> Result<()> {
     let mut unused = deps_index.find_unused_files()?;
+
+    // Apply offset pagination first
+    let offset_val = offset.unwrap_or(0);
+    if offset_val > 0 && offset_val < unused.len() {
+        unused = unused.into_iter().skip(offset_val).collect();
+    } else if offset_val >= unused.len() {
+        println!("No unused files found at offset {}.", offset_val);
+        return Ok(());
+    }
 
     // Apply limit if specified
     if let Some(lim) = limit {
@@ -1983,8 +2039,46 @@ fn handle_deps_islands(
     format: &str,
     pretty_json: bool,
     limit: Option<usize>,
+    offset: Option<usize>,
+    min_island_size: usize,
+    max_island_size: Option<usize>,
 ) -> Result<()> {
-    let mut islands = deps_index.find_islands()?;
+    let all_islands = deps_index.find_islands()?;
+    let total_components = all_islands.len();
+
+    // Get total file count from the cache for percentage calculation
+    let cache = deps_index.get_cache();
+    let total_files = cache.stats()?.total_files as usize;
+
+    // Calculate max_island_size default: min of 500 or 50% of total files
+    let max_size = max_island_size.unwrap_or_else(|| {
+        let fifty_percent = (total_files as f64 * 0.5) as usize;
+        fifty_percent.min(500)
+    });
+
+    // Filter islands by size
+    let mut islands: Vec<_> = all_islands.into_iter()
+        .filter(|island| {
+            let size = island.len();
+            size >= min_island_size && size <= max_size
+        })
+        .collect();
+
+    let filtered_count = total_components - islands.len();
+
+    // Apply offset pagination first
+    let offset_val = offset.unwrap_or(0);
+    if offset_val > 0 && offset_val < islands.len() {
+        islands = islands.into_iter().skip(offset_val).collect();
+    } else if offset_val >= islands.len() {
+        if filtered_count > 0 {
+            println!("No islands found at offset {} (filtered {} of {} total components by size: {}-{}).",
+                offset_val, filtered_count, total_components, min_island_size, max_size);
+        } else {
+            println!("No islands found at offset {}.", offset_val);
+        }
+        return Ok(());
+    }
 
     // Apply limit to number of islands
     if let Some(lim) = limit {
@@ -1992,7 +2086,12 @@ fn handle_deps_islands(
     }
 
     if islands.is_empty() {
-        println!("No islands found.");
+        if filtered_count > 0 {
+            println!("No islands found matching criteria (filtered {} of {} total components by size: {}-{}).",
+                filtered_count, total_components, min_island_size, max_size);
+        } else {
+            println!("No islands found.");
+        }
         return Ok(());
     }
 
@@ -2023,7 +2122,12 @@ fn handle_deps_islands(
                 serde_json::to_string(&output)?
             };
             println!("{}", json_str);
-            eprintln!("Found {} islands (disconnected components)", islands.len());
+            if filtered_count > 0 {
+                eprintln!("Found {} islands (filtered {} of {} total components by size: {}-{})",
+                    islands.len(), filtered_count, total_components, min_island_size, max_size);
+            } else {
+                eprintln!("Found {} islands (disconnected components)", islands.len());
+            }
         }
         "tree" => {
             println!("Islands (Disconnected Components):");
@@ -2035,7 +2139,12 @@ fn handle_deps_islands(
                     }
                 }
             }
-            eprintln!("\nFound {} islands", islands.len());
+            if filtered_count > 0 {
+                eprintln!("\nFound {} islands (filtered {} of {} total components by size: {}-{})",
+                    islands.len(), filtered_count, total_components, min_island_size, max_size);
+            } else {
+                eprintln!("\nFound {} islands", islands.len());
+            }
         }
         "table" => {
             println!("Island  Size  Files");
@@ -2047,7 +2156,12 @@ fn handle_deps_islands(
                     .join(", ");
                 println!("{:<6}  {:<4}  {}", idx + 1, island.len(), island_files);
             }
-            eprintln!("\nFound {} islands", islands.len());
+            if filtered_count > 0 {
+                eprintln!("\nFound {} islands (filtered {} of {} total components by size: {}-{})",
+                    islands.len(), filtered_count, total_components, min_island_size, max_size);
+            } else {
+                eprintln!("\nFound {} islands", islands.len());
+            }
         }
         _ => {
             anyhow::bail!("Unknown format '{}'. Supported: json, tree, table", format);
@@ -2071,10 +2185,10 @@ fn handle_deps_analyze(
     handle_deps_circular(deps_index, format, pretty_json)?;
 
     println!("\n2. Hotspots (Most-Imported Files):");
-    handle_deps_hotspots(deps_index, format, pretty_json, limit)?;
+    handle_deps_hotspots(deps_index, format, pretty_json, limit, None)?;
 
     println!("\n3. Unused Files:");
-    handle_deps_unused(deps_index, format, pretty_json, limit)?;
+    handle_deps_unused(deps_index, format, pretty_json, limit, None)?;
 
     println!("\nAnalysis complete!");
     Ok(())
