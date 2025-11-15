@@ -244,7 +244,7 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         },
                         "dependencies": {
                             "type": "boolean",
-                            "description": "Include dependency information (imports) in results. Currently only available for Rust files."
+                            "description": "Include dependency information (imports) in results. **IMPORTANT:** Only extracts static imports (string literals). Dynamic imports (variables, template literals, expressions) are automatically filtered. See CLAUDE.md for details."
                         }
                     },
                     "required": ["pattern"]
@@ -366,7 +366,7 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
             },
             {
                 "name": "get_dependencies",
-                "description": "Get all dependencies (imports) of a specific file.\n\n**Purpose:** Analyze what modules/files a given file imports.\n\n**Returns:** Array of dependency objects with import path, line number, type (internal/external/stdlib), and optional symbols.\n\n**Use this when:**\n- Understanding file dependencies\n- Analyzing import structure\n- Finding what a file depends on\n\n**Note:** Path matching is fuzzy - supports exact paths, fragments, or just filenames.",
+                "description": "Get all dependencies (imports) of a specific file.\n\n**Purpose:** Analyze what modules/files a given file imports.\n\n**Returns:** Array of dependency objects with import path, line number, type (internal/external/stdlib), and optional symbols.\n\n**Use this when:**\n- Understanding file dependencies\n- Analyzing import structure\n- Finding what a file depends on\n\n**IMPORTANT:** Only extracts **static imports** (string literals). Dynamic imports (variables, template literals, expressions) are automatically filtered by tree-sitter query design. See CLAUDE.md section \"Dependency/Import Extraction\" for details.\n\n**Note:** Path matching is fuzzy - supports exact paths, fragments, or just filenames.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -380,7 +380,7 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
             },
             {
                 "name": "get_dependents",
-                "description": "Get all files that depend on (import) a specific file.\n\n**Purpose:** Find what other files import this file (reverse dependency lookup).\n\n**Returns:** Array of file paths that import the specified file.\n\n**Use this when:**\n- Understanding impact of changes\n- Finding usages of a module\n- Analyzing file importance\n\n**Note:** Path matching is fuzzy - supports exact paths, fragments, or just filenames.",
+                "description": "Get all files that depend on (import) a specific file.\n\n**Purpose:** Find what other files import this file (reverse dependency lookup).\n\n**Returns:** Array of file paths that import the specified file.\n\n**Use this when:**\n- Understanding impact of changes\n- Finding usages of a module\n- Analyzing file importance\n\n**IMPORTANT:** Only considers **static imports** (string literals). Dynamic imports are filtered. See CLAUDE.md section \"Dependency/Import Extraction\" for details.\n\n**Note:** Path matching is fuzzy - supports exact paths, fragments, or just filenames.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -394,7 +394,7 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
             },
             {
                 "name": "get_transitive_deps",
-                "description": "Get transitive dependencies of a file up to a specified depth.\n\n**Purpose:** Find not just direct dependencies, but dependencies of dependencies (the full dependency tree).\n\n**Returns:** Object mapping file IDs to their depth in the dependency tree.\n\n**Use this when:**\n- Understanding full dependency chain\n- Analyzing deep coupling\n- Planning refactoring impact\n\n**Example:** depth=2 finds: file → deps → deps of deps",
+                "description": "Get transitive dependencies of a file up to a specified depth.\n\n**Purpose:** Find not just direct dependencies, but dependencies of dependencies (the full dependency tree).\n\n**Returns:** Object mapping file IDs to their depth in the dependency tree.\n\n**Use this when:**\n- Understanding full dependency chain\n- Analyzing deep coupling\n- Planning refactoring impact\n\n**IMPORTANT:** Only follows **static imports** (string literals). Dynamic imports are filtered. See CLAUDE.md section \"Dependency/Import Extraction\" for details.\n\n**Example:** depth=2 finds: file → deps → deps of deps",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -412,7 +412,7 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
             },
             {
                 "name": "find_hotspots",
-                "description": "Find the most-imported files in the codebase (dependency hotspots).\n\n**Purpose:** Identify files that many other files depend on.\n\n**Returns:** Array of {file_id, import_count, path} objects sorted by import count (descending).\n\n**Use this when:**\n- Finding critical files\n- Identifying potential bottlenecks\n- Understanding architecture\n- Planning refactoring priorities\n\n**Example output:** [{\"path\": \"src/models.rs\", \"import_count\": 27}]",
+                "description": "Find the most-imported files in the codebase (dependency hotspots).\n\n**Purpose:** Identify files that many other files depend on.\n\n**Returns:** Array of {file_id, import_count, path} objects sorted by import count (descending).\n\n**Use this when:**\n- Finding critical files\n- Identifying potential bottlenecks\n- Understanding architecture\n- Planning refactoring priorities\n\n**IMPORTANT:** Only counts **static imports** (string literals). Dynamic imports are filtered. See CLAUDE.md section \"Dependency/Import Extraction\" for details.\n\n**Example output:** [{\"path\": \"src/models.rs\", \"import_count\": 27}]",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -425,7 +425,7 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
             },
             {
                 "name": "find_circular",
-                "description": "Detect circular dependencies in the codebase.\n\n**Purpose:** Find dependency cycles (A → B → C → A).\n\n**Returns:** Array of cycles, where each cycle is an array of file IDs forming the circular path.\n\n**Use this when:**\n- Debugging circular dependency issues\n- Improving code architecture\n- Validating refactoring\n\n**Note:** Circular dependencies can cause compilation issues and indicate architectural problems.",
+                "description": "Detect circular dependencies in the codebase.\n\n**Purpose:** Find dependency cycles (A → B → C → A).\n\n**Returns:** Array of cycles, where each cycle is an array of file IDs forming the circular path.\n\n**Use this when:**\n- Debugging circular dependency issues\n- Improving code architecture\n- Validating refactoring\n\n**IMPORTANT:** Only detects cycles in **static imports** (string literals). Dynamic imports are filtered. See CLAUDE.md section \"Dependency/Import Extraction\" for details.\n\n**Note:** Circular dependencies can cause compilation issues and indicate architectural problems.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {}

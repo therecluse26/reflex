@@ -743,3 +743,88 @@ mod resolution_tests {
         assert!(result.is_none());
     }
 }
+
+#[cfg(test)]
+mod dependency_extraction_tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_basic_includes() {
+        let source = r#"
+            #include <stdio.h>
+            #include <stdlib.h>
+            #include "utils.h"
+            #include "math/vector.h"
+        "#;
+
+        let deps = CDependencyExtractor::extract_dependencies(source).unwrap();
+
+        assert_eq!(deps.len(), 4, "Should extract 4 include statements");
+        assert!(deps.iter().any(|d| d.imported_path == "stdio.h"));
+        assert!(deps.iter().any(|d| d.imported_path == "stdlib.h"));
+        assert!(deps.iter().any(|d| d.imported_path == "utils.h"));
+        assert!(deps.iter().any(|d| d.imported_path == "math/vector.h"));
+    }
+
+    #[test]
+    fn test_macro_includes_filtered() {
+        let source = r#"
+            #include <stdio.h>
+            #include "config.h"
+
+            // Macro-based includes - should be filtered out
+            #define HEADER_NAME "dynamic.h"
+            #include HEADER_NAME
+
+            #define STRINGIFY(x) #x
+            #include STRINGIFY(runtime_header.h)
+
+            // Conditional includes with macros
+            #ifdef USE_FEATURE_X
+            #define FEATURE_HEADER <feature_x.h>
+            #include FEATURE_HEADER
+            #endif
+        "#;
+
+        let deps = CDependencyExtractor::extract_dependencies(source).unwrap();
+
+        // Should only find static includes (stdio.h, config.h)
+        // Macro-based includes are filtered (not string_literal or system_lib_string nodes)
+        assert_eq!(deps.len(), 2, "Should extract 2 static includes only");
+
+        assert!(deps.iter().any(|d| d.imported_path == "stdio.h"));
+        assert!(deps.iter().any(|d| d.imported_path == "config.h"));
+
+        // Verify macro-based includes are NOT captured
+        assert!(!deps.iter().any(|d| d.imported_path.contains("HEADER_NAME")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("dynamic.h")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("runtime_header")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("FEATURE_HEADER")));
+    }
+
+    #[test]
+    fn test_include_classification() {
+        let source = r#"
+            #include <stdio.h>
+            #include "utils.h"
+            #include <mylib/api.h>
+        "#;
+
+        let deps = CDependencyExtractor::extract_dependencies(source).unwrap();
+
+        // Check stdlib classification
+        let stdio_dep = deps.iter().find(|d| d.imported_path == "stdio.h").unwrap();
+        assert!(matches!(stdio_dep.import_type, ImportType::Stdlib),
+                "stdio.h should be classified as Stdlib");
+
+        // Check internal classification (quoted includes)
+        let utils_dep = deps.iter().find(|d| d.imported_path == "utils.h").unwrap();
+        assert!(matches!(utils_dep.import_type, ImportType::Internal),
+                "quoted include should be classified as Internal");
+
+        // Check external classification (non-stdlib angle bracket includes)
+        let mylib_dep = deps.iter().find(|d| d.imported_path == "mylib/api.h").unwrap();
+        assert!(matches!(mylib_dep.import_type, ImportType::External),
+                "non-stdlib angle bracket include should be classified as External");
+    }
+}

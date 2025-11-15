@@ -1540,4 +1540,37 @@ def get_config():
         // Should return None for packages not in the monorepo
         assert!(resolved.is_none());
     }
+
+    #[test]
+    fn test_dynamic_imports_filtered() {
+        let source = r#"
+import os
+import sys
+from json import loads
+from .models import User
+
+# Dynamic imports - should be filtered out
+import importlib
+mod = importlib.import_module("some_module")
+pkg = __import__("package")
+exec("import dynamic")
+        "#;
+
+        let deps = PythonDependencyExtractor::extract_dependencies(source).unwrap();
+
+        // Should only find static imports (os, sys, json, .models, importlib)
+        // importlib.import_module(), __import__(), and exec() are NOT import statements
+        assert_eq!(deps.len(), 5, "Should extract 5 static imports only");
+
+        assert!(deps.iter().any(|d| d.imported_path == "os"));
+        assert!(deps.iter().any(|d| d.imported_path == "sys"));
+        assert!(deps.iter().any(|d| d.imported_path == "json"));
+        assert!(deps.iter().any(|d| d.imported_path == ".models"));
+        assert!(deps.iter().any(|d| d.imported_path == "importlib"));
+
+        // Verify dynamic imports are NOT captured
+        assert!(!deps.iter().any(|d| d.imported_path.contains("some_module")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("package") && d.imported_path != "json"));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("dynamic")));
+    }
 }

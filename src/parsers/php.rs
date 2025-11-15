@@ -1098,6 +1098,39 @@ mod tests {
                     "Laravel classes should be classified as Internal");
         }
     }
+
+    #[test]
+    fn test_dynamic_requires_filtered() {
+        let source = r#"
+            <?php
+            use App\Models\User;
+            use App\Services\Auth;
+            require 'config.php';
+            require_once 'helpers.php';
+
+            // Dynamic requires - should be filtered out
+            require $variable;
+            require CONSTANT . '/file.php';
+            require_once $path;
+            include dirname(__FILE__) . '/dynamic.php';
+        "#;
+
+        let deps = PhpDependencyExtractor::extract_dependencies(source).unwrap();
+
+        // Should only find static use statements and require with string literals
+        // Variable and expression-based requires are filtered (not (string) nodes)
+        assert_eq!(deps.len(), 4, "Should extract 4 static imports only");
+
+        assert!(deps.iter().any(|d| d.imported_path.contains("User")));
+        assert!(deps.iter().any(|d| d.imported_path.contains("Auth")));
+        assert!(deps.iter().any(|d| d.imported_path == "config.php"));
+        assert!(deps.iter().any(|d| d.imported_path == "helpers.php"));
+
+        // Verify dynamic requires are NOT captured
+        assert!(!deps.iter().any(|d| d.imported_path.contains("variable")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("CONSTANT")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("dirname")));
+    }
 }
 
 // ============================================================================

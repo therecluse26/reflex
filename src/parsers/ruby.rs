@@ -1258,6 +1258,38 @@ end
         assert!(matches!(user_dep.import_type, ImportType::Internal),
                 "require_relative should be classified as Internal");
     }
+
+    #[test]
+    fn test_dynamic_requires_filtered() {
+        let source = r#"
+            require 'json'
+            require 'rails'
+            require_relative '../models/user'
+
+            # Dynamic requires - should be filtered out
+            require variable
+            require CONSTANT
+            require File.join('path', 'to', 'file')
+            require_relative File.dirname(__FILE__) + '/dynamic'
+            load "#{Rails.root}/lib/dynamic.rb"
+        "#;
+
+        let deps = RubyDependencyExtractor::extract_dependencies(source).unwrap();
+
+        // Should only find static requires (json, rails, ../models/user)
+        // Variable, constant, and expression-based requires are filtered (not (string) or (simple_symbol) nodes)
+        assert_eq!(deps.len(), 3, "Should extract 3 static requires only");
+
+        assert!(deps.iter().any(|d| d.imported_path == "json"));
+        assert!(deps.iter().any(|d| d.imported_path == "rails"));
+        assert!(deps.iter().any(|d| d.imported_path == "../models/user"));
+
+        // Verify dynamic requires are NOT captured
+        assert!(!deps.iter().any(|d| d.imported_path.contains("variable")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("CONSTANT")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("File")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("Rails")));
+    }
 }
 
 #[cfg(test)]

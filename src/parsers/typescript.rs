@@ -1505,3 +1505,83 @@ mod path_resolution_tests {
         assert!(path.contains("api/client"));
     }
 }
+
+#[cfg(test)]
+mod dependency_extraction_tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_basic_imports() {
+        let source = r#"
+            import { Button } from './components/Button';
+            import React from 'react';
+            import fs from 'fs';
+            import '../styles.css';
+        "#;
+
+        let deps = TypeScriptDependencyExtractor::extract_dependencies(source).unwrap();
+
+        assert_eq!(deps.len(), 4, "Should extract 4 import statements");
+        assert!(deps.iter().any(|d| d.imported_path == "./components/Button"));
+        assert!(deps.iter().any(|d| d.imported_path == "react"));
+        assert!(deps.iter().any(|d| d.imported_path == "fs"));
+        assert!(deps.iter().any(|d| d.imported_path == "../styles.css"));
+    }
+
+    #[test]
+    fn test_dynamic_imports_filtered() {
+        let source = r#"
+            import { Button } from './components/Button';
+            import React from 'react';
+            const fs = require('fs');
+
+            // Dynamic imports - should be filtered out
+            const moduleName = './dynamic-module';
+            import(moduleName);
+            import(`./templates/${template}`);
+            require(variable);
+            require(CONFIG_PATH + '/settings.js');
+        "#;
+
+        let deps = TypeScriptDependencyExtractor::extract_dependencies(source).unwrap();
+
+        // Should only find static imports (Button, React, fs)
+        // Variable and template literal imports are filtered (not (string) nodes)
+        assert_eq!(deps.len(), 3, "Should extract 3 static imports only");
+
+        assert!(deps.iter().any(|d| d.imported_path == "./components/Button"));
+        assert!(deps.iter().any(|d| d.imported_path == "react"));
+        assert!(deps.iter().any(|d| d.imported_path == "fs"));
+
+        // Verify dynamic imports are NOT captured
+        assert!(!deps.iter().any(|d| d.imported_path.contains("moduleName")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("template")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("variable")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("CONFIG_PATH")));
+    }
+
+    #[test]
+    fn test_require_with_template_literals_filtered() {
+        let source = r#"
+            const path = require('path');
+            const utils = require('./utils');
+
+            // Dynamic requires with template literals - should be filtered out
+            const config = require(`./config/${env}.json`);
+            const plugin = require(`${PLUGIN_DIR}/loader`);
+        "#;
+
+        let deps = TypeScriptDependencyExtractor::extract_dependencies(source).unwrap();
+
+        // Should only find static requires (path, ./utils)
+        // Template literal requires are filtered (template_string nodes, not string nodes)
+        assert_eq!(deps.len(), 2, "Should extract 2 static requires only");
+
+        assert!(deps.iter().any(|d| d.imported_path == "path"));
+        assert!(deps.iter().any(|d| d.imported_path == "./utils"));
+
+        // Verify dynamic requires are NOT captured
+        assert!(!deps.iter().any(|d| d.imported_path.contains("env")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("PLUGIN_DIR")));
+    }
+}
