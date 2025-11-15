@@ -577,29 +577,16 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             let response = engine.search_with_metadata(&pattern, filter)?;
 
             // Extract locations (path + line) for each match
-            // Handle both grouped_results and flat results
-            let locations: Vec<serde_json::Value> = if let Some(grouped) = &response.grouped_results {
-                // Flatten grouped results to locations
-                grouped.iter()
-                    .flat_map(|file_group| {
-                        file_group.matches.iter().map(move |m| {
-                            json!({
-                                "path": file_group.path.clone(),
-                                "line": m.span.start_line
-                            })
+            let locations: Vec<serde_json::Value> = response.results.iter()
+                .flat_map(|file_group| {
+                    file_group.matches.iter().map(move |m| {
+                        json!({
+                            "path": file_group.path.clone(),
+                            "line": m.span.start_line
                         })
                     })
-                    .collect()
-            } else if let Some(results) = &response.results {
-                results.iter()
-                    .map(|r| json!({
-                        "path": r.path,
-                        "line": r.span.start_line
-                    }))
-                    .collect()
-            } else {
-                Vec::new()
-            };
+                })
+                .collect();
 
             // Return compact response (just locations + count)
             let compact_response = json!({
@@ -667,13 +654,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 
             // Count unique files
             use std::collections::HashSet;
-            let unique_files: HashSet<String> = if let Some(grouped) = &response.grouped_results {
-                grouped.iter().map(|fg| fg.path.clone()).collect()
-            } else if let Some(results) = &response.results {
-                results.iter().map(|r| r.path.clone()).collect()
-            } else {
-                HashSet::new()
-            };
+            let unique_files: HashSet<String> = response.results.iter().map(|fg| fg.path.clone()).collect();
 
             // Return minimal stats
             let stats = json!({
@@ -760,27 +741,14 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 
             // Apply preview truncation for token efficiency (100 chars max)
             const MAX_PREVIEW_LENGTH: usize = 100;
-
-            // Truncate previews in grouped_results if present
-            if let Some(ref mut grouped) = response.grouped_results {
-                for file_group in grouped.iter_mut() {
-                    for m in file_group.matches.iter_mut() {
-                        m.preview = crate::cli::truncate_preview(&m.preview, MAX_PREVIEW_LENGTH);
-                    }
-                }
-            }
-
-            // Truncate previews in flat results if present
-            if let Some(ref mut results) = response.results {
-                for result in results.iter_mut() {
-                    result.preview = crate::cli::truncate_preview(&result.preview, MAX_PREVIEW_LENGTH);
+            for file_group in response.results.iter_mut() {
+                for m in file_group.matches.iter_mut() {
+                    m.preview = crate::cli::truncate_preview(&m.preview, MAX_PREVIEW_LENGTH);
                 }
             }
 
             // Calculate result count for AI instruction
-            let result_count = response.results.as_ref().map(|r| r.len())
-                .or_else(|| response.grouped_results.as_ref().map(|g| g.iter().map(|fg| fg.matches.len()).sum()))
-                .unwrap_or(0);
+            let result_count: usize = response.results.iter().map(|fg| fg.matches.len()).sum();
 
             // Generate AI instruction (MCP always uses AI mode)
             response.ai_instruction = crate::query::generate_ai_instruction(
@@ -862,27 +830,14 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 
             // Apply preview truncation for token efficiency (100 chars max)
             const MAX_PREVIEW_LENGTH: usize = 100;
-
-            // Truncate previews in grouped_results if present
-            if let Some(ref mut grouped) = response.grouped_results {
-                for file_group in grouped.iter_mut() {
-                    for m in file_group.matches.iter_mut() {
-                        m.preview = crate::cli::truncate_preview(&m.preview, MAX_PREVIEW_LENGTH);
-                    }
-                }
-            }
-
-            // Truncate previews in flat results if present
-            if let Some(ref mut results) = response.results {
-                for result in results.iter_mut() {
-                    result.preview = crate::cli::truncate_preview(&result.preview, MAX_PREVIEW_LENGTH);
+            for file_group in response.results.iter_mut() {
+                for m in file_group.matches.iter_mut() {
+                    m.preview = crate::cli::truncate_preview(&m.preview, MAX_PREVIEW_LENGTH);
                 }
             }
 
             // Calculate result count for AI instruction
-            let result_count = response.results.as_ref().map(|r| r.len())
-                .or_else(|| response.grouped_results.as_ref().map(|g| g.iter().map(|fg| fg.matches.len()).sum()))
-                .unwrap_or(0);
+            let result_count: usize = response.results.iter().map(|fg| fg.matches.len()).sum();
 
             // Generate AI instruction (MCP always uses AI mode)
             response.ai_instruction = crate::query::generate_ai_instruction(

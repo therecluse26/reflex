@@ -384,12 +384,7 @@ pub struct QueryResponse {
     pub warning: Option<IndexWarning>,
     /// Pagination information
     pub pagination: PaginationInfo,
-    /// File-grouped search results (preferred format for new queries)
-    /// Only serialized when present (for --dependencies or explicit grouping)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub grouped_results: Option<Vec<FileGroupedResult>>,
-    /// Flat search results (legacy format for backwards compatibility)
-    /// Skipped when grouped_results is present
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub results: Option<Vec<SearchResult>>,
+    /// File-grouped search results
+    /// Results are always grouped by file path, with dependencies populated when --dependencies flag is used
+    pub results: Vec<FileGroupedResult>,
 }

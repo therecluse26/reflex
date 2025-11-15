@@ -899,29 +899,22 @@ fn handle_query(
                 let total = response.pagination.total;
                 let has_more = response.pagination.has_more;
 
-                // Extract flat results from either grouped_results or results field
-                let flat = if let Some(grouped) = &response.grouped_results {
-                    // Flatten grouped results to SearchResult vec for plain text formatting
-                    grouped.iter()
-                        .flat_map(|file_group| {
-                            file_group.matches.iter().map(move |m| {
-                                crate::models::SearchResult {
-                                    path: file_group.path.clone(),
-                                    lang: crate::models::Language::Unknown, // Will be set by formatter if needed
-                                    kind: m.kind.clone(),
-                                    symbol: m.symbol.clone(),
-                                    span: m.span.clone(),
-                                    preview: m.preview.clone(),
-                                    dependencies: file_group.dependencies.clone(),
-                                }
-                            })
+                // Flatten grouped results to SearchResult vec for plain text formatting
+                let flat = response.results.iter()
+                    .flat_map(|file_group| {
+                        file_group.matches.iter().map(move |m| {
+                            crate::models::SearchResult {
+                                path: file_group.path.clone(),
+                                lang: crate::models::Language::Unknown, // Will be set by formatter if needed
+                                kind: m.kind.clone(),
+                                symbol: m.symbol.clone(),
+                                span: m.span.clone(),
+                                preview: m.preview.clone(),
+                                dependencies: file_group.dependencies.clone(),
+                            }
                         })
-                        .collect()
-                } else if let Some(results) = &response.results {
-                    results.clone()
-                } else {
-                    Vec::new()
-                };
+                    })
+                    .collect();
 
                 (Some(response), flat, total, has_more)
             }
@@ -998,24 +991,12 @@ fn handle_query(
                 // Apply truncation to the response (the flat_results were already truncated)
                 let mut resp = resp;
 
-                // Apply truncation to grouped_results if present
-                if !no_truncate && resp.grouped_results.is_some() {
+                // Apply truncation to results
+                if !no_truncate {
                     const MAX_PREVIEW_LENGTH: usize = 100;
-                    if let Some(ref mut grouped) = resp.grouped_results {
-                        for file_group in grouped.iter_mut() {
-                            for m in file_group.matches.iter_mut() {
-                                m.preview = truncate_preview(&m.preview, MAX_PREVIEW_LENGTH);
-                            }
-                        }
-                    }
-                }
-
-                // Apply truncation to flat results if present
-                if !no_truncate && resp.results.is_some() {
-                    const MAX_PREVIEW_LENGTH: usize = 100;
-                    if let Some(ref mut results) = resp.results {
-                        for result in results.iter_mut() {
-                            result.preview = truncate_preview(&result.preview, MAX_PREVIEW_LENGTH);
+                    for file_group in resp.results.iter_mut() {
+                        for m in file_group.matches.iter_mut() {
+                            m.preview = truncate_preview(&m.preview, MAX_PREVIEW_LENGTH);
                         }
                     }
                 }
@@ -1023,7 +1004,41 @@ fn handle_query(
                 resp
             } else {
                 // For AST queries, build a response with minimal metadata
-                use crate::models::{PaginationInfo, IndexStatus};
+                // Group flat results by file path
+                use crate::models::{PaginationInfo, IndexStatus, FileGroupedResult, MatchResult};
+                use std::collections::HashMap;
+
+                let mut grouped: HashMap<String, Vec<crate::models::SearchResult>> = HashMap::new();
+                for result in &flat_results {
+                    grouped
+                        .entry(result.path.clone())
+                        .or_default()
+                        .push(result.clone());
+                }
+
+                let mut file_results: Vec<FileGroupedResult> = grouped
+                    .into_iter()
+                    .map(|(path, file_matches)| {
+                        let matches: Vec<MatchResult> = file_matches
+                            .into_iter()
+                            .map(|r| MatchResult {
+                                kind: r.kind,
+                                symbol: r.symbol,
+                                span: r.span,
+                                preview: r.preview,
+                            })
+                            .collect();
+                        FileGroupedResult {
+                            path,
+                            dependencies: None,
+                            matches,
+                        }
+                    })
+                    .collect();
+
+                // Sort by path for deterministic output
+                file_results.sort_by(|a, b| a.path.cmp(&b.path));
+
                 crate::models::QueryResponse {
                     ai_instruction: None,  // Will be populated below if ai_mode is true
                     status: IndexStatus::Fresh,
@@ -1036,16 +1051,13 @@ fn handle_query(
                         limit,
                         has_more: false, // AST already applied pagination
                     },
-                    grouped_results: None,
-                    results: Some(flat_results.clone()),
+                    results: file_results,
                 }
             };
 
             // Generate AI instruction if in AI mode
             if ai_mode {
-                let result_count = response.results.as_ref().map(|r| r.len())
-                    .or_else(|| response.grouped_results.as_ref().map(|g| g.iter().map(|fg| fg.matches.len()).sum()))
-                    .unwrap_or(0);
+                let result_count: usize = response.results.iter().map(|fg| fg.matches.len()).sum();
 
                 response.ai_instruction = crate::query::generate_ai_instruction(
                     result_count,
@@ -1068,9 +1080,7 @@ fn handle_query(
             };
             println!("{}", json_output);
 
-            let result_count = response.results.as_ref().map(|r| r.len())
-                .or_else(|| response.grouped_results.as_ref().map(|g| g.iter().map(|fg| fg.matches.len()).sum()))
-                .unwrap_or(0);
+            let result_count: usize = response.results.iter().map(|fg| fg.matches.len()).sum();
             eprintln!("Found {} results in {}", result_count, timing_str);
         }
     } else {

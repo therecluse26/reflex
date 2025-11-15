@@ -316,29 +316,22 @@ impl InteractiveApp {
                     // Search completed
                     match result {
                         Ok(response) => {
-                            // Extract flat results from either grouped_results or results field
-                            let flat_results = if let Some(grouped) = response.grouped_results {
-                                // Flatten grouped results to SearchResult vec
-                                grouped.iter()
-                                    .flat_map(|file_group| {
-                                        file_group.matches.iter().map(move |m| {
-                                            crate::models::SearchResult {
-                                                path: file_group.path.clone(),
-                                                lang: crate::models::Language::Unknown,
-                                                kind: m.kind.clone(),
-                                                symbol: m.symbol.clone(),
-                                                span: m.span.clone(),
-                                                preview: m.preview.clone(),
-                                                dependencies: file_group.dependencies.clone(),
-                                            }
-                                        })
+                            // Flatten grouped results to SearchResult vec for display
+                            let flat_results = response.results.iter()
+                                .flat_map(|file_group| {
+                                    file_group.matches.iter().map(move |m| {
+                                        crate::models::SearchResult {
+                                            path: file_group.path.clone(),
+                                            lang: crate::models::Language::Unknown,
+                                            kind: m.kind.clone(),
+                                            symbol: m.symbol.clone(),
+                                            span: m.span.clone(),
+                                            preview: m.preview.clone(),
+                                            dependencies: file_group.dependencies.clone(),
+                                        }
                                     })
-                                    .collect()
-                            } else if let Some(results) = response.results {
-                                results
-                            } else {
-                                Vec::new()
-                            };
+                                })
+                                .collect();
 
                             self.results.set_results(flat_results);
                             self.error_message = None;
