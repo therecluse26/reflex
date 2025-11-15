@@ -412,34 +412,92 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
             },
             {
                 "name": "find_hotspots",
-                "description": "Find the most-imported files in the codebase (dependency hotspots).\n\n**Purpose:** Identify files that many other files depend on.\n\n**Returns:** Array of {file_id, import_count, path} objects sorted by import count (descending).\n\n**Use this when:**\n- Finding critical files\n- Identifying potential bottlenecks\n- Understanding architecture\n- Planning refactoring priorities\n\n**IMPORTANT:** Only counts **static imports** (string literals). Dynamic imports are filtered. See CLAUDE.md section \"Dependency/Import Extraction\" for details.\n\n**Example output:** [{\"path\": \"src/models.rs\", \"import_count\": 27}]",
+                "description": "Find the most-imported files in the codebase (dependency hotspots).\n\n**Purpose:** Identify files that many other files depend on.\n\n**Pagination:** Default limit of 200 results per page. Check response.pagination.has_more to fetch more pages.\n\n**Sorting:** Default order is descending (most imports first). Use sort parameter to change.\n\n**Returns:** Object with pagination metadata and array of {path, import_count} objects sorted by import count.\n\n**Use this when:**\n- Finding critical files\n- Identifying potential bottlenecks\n- Understanding architecture\n- Planning refactoring priorities\n\n**IMPORTANT:** Only counts **static imports** (string literals). Dynamic imports are filtered. See CLAUDE.md section \"Dependency/Import Extraction\" for details.\n\n**Example output:** {\"pagination\": {...}, \"results\": [{\"path\": \"src/models.rs\", \"import_count\": 27}]}",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum number of hotspots to return (default: 10)"
+                            "description": "Maximum number of hotspots per page (default: 200)"
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Pagination offset (skip first N results). Use with limit for pagination."
+                        },
+                        "min_dependents": {
+                            "type": "integer",
+                            "description": "Minimum number of dependents to include (default: 2)"
+                        },
+                        "sort": {
+                            "type": "string",
+                            "description": "Sort order: 'asc' (least imports first) or 'desc' (most imports first, default)"
                         }
                     }
                 }
             },
             {
                 "name": "find_circular",
-                "description": "Detect circular dependencies in the codebase.\n\n**Purpose:** Find dependency cycles (A → B → C → A).\n\n**Returns:** Array of cycles, where each cycle is an array of file IDs forming the circular path.\n\n**Use this when:**\n- Debugging circular dependency issues\n- Improving code architecture\n- Validating refactoring\n\n**IMPORTANT:** Only detects cycles in **static imports** (string literals). Dynamic imports are filtered. See CLAUDE.md section \"Dependency/Import Extraction\" for details.\n\n**Note:** Circular dependencies can cause compilation issues and indicate architectural problems.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {}
-                }
-            },
-            {
-                "name": "find_unused",
-                "description": "Find unused files that no other files import.\n\n**Purpose:** Identify orphaned files that could be safely removed.\n\n**Returns:** Array of file paths with no incoming dependencies.\n\n**Use this when:**\n- Cleaning up dead code\n- Reducing codebase size\n- Identifying test-only or entry-point files\n\n**Note:** Entry points (main.rs, index.ts) will appear as unused but should not be deleted.",
+                "description": "Detect circular dependencies in the codebase.\n\n**Purpose:** Find dependency cycles (A → B → C → A).\n\n**Pagination:** Default limit of 200 results per page. Check response.pagination.has_more to fetch more pages.\n\n**Sorting:** Default order is descending (longest cycles first). Use sort parameter to change.\n\n**Returns:** Object with pagination metadata and array of cycles, where each cycle is an array of file paths forming the circular path.\n\n**Use this when:**\n- Debugging circular dependency issues\n- Improving code architecture\n- Validating refactoring\n\n**IMPORTANT:** Only detects cycles in **static imports** (string literals). Dynamic imports are filtered. See CLAUDE.md section \"Dependency/Import Extraction\" for details.\n\n**Note:** Circular dependencies can cause compilation issues and indicate architectural problems.\n\n**Example output:** {\"pagination\": {...}, \"results\": [{\"paths\": [\"a.rs\", \"b.rs\", \"a.rs\"]}]}",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum number of unused files to return (default: 100)"
+                            "description": "Maximum number of cycles per page (default: 200)"
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Pagination offset (skip first N cycles). Use with limit for pagination."
+                        },
+                        "sort": {
+                            "type": "string",
+                            "description": "Sort order: 'asc' (shortest cycles first) or 'desc' (longest cycles first, default)"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "find_unused",
+                "description": "Find unused files that no other files import.\n\n**Purpose:** Identify orphaned files that could be safely removed.\n\n**Pagination:** Default limit of 200 results per page. Check response.pagination.has_more to fetch more pages.\n\n**Returns:** Object with pagination metadata and flat array of file path strings (no wrapping objects).\n\n**Use this when:**\n- Cleaning up dead code\n- Reducing codebase size\n- Identifying test-only or entry-point files\n\n**Note:** Entry points (main.rs, index.ts) will appear as unused but should not be deleted.\n\n**Example output:** {\"pagination\": {...}, \"results\": [\"src/unused.rs\", \"tests/old.rs\"]}",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of unused files per page (default: 200)"
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Pagination offset (skip first N files). Use with limit for pagination."
+                        }
+                    }
+                }
+            },
+            {
+                "name": "find_islands",
+                "description": "Find disconnected components (islands) in the dependency graph.\n\n**Purpose:** Identify groups of files that are isolated from the rest of the codebase (no dependencies between groups).\n\n**Pagination:** Default limit of 200 results per page. Check response.pagination.has_more to fetch more pages.\n\n**Sorting:** Default order is descending (largest islands first). Use sort parameter to change.\n\n**Returns:** Object with pagination metadata and array of islands, where each island contains multiple file paths that depend on each other.\n\n**Use this when:**\n- Identifying isolated subsystems\n- Understanding codebase modularity\n- Finding potential code splitting opportunities\n- Detecting disconnected feature modules\n\n**IMPORTANT:** Only considers **static imports** (string literals). Dynamic imports are filtered. See CLAUDE.md section \"Dependency/Import Extraction\" for details.\n\n**Size filtering:** Use min_island_size and max_island_size to filter by component size. Default: 2-500 files (or 50% of total files).\n\n**Example output:** {\"pagination\": {...}, \"results\": [{\"island_id\": 1, \"size\": 5, \"paths\": [\"a.rs\", \"b.rs\", \"c.rs\", \"d.rs\", \"e.rs\"]}]}",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of islands per page (default: 200)"
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Pagination offset (skip first N islands). Use with limit for pagination."
+                        },
+                        "min_island_size": {
+                            "type": "integer",
+                            "description": "Minimum files in an island to include (default: 2)"
+                        },
+                        "max_island_size": {
+                            "type": "integer",
+                            "description": "Maximum files in an island to include (default: 500 or 50% of total files)"
+                        },
+                        "sort": {
+                            "type": "string",
+                            "description": "Sort order: 'asc' (smallest islands first) or 'desc' (largest islands first, default)"
                         }
                     }
                 }
@@ -993,97 +1051,303 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
             }))
         }
         "find_hotspots" => {
-            let limit = arguments["limit"]
+            let limit = arguments["limit"].as_u64().map(|n| n as usize);
+            let offset = arguments["offset"].as_u64().map(|n| n as usize);
+            let min_dependents = arguments["min_dependents"]
                 .as_u64()
-                .map(|n| n as usize);
+                .map(|n| n as usize)
+                .unwrap_or(2);
+            let sort = arguments["sort"].as_str().map(|s| s.to_string());
 
             let cache = CacheManager::new(".");
             let deps_index = DependencyIndex::new(cache);
 
-            // Use default min_dependents of 2
-            let hotspots = deps_index.find_hotspots(limit, 2)?;
+            // Get all hotspots first (without limit) to track total count
+            let mut all_hotspots = deps_index.find_hotspots(None, min_dependents)?;
+
+            // Apply sorting (default: descending - most imports first)
+            let sort_order = sort.as_deref().unwrap_or("desc");
+            match sort_order {
+                "asc" => {
+                    // Ascending: least imports first
+                    all_hotspots.sort_by(|a, b| a.1.cmp(&b.1));
+                }
+                "desc" => {
+                    // Descending: most imports first (default)
+                    all_hotspots.sort_by(|a, b| b.1.cmp(&a.1));
+                }
+                _ => {
+                    return Err(anyhow::anyhow!("Invalid sort order '{}'. Supported: asc, desc", sort_order));
+                }
+            }
+
+            let total_count = all_hotspots.len();
+
+            // Apply offset pagination
+            let offset_val = offset.unwrap_or(0);
+            let mut hotspots: Vec<_> = all_hotspots.into_iter().skip(offset_val).collect();
+
+            // Apply limit (default 200)
+            let limit_val = limit.unwrap_or(200);
+            hotspots.truncate(limit_val);
+
+            let count = hotspots.len();
+            let has_more = offset_val + count < total_count;
 
             // Get paths for all file IDs
             let file_ids: Vec<i64> = hotspots.iter().map(|(id, _)| *id).collect();
             let paths = deps_index.get_file_paths(&file_ids)?;
 
-            // Build result with path + import_count
-            let result: Vec<serde_json::Value> = hotspots.iter()
-                .filter_map(|(id, count)| {
+            // Build result with path + import_count (no file_id)
+            let results: Vec<serde_json::Value> = hotspots.iter()
+                .filter_map(|(id, import_count)| {
                     paths.get(id).map(|path| json!({
-                        "file_id": id,
-                        "import_count": count,
-                        "path": path
+                        "path": path,
+                        "import_count": import_count,
                     }))
                 })
                 .collect();
 
+            let response = json!({
+                "pagination": {
+                    "total": total_count,
+                    "count": count,
+                    "offset": offset_val,
+                    "limit": limit_val,
+                    "has_more": has_more,
+                },
+                "results": results,
+            });
+
             Ok(json!({
                 "content": [{
                     "type": "text",
-                    "text": serde_json::to_string(&result)?
+                    "text": serde_json::to_string(&response)?
                 }]
             }))
         }
         "find_circular" => {
+            let limit = arguments["limit"].as_u64().map(|n| n as usize);
+            let offset = arguments["offset"].as_u64().map(|n| n as usize);
+            let sort = arguments["sort"].as_str().map(|s| s.to_string());
+
             let cache = CacheManager::new(".");
             let deps_index = DependencyIndex::new(cache);
 
-            let cycles = deps_index.detect_circular_dependencies()?;
+            let mut all_cycles = deps_index.detect_circular_dependencies()?;
 
-            if cycles.is_empty() {
-                Ok(json!({
-                    "content": [{
-                        "type": "text",
-                        "text": json!({"cycles": []}).to_string()
-                    }]
-                }))
-            } else {
-                // Convert cycles to paths
-                let result: Vec<Vec<String>> = cycles.iter()
-                    .map(|cycle| {
-                        let paths = deps_index.get_file_paths(cycle).unwrap_or_default();
-                        cycle.iter()
-                            .filter_map(|id| paths.get(id).cloned())
-                            .collect()
+            // Apply sorting (default: descending - longest cycles first)
+            let sort_order = sort.as_deref().unwrap_or("desc");
+            match sort_order {
+                "asc" => {
+                    // Ascending: shortest cycles first
+                    all_cycles.sort_by_key(|cycle| cycle.len());
+                }
+                "desc" => {
+                    // Descending: longest cycles first (default)
+                    all_cycles.sort_by_key(|cycle| std::cmp::Reverse(cycle.len()));
+                }
+                _ => {
+                    return Err(anyhow::anyhow!("Invalid sort order '{}'. Supported: asc, desc", sort_order));
+                }
+            }
+
+            let total_count = all_cycles.len();
+
+            // Apply offset pagination
+            let offset_val = offset.unwrap_or(0);
+            let mut cycles: Vec<_> = all_cycles.into_iter().skip(offset_val).collect();
+
+            // Apply limit (default 200)
+            let limit_val = limit.unwrap_or(200);
+            cycles.truncate(limit_val);
+
+            let count = cycles.len();
+            let has_more = offset_val + count < total_count;
+
+            // Convert cycles to paths (without file_ids)
+            let file_ids: Vec<i64> = cycles.iter().flat_map(|c| c.iter()).copied().collect();
+            let paths = deps_index.get_file_paths(&file_ids)?;
+
+            let results: Vec<serde_json::Value> = cycles.iter()
+                .map(|cycle| {
+                    let cycle_paths: Vec<_> = cycle.iter()
+                        .filter_map(|id| paths.get(id).cloned())
+                        .collect();
+                    json!({
+                        "paths": cycle_paths,
                     })
-                    .collect();
-
-                Ok(json!({
-                    "content": [{
-                        "type": "text",
-                        "text": serde_json::to_string(&json!({"cycles": result}))?
-                    }]
-                }))
-            }
-        }
-        "find_unused" => {
-            let limit = arguments["limit"]
-                .as_u64()
-                .map(|n| n as usize);
-
-            let cache = CacheManager::new(".");
-            let deps_index = DependencyIndex::new(cache);
-
-            let mut unused = deps_index.find_unused_files()?;
-
-            // Apply limit if specified
-            if let Some(lim) = limit {
-                unused.truncate(lim);
-            }
-
-            // Get paths for all unused file IDs
-            let paths = deps_index.get_file_paths(&unused)?;
-
-            // Build result (array of paths)
-            let result: Vec<String> = unused.iter()
-                .filter_map(|id| paths.get(id).cloned())
+                })
                 .collect();
+
+            let response = json!({
+                "pagination": {
+                    "total": total_count,
+                    "count": count,
+                    "offset": offset_val,
+                    "limit": limit_val,
+                    "has_more": has_more,
+                },
+                "results": results,
+            });
 
             Ok(json!({
                 "content": [{
                     "type": "text",
-                    "text": serde_json::to_string(&result)?
+                    "text": serde_json::to_string(&response)?
+                }]
+            }))
+        }
+        "find_unused" => {
+            let limit = arguments["limit"].as_u64().map(|n| n as usize);
+            let offset = arguments["offset"].as_u64().map(|n| n as usize);
+
+            let cache = CacheManager::new(".");
+            let deps_index = DependencyIndex::new(cache);
+
+            let all_unused = deps_index.find_unused_files()?;
+            let total_count = all_unused.len();
+
+            // Apply offset pagination
+            let offset_val = offset.unwrap_or(0);
+            let mut unused: Vec<_> = all_unused.into_iter().skip(offset_val).collect();
+
+            // Apply limit (default 200)
+            let limit_val = limit.unwrap_or(200);
+            unused.truncate(limit_val);
+
+            let count = unused.len();
+            let has_more = offset_val + count < total_count;
+
+            // Get paths for all unused file IDs
+            let paths = deps_index.get_file_paths(&unused)?;
+
+            // Build result (flat array of path strings)
+            let results: Vec<String> = unused.iter()
+                .filter_map(|id| paths.get(id).cloned())
+                .collect();
+
+            let response = json!({
+                "pagination": {
+                    "total": total_count,
+                    "count": count,
+                    "offset": offset_val,
+                    "limit": limit_val,
+                    "has_more": has_more,
+                },
+                "results": results,
+            });
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&response)?
+                }]
+            }))
+        }
+        "find_islands" => {
+            let limit = arguments["limit"].as_u64().map(|n| n as usize);
+            let offset = arguments["offset"].as_u64().map(|n| n as usize);
+            let min_island_size = arguments["min_island_size"]
+                .as_u64()
+                .map(|n| n as usize)
+                .unwrap_or(2);
+            let max_island_size = arguments["max_island_size"]
+                .as_u64()
+                .map(|n| n as usize);
+            let sort = arguments["sort"].as_str().map(|s| s.to_string());
+
+            let cache = CacheManager::new(".");
+            let deps_index = DependencyIndex::new(cache);
+
+            let all_islands = deps_index.find_islands()?;
+            let total_components = all_islands.len();
+
+            // Get total file count for percentage calculation
+            let total_files = deps_index.get_cache().stats()?.total_files as usize;
+
+            // Calculate max_island_size default: min of 500 or 50% of total files
+            let max_size = max_island_size.unwrap_or_else(|| {
+                let fifty_percent = (total_files as f64 * 0.5) as usize;
+                fifty_percent.min(500)
+            });
+
+            // Filter islands by size
+            let mut islands: Vec<_> = all_islands.into_iter()
+                .filter(|island| {
+                    let size = island.len();
+                    size >= min_island_size && size <= max_size
+                })
+                .collect();
+
+            // Apply sorting (default: descending - largest islands first)
+            let sort_order = sort.as_deref().unwrap_or("desc");
+            match sort_order {
+                "asc" => {
+                    // Ascending: smallest islands first
+                    islands.sort_by_key(|island| island.len());
+                }
+                "desc" => {
+                    // Descending: largest islands first (default)
+                    islands.sort_by_key(|island| std::cmp::Reverse(island.len()));
+                }
+                _ => {
+                    return Err(anyhow::anyhow!("Invalid sort order '{}'. Supported: asc, desc", sort_order));
+                }
+            }
+
+            let filtered_count = total_components - islands.len();
+            let total_after_filter = islands.len();
+
+            // Apply offset pagination
+            let offset_val = offset.unwrap_or(0);
+            if offset_val > 0 && offset_val < islands.len() {
+                islands = islands.into_iter().skip(offset_val).collect();
+            } else if offset_val >= islands.len() {
+                islands.clear();
+            }
+
+            // Apply limit (default 200)
+            let limit_val = limit.unwrap_or(200);
+            islands.truncate(limit_val);
+
+            let count = islands.len();
+            let has_more = offset_val + count < total_after_filter;
+
+            // Get all file IDs from all islands
+            let file_ids: Vec<i64> = islands.iter().flat_map(|island| island.iter()).copied().collect();
+            let paths = deps_index.get_file_paths(&file_ids)?;
+
+            // Build result (array of islands with paths, no file_ids)
+            let results: Vec<serde_json::Value> = islands.iter()
+                .enumerate()
+                .map(|(idx, island)| {
+                    let island_paths: Vec<_> = island.iter()
+                        .filter_map(|id| paths.get(id).cloned())
+                        .collect();
+                    json!({
+                        "island_id": idx + 1,
+                        "size": island.len(),
+                        "paths": island_paths,
+                    })
+                })
+                .collect();
+
+            let response = json!({
+                "pagination": {
+                    "total": total_after_filter,
+                    "count": count,
+                    "offset": offset_val,
+                    "limit": limit_val,
+                    "has_more": has_more,
+                },
+                "results": results,
+            });
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&response)?
                 }]
             }))
         }

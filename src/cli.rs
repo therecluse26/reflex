@@ -379,6 +379,12 @@ pub enum Command {
         /// Pagination offset
         #[arg(short = 'o', long)]
         offset: Option<usize>,
+
+        /// Sort order for results: asc (ascending) or desc (descending)
+        /// Applies to --hotspots (by import_count), --islands (by size), --circular (by cycle length)
+        /// Default: desc (most important first)
+        #[arg(long)]
+        sort: Option<String>,
     },
 
     /// Analyze dependencies for a specific file
@@ -466,8 +472,8 @@ impl Cli {
             Some(Command::Mcp) => {
                 handle_mcp()
             }
-            Some(Command::Analyze { circular, hotspots, min_dependents, unused, islands, min_island_size, max_island_size, format, json, pretty, count, all, plain, glob, exclude, force, limit, offset }) => {
-                handle_analyze(circular, hotspots, min_dependents, unused, islands, min_island_size, max_island_size, format, json, pretty, count, all, plain, glob, exclude, force, limit, offset)
+            Some(Command::Analyze { circular, hotspots, min_dependents, unused, islands, min_island_size, max_island_size, format, json, pretty, count, all, plain, glob, exclude, force, limit, offset, sort }) => {
+                handle_analyze(circular, hotspots, min_dependents, unused, islands, min_island_size, max_island_size, format, json, pretty, count, all, plain, glob, exclude, force, limit, offset, sort)
             }
             Some(Command::Deps { file, reverse, depth, format, json, pretty }) => {
                 handle_deps(file, reverse, depth, format, json, pretty)
@@ -1580,6 +1586,7 @@ fn handle_analyze(
     _force: bool,
     limit: Option<usize>,
     offset: Option<usize>,
+    sort: Option<String>,
 ) -> Result<()> {
     use crate::dependency::DependencyIndex;
 
@@ -1615,16 +1622,16 @@ fn handle_analyze(
 
     // If no specific flags, show summary
     if !circular && !hotspots && !unused && !islands {
-        return handle_analyze_summary(&deps_index, min_dependents, count_only);
+        return handle_analyze_summary(&deps_index, min_dependents, count_only, as_json, pretty_json);
     }
 
     // Run specific analyses based on flags
     if circular {
-        handle_deps_circular(&deps_index, format, pretty_json, final_limit, offset, count_only, plain)?;
+        handle_deps_circular(&deps_index, format, pretty_json, final_limit, offset, count_only, plain, sort.clone())?;
     }
 
     if hotspots {
-        handle_deps_hotspots(&deps_index, format, pretty_json, final_limit, offset, min_dependents, count_only, plain)?;
+        handle_deps_hotspots(&deps_index, format, pretty_json, final_limit, offset, min_dependents, count_only, plain, sort.clone())?;
     }
 
     if unused {
@@ -1632,7 +1639,7 @@ fn handle_analyze(
     }
 
     if islands {
-        handle_deps_islands(&deps_index, format, pretty_json, final_limit, offset, min_island_size, max_island_size, count_only, plain)?;
+        handle_deps_islands(&deps_index, format, pretty_json, final_limit, offset, min_island_size, max_island_size, count_only, plain, sort.clone())?;
     }
 
     Ok(())
@@ -1643,14 +1650,33 @@ fn handle_analyze_summary(
     deps_index: &crate::dependency::DependencyIndex,
     min_dependents: usize,
     count_only: bool,
+    as_json: bool,
+    pretty_json: bool,
 ) -> Result<()> {
-    if count_only {
-        // Just show counts without any extra formatting
-        let cycles = deps_index.detect_circular_dependencies()?;
-        let hotspots = deps_index.find_hotspots(None, min_dependents)?;
-        let unused = deps_index.find_unused_files()?;
-        let all_islands = deps_index.find_islands()?;
+    // Gather counts
+    let cycles = deps_index.detect_circular_dependencies()?;
+    let hotspots = deps_index.find_hotspots(None, min_dependents)?;
+    let unused = deps_index.find_unused_files()?;
+    let all_islands = deps_index.find_islands()?;
 
+    if as_json {
+        // JSON output
+        let summary = serde_json::json!({
+            "circular_dependencies": cycles.len(),
+            "hotspots": hotspots.len(),
+            "unused_files": unused.len(),
+            "islands": all_islands.len(),
+            "min_dependents": min_dependents,
+        });
+
+        let json_str = if pretty_json {
+            serde_json::to_string_pretty(&summary)?
+        } else {
+            serde_json::to_string(&summary)?
+        };
+        println!("{}", json_str);
+    } else if count_only {
+        // Just show counts without any extra formatting
         println!("{} circular dependencies", cycles.len());
         println!("{} hotspots ({}+ dependents)", hotspots.len(), min_dependents);
         println!("{} unused files", unused.len());
@@ -1660,19 +1686,15 @@ fn handle_analyze_summary(
         println!("Dependency Analysis Summary\n");
 
         // Circular dependencies
-        let cycles = deps_index.detect_circular_dependencies()?;
         println!("Circular Dependencies: {} cycle(s)", cycles.len());
 
         // Hotspots
-        let hotspots = deps_index.find_hotspots(None, min_dependents)?;
         println!("Hotspots: {} file(s) with {}+ dependents", hotspots.len(), min_dependents);
 
         // Unused
-        let unused = deps_index.find_unused_files()?;
         println!("Unused Files: {} file(s)", unused.len());
 
         // Islands
-        let all_islands = deps_index.find_islands()?;
         println!("Islands: {} disconnected component(s)", all_islands.len());
 
         println!("\nUse specific flags for detailed results:");
@@ -1909,8 +1931,26 @@ fn handle_deps_circular(
     offset: Option<usize>,
     count_only: bool,
     _plain: bool,
+    sort: Option<String>,
 ) -> Result<()> {
-    let all_cycles = deps_index.detect_circular_dependencies()?;
+    let mut all_cycles = deps_index.detect_circular_dependencies()?;
+
+    // Apply sorting (default: descending - longest cycles first)
+    let sort_order = sort.as_deref().unwrap_or("desc");
+    match sort_order {
+        "asc" => {
+            // Ascending: shortest cycles first
+            all_cycles.sort_by_key(|cycle| cycle.len());
+        }
+        "desc" => {
+            // Descending: longest cycles first (default)
+            all_cycles.sort_by_key(|cycle| std::cmp::Reverse(cycle.len()));
+        }
+        _ => {
+            anyhow::bail!("Invalid sort order '{}'. Supported: asc, desc", sort_order);
+        }
+    }
+
     let total_count = all_cycles.len();
 
     if count_only {
@@ -2047,9 +2087,27 @@ fn handle_deps_hotspots(
     min_dependents: usize,
     count_only: bool,
     _plain: bool,
+    sort: Option<String>,
 ) -> Result<()> {
     // Get all hotspots without limit first to track total count
-    let all_hotspots = deps_index.find_hotspots(None, min_dependents)?;
+    let mut all_hotspots = deps_index.find_hotspots(None, min_dependents)?;
+
+    // Apply sorting (default: descending - most imports first)
+    let sort_order = sort.as_deref().unwrap_or("desc");
+    match sort_order {
+        "asc" => {
+            // Ascending: least imports first
+            all_hotspots.sort_by(|a, b| a.1.cmp(&b.1));
+        }
+        "desc" => {
+            // Descending: most imports first (default)
+            all_hotspots.sort_by(|a, b| b.1.cmp(&a.1));
+        }
+        _ => {
+            anyhow::bail!("Invalid sort order '{}'. Supported: asc, desc", sort_order);
+        }
+    }
+
     let total_count = all_hotspots.len();
 
     if count_only {
@@ -2201,12 +2259,9 @@ fn handle_deps_unused(
 
     match format {
         "json" => {
-            let results: Vec<_> = unused.iter()
-                .filter_map(|id| {
-                    paths.get(id).map(|path| serde_json::json!({
-                        "path": path,
-                    }))
-                })
+            // Return flat array of path strings (no "path" key wrapper)
+            let results: Vec<String> = unused.iter()
+                .filter_map(|id| paths.get(id).cloned())
                 .collect();
 
             let output = serde_json::json!({
@@ -2284,8 +2339,9 @@ fn handle_deps_islands(
     max_island_size: Option<usize>,
     count_only: bool,
     _plain: bool,
+    sort: Option<String>,
 ) -> Result<()> {
-    let all_islands = deps_index.find_islands()?;
+    let mut all_islands = deps_index.find_islands()?;
     let total_components = all_islands.len();
 
     // Get total file count from the cache for percentage calculation
@@ -2305,6 +2361,22 @@ fn handle_deps_islands(
             size >= min_island_size && size <= max_size
         })
         .collect();
+
+    // Apply sorting (default: descending - largest islands first)
+    let sort_order = sort.as_deref().unwrap_or("desc");
+    match sort_order {
+        "asc" => {
+            // Ascending: smallest islands first
+            islands.sort_by_key(|island| island.len());
+        }
+        "desc" => {
+            // Descending: largest islands first (default)
+            islands.sort_by_key(|island| std::cmp::Reverse(island.len()));
+        }
+        _ => {
+            anyhow::bail!("Invalid sort order '{}'. Supported: asc, desc", sort_order);
+        }
+    }
 
     let filtered_count = total_components - islands.len();
 

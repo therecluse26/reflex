@@ -160,6 +160,67 @@ Start as an MCP (Model Context Protocol) server for AI coding assistants.
 4. **`search_regex`** - Regex pattern matching
 5. **`search_ast`** - AST pattern matching (structure-aware, slow)
 6. **`index_project`** - Trigger reindexing
+7. **`get_dependencies`** - Get all dependencies of a specific file
+8. **`get_dependents`** - Get all files that depend on a file (reverse lookup)
+9. **`get_transitive_deps`** - Get transitive dependencies up to a specified depth
+10. **`find_hotspots`** - Find most-imported files (with pagination)
+11. **`find_circular`** - Detect circular dependencies (with pagination)
+12. **`find_unused`** - Find files with no incoming dependencies (with pagination)
+13. **`find_islands`** - Find disconnected components (with pagination)
+
+### `rfx analyze`
+
+Analyze codebase structure and dependencies. By default shows a summary; use specific flags for detailed results.
+
+**Subcommands:**
+- `--circular` - Detect circular dependencies (A → B → C → A)
+- `--hotspots` - Find most-imported files
+- `--unused` - Find files with no incoming dependencies
+- `--islands` - Find disconnected components
+
+**Pagination (default: 200 results per page):**
+- Use `--limit N` to specify results per page
+- Use `--offset N` to skip first N results
+- Use `--all` to return unlimited results
+
+**Examples:**
+```bash
+# Show summary of all analyses
+rfx analyze
+
+# Find circular dependencies
+rfx analyze --circular
+
+# Find hotspots (most-imported files)
+rfx analyze --hotspots --min-dependents 5
+
+# Find unused files
+rfx analyze --unused
+
+# Find disconnected components (islands)
+rfx analyze --islands --min-island-size 3
+
+# Paginate results
+rfx analyze --hotspots --limit 50 --offset 0  # First 50
+rfx analyze --hotspots --limit 50 --offset 50 # Next 50
+
+# Export as JSON with pagination metadata
+rfx analyze --circular --json
+```
+
+**JSON Output Format:**
+```json
+{
+  "pagination": {
+    "total": 347,
+    "count": 200,
+    "offset": 0,
+    "limit": 200,
+    "has_more": true
+  },
+  "results": [...]
+}
+```
 
 ### Other Commands
 
@@ -167,6 +228,7 @@ Start as an MCP (Model Context Protocol) server for AI coding assistants.
 - `rfx clear` - Clear the search index
 - `rfx list-files` - List all indexed files
 - `rfx watch` - Watch for file changes and auto-reindex
+- `rfx deps <file>` - Analyze dependencies for a specific file
 
 Run `rfx <command> --help` for detailed options.
 
