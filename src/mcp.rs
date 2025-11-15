@@ -501,6 +501,19 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         }
                     }
                 }
+            },
+            {
+                "name": "analyze_summary",
+                "description": "Get a summary of all dependency analyses.\n\n**Purpose:** Quick overview of codebase dependency health.\n\n**Returns:** Object with counts: {circular_dependencies, hotspots, unused_files, islands, min_dependents}\n\n**Use this when:**\n- Getting a quick health check of the codebase\n- Understanding overall dependency structure\n- Deciding which specific analysis to run next\n\n**IMPORTANT:** Only considers **static imports** (string literals). Dynamic imports are filtered. See CLAUDE.md section \"Dependency/Import Extraction\" for details.\n\n**Example output:** {\"circular_dependencies\": 17, \"hotspots\": 10, \"unused_files\": 82, \"islands\": 81, \"min_dependents\": 2}",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "min_dependents": {
+                            "type": "integer",
+                            "description": "Minimum number of dependents for hotspots (default: 2)"
+                        }
+                    }
+                }
             }
         ]
     }))
@@ -1348,6 +1361,35 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 "content": [{
                     "type": "text",
                     "text": serde_json::to_string(&response)?
+                }]
+            }))
+        }
+        "analyze_summary" => {
+            let min_dependents = arguments["min_dependents"]
+                .as_u64()
+                .map(|n| n as usize)
+                .unwrap_or(2);
+
+            let cache = CacheManager::new(".");
+            let deps_index = DependencyIndex::new(cache);
+
+            let cycles = deps_index.detect_circular_dependencies()?;
+            let hotspots = deps_index.find_hotspots(None, min_dependents)?;
+            let unused = deps_index.find_unused_files()?;
+            let all_islands = deps_index.find_islands()?;
+
+            let summary = json!({
+                "circular_dependencies": cycles.len(),
+                "hotspots": hotspots.len(),
+                "unused_files": unused.len(),
+                "islands": all_islands.len(),
+                "min_dependents": min_dependents,
+            });
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&summary)?
                 }]
             }))
         }

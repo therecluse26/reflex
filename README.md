@@ -167,6 +167,7 @@ Start as an MCP (Model Context Protocol) server for AI coding assistants.
 11. **`find_circular`** - Detect circular dependencies (with pagination)
 12. **`find_unused`** - Find files with no incoming dependencies (with pagination)
 13. **`find_islands`** - Find disconnected components (with pagination)
+14. **`analyze_summary`** - Get dependency analysis summary (counts only)
 
 ### `rfx analyze`
 
@@ -200,6 +201,12 @@ rfx analyze --unused
 # Find disconnected components (islands)
 rfx analyze --islands --min-island-size 3
 
+# Get JSON summary of all analyses
+rfx analyze --json
+
+# Get pretty-printed JSON summary
+rfx analyze --json --pretty
+
 # Paginate results
 rfx analyze --hotspots --limit 50 --offset 0  # First 50
 rfx analyze --hotspots --limit 50 --offset 50 # Next 50
@@ -208,7 +215,7 @@ rfx analyze --hotspots --limit 50 --offset 50 # Next 50
 rfx analyze --circular --json
 ```
 
-**JSON Output Format:**
+**JSON Output Format (specific analyses with pagination):**
 ```json
 {
   "pagination": {
@@ -219,6 +226,17 @@ rfx analyze --circular --json
     "has_more": true
   },
   "results": [...]
+}
+```
+
+**Summary JSON Output Format (bare `rfx analyze --json`):**
+```json
+{
+  "circular_dependencies": 17,
+  "hotspots": 10,
+  "unused_files": 82,
+  "islands": 81,
+  "min_dependents": 2
 }
 ```
 
