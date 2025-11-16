@@ -1309,9 +1309,6 @@ fn classify_php_use(use_path: &str) -> ImportType {
 
     // Common vendor packages (third-party dependencies from composer)
     const PHP_VENDOR_NAMESPACES: &[&str] = &[
-        // Laravel framework
-        "Illuminate\\", "Laravel\\",
-
         // Symfony framework
         "Symfony\\",
 
