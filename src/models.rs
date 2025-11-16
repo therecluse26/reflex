@@ -388,3 +388,14 @@ pub struct QueryResponse {
     /// Results are always grouped by file path, with dependencies populated when --dependencies flag is used
     pub results: Vec<FileGroupedResult>,
 }
+
+/// Report from cache compaction operation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactionReport {
+    /// Number of files removed
+    pub files_removed: usize,
+    /// Space saved in bytes
+    pub space_saved_bytes: u64,
+    /// Duration in milliseconds
+    pub duration_ms: u64,
+}

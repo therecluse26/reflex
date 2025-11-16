@@ -32,6 +32,31 @@ pub struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum IndexSubcommand {
+    /// Show background symbol indexing status
+    Status,
+
+    /// Compact the cache by removing deleted files
+    ///
+    /// Removes files from the cache that no longer exist on disk and reclaims
+    /// disk space using SQLite VACUUM. This operation is also performed automatically
+    /// in the background every 24 hours during normal usage.
+    ///
+    /// Examples:
+    ///   rfx index compact                # Show compaction results
+    ///   rfx index compact --json         # JSON output
+    Compact {
+        /// Output format as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Pretty-print JSON output (only with --json)
+        #[arg(long)]
+        pretty: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum Command {
     /// Build or update the local code index
     Index {
@@ -51,9 +76,9 @@ pub enum Command {
         #[arg(short, long)]
         quiet: bool,
 
-        /// Show background symbol indexing status
-        #[arg(long)]
-        status: bool,
+        /// Subcommand (status, compact)
+        #[command(subcommand)]
+        command: Option<IndexSubcommand>,
     },
 
     /// Query the code index
@@ -429,6 +454,83 @@ pub enum Command {
     },
 }
 
+/// Try to run background cache compaction if needed
+///
+/// Checks if 24+ hours have passed since last compaction.
+/// If yes, spawns a non-blocking background thread to compact the cache.
+/// Main command continues immediately without waiting for compaction.
+///
+/// Compaction is skipped for commands that don't need it:
+/// - Clear (will delete the cache anyway)
+/// - Mcp (long-running server process)
+/// - Watch (long-running watcher process)
+/// - Serve (long-running HTTP server)
+fn try_background_compact(cache: &CacheManager, command: &Command) {
+    // Skip compaction for certain commands
+    match command {
+        Command::Clear { .. } => {
+            log::debug!("Skipping compaction for Clear command");
+            return;
+        }
+        Command::Mcp => {
+            log::debug!("Skipping compaction for Mcp command");
+            return;
+        }
+        Command::Watch { .. } => {
+            log::debug!("Skipping compaction for Watch command");
+            return;
+        }
+        Command::Serve { .. } => {
+            log::debug!("Skipping compaction for Serve command");
+            return;
+        }
+        _ => {}
+    }
+
+    // Check if compaction should run
+    let should_compact = match cache.should_compact() {
+        Ok(true) => true,
+        Ok(false) => {
+            log::debug!("Compaction not needed yet (last run <24h ago)");
+            return;
+        }
+        Err(e) => {
+            log::warn!("Failed to check compaction status: {}", e);
+            return;
+        }
+    };
+
+    if !should_compact {
+        return;
+    }
+
+    log::info!("Starting background cache compaction...");
+
+    // Clone cache path for background thread
+    let cache_path = cache.path().to_path_buf();
+
+    // Spawn background thread for compaction
+    std::thread::spawn(move || {
+        let cache = CacheManager::new(cache_path.parent().expect("Cache should have parent directory"));
+
+        match cache.compact() {
+            Ok(report) => {
+                log::info!(
+                    "Background compaction completed: {} files removed, {:.2} MB saved, took {}ms",
+                    report.files_removed,
+                    report.space_saved_bytes as f64 / 1_048_576.0,
+                    report.duration_ms
+                );
+            }
+            Err(e) => {
+                log::warn!("Background compaction failed: {}", e);
+            }
+        }
+    });
+
+    log::debug!("Background compaction thread spawned - main command continuing");
+}
+
 impl Cli {
     /// Execute the CLI command
     pub fn execute(self) -> Result<()> {
@@ -442,14 +544,32 @@ impl Cli {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level))
             .init();
 
+        // Try background compaction (non-blocking) before command execution
+        if let Some(ref command) = self.command {
+            // Use current directory as default cache location
+            let cache = CacheManager::new(".");
+            try_background_compact(&cache, command);
+        }
+
         // Execute the subcommand, or launch interactive mode if no command provided
         match self.command {
             None => {
                 // No subcommand: launch interactive mode
                 handle_interactive()
             }
-            Some(Command::Index { path, force, languages, quiet, status }) => {
-                handle_index(path, force, languages, quiet, status)
+            Some(Command::Index { path, force, languages, quiet, command }) => {
+                match command {
+                    None => {
+                        // Default: run index build
+                        handle_index_build(&path, &force, &languages, &quiet)
+                    }
+                    Some(IndexSubcommand::Status) => {
+                        handle_index_status()
+                    }
+                    Some(IndexSubcommand::Compact { json, pretty }) => {
+                        handle_index_compact(&json, &pretty)
+                    }
+                }
             }
             Some(Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force, dependencies }) => {
                 handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force, dependencies)
@@ -485,16 +605,14 @@ impl Cli {
     }
 }
 
-/// Handle the `index` subcommand
-fn handle_index(path: PathBuf, force: bool, languages: Vec<String>, quiet: bool, show_status: bool) -> Result<()> {
-    log::info!("Starting index command");
+/// Handle the `index status` subcommand
+fn handle_index_status() -> Result<()> {
+    log::info!("Checking background symbol indexing status");
 
-    let cache = CacheManager::new(&path);
+    let cache = CacheManager::new(".");
     let cache_path = cache.path().to_path_buf();
 
-    // Handle --status flag
-    if show_status {
-        match crate::background_indexer::BackgroundIndexer::get_status(&cache_path) {
+    match crate::background_indexer::BackgroundIndexer::get_status(&cache_path) {
             Ok(Some(status)) => {
                 println!("Background Symbol Indexing Status");
                 println!("==================================");
@@ -534,7 +652,39 @@ fn handle_index(path: PathBuf, force: bool, languages: Vec<String>, quiet: bool,
         }
     }
 
-    if force {
+/// Handle the `index compact` subcommand
+fn handle_index_compact(json: &bool, pretty: &bool) -> Result<()> {
+    log::info!("Running cache compaction");
+
+    let cache = CacheManager::new(".");
+    let report = cache.compact()?;
+
+    // Output results in requested format
+    if *json {
+        let json_str = if *pretty {
+            serde_json::to_string_pretty(&report)?
+        } else {
+            serde_json::to_string(&report)?
+        };
+        println!("{}", json_str);
+    } else {
+        println!("Cache Compaction Complete");
+        println!("=========================");
+        println!("Files removed:    {}", report.files_removed);
+        println!("Space saved:      {:.2} MB", report.space_saved_bytes as f64 / 1_048_576.0);
+        println!("Duration:         {}ms", report.duration_ms);
+    }
+
+    Ok(())
+}
+
+fn handle_index_build(path: &PathBuf, force: &bool, languages: &[String], quiet: &bool) -> Result<()> {
+    log::info!("Starting index build");
+
+    let cache = CacheManager::new(path);
+    let cache_path = cache.path().to_path_buf();
+
+    if *force {
         log::info!("Force rebuild requested, clearing existing cache");
         cache.clear()?;
     }
@@ -607,7 +757,7 @@ fn handle_index(path: PathBuf, force: bool, languages: Vec<String>, quiet: bool,
         if !quiet {
             println!("\nStarting background symbol indexing...");
             println!("  Symbols will be cached for faster queries");
-            println!("  Check status with: rfx index --status");
+            println!("  Check status with: rfx index status");
         }
 
         // Spawn detached background process for symbol indexing
@@ -646,7 +796,7 @@ fn handle_index(path: PathBuf, force: bool, languages: Vec<String>, quiet: bool,
         log::debug!("Spawned background symbol indexing process");
     } else if !quiet {
         println!("\n⚠️  Background symbol indexing already in progress");
-        println!("  Check status with: rfx index --status");
+        println!("  Check status with: rfx index status");
     }
 
     Ok(())
