@@ -577,15 +577,11 @@ impl DependencyExtractor for RubyDependencyExtractor {
         let root_node = tree.root_node();
 
         // Query for require and require_relative calls
-        // In Ruby AST, these are method calls with string arguments
+        // Match the entire call, then we'll inspect arguments manually to ensure they're static
         let query_str = r#"
             (call
                 method: (identifier) @method_name
-                arguments: (argument_list
-                    [
-                        (string (string_content) @import_path)
-                        (simple_symbol) @import_path
-                    ]))
+                arguments: (argument_list) @args) @call
 
             (#match? @method_name "^(require|require_relative|load)$")
         "#;
@@ -597,11 +593,11 @@ impl DependencyExtractor for RubyDependencyExtractor {
         let mut matches = cursor.matches(&query, root_node, source.as_bytes());
 
         let mut imports = Vec::new();
+        let mut seen = std::collections::HashSet::new(); // Deduplicate by (path, line_number)
 
         while let Some(match_) = matches.next() {
             let mut method_name = None;
-            let mut import_path = None;
-            let mut path_node = None;
+            let mut args_node = None;
 
             for capture in match_.captures {
                 let capture_name: &str = &query.capture_names()[capture.index as usize];
@@ -609,29 +605,104 @@ impl DependencyExtractor for RubyDependencyExtractor {
                     "method_name" => {
                         method_name = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
                     }
-                    "import_path" => {
-                        import_path = Some(capture.node.utf8_text(source.as_bytes()).unwrap_or("").to_string());
-                        path_node = Some(capture.node);
+                    "args" => {
+                        args_node = Some(capture.node);
                     }
                     _ => {}
                 }
             }
 
-            if let (Some(method), Some(mut path), Some(node)) = (method_name, import_path, path_node) {
-                // For symbols, remove leading ':'
-                if path.starts_with(':') {
-                    path = path.trim_start_matches(':').to_string();
+            if let (Some(method), Some(args)) = (method_name, args_node) {
+                // Manual filter: only process require, require_relative, load
+                // (the #match? predicate in the query doesn't seem to work correctly)
+                if !matches!(method.as_str(), "require" | "require_relative" | "load") {
+                    continue;
                 }
 
-                let import_type = classify_ruby_import(&path, &method);
-                let line_number = node.start_position().row + 1;
+                // Manually inspect the argument_list's direct children
+                // STATIC ONLY: Only accept simple strings or symbols, reject complex expressions
+                let mut cursor = args.walk();
+                for child in args.children(&mut cursor) {
+                    match child.kind() {
+                        "string" => {
+                            // Check for interpolation (dynamic)
+                            let mut is_interpolated = false;
+                            let mut child_cursor = child.walk();
+                            for grandchild in child.children(&mut child_cursor) {
+                                if grandchild.kind() == "interpolation" {
+                                    is_interpolated = true;
+                                    break;
+                                }
+                            }
+                            if is_interpolated {
+                                continue; // Skip interpolated strings
+                            }
 
-                imports.push(ImportInfo {
-                    imported_path: path,
-                    line_number,
-                    import_type,
-                    imported_symbols: None, // Ruby doesn't have explicit symbol imports like Python
-                });
+                            // Extract string_content
+                            let mut content = None;
+                            let mut child_cursor = child.walk();
+                            for grandchild in child.children(&mut child_cursor) {
+                                if grandchild.kind() == "string_content" {
+                                    content = Some(grandchild.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                                    break;
+                                }
+                            }
+
+                            if let Some(path) = content {
+                                // Skip empty strings
+                                if path.is_empty() {
+                                    continue;
+                                }
+
+                                let line_number = child.start_position().row + 1;
+                                let key = (path.clone(), line_number);
+
+                                // Deduplicate
+                                if seen.contains(&key) {
+                                    continue;
+                                }
+                                seen.insert(key);
+
+                                let import_type = classify_ruby_import(&path, &method);
+
+                                imports.push(ImportInfo {
+                                    imported_path: path,
+                                    line_number,
+                                    import_type,
+                                    imported_symbols: None,
+                                });
+                            }
+                        }
+                        "simple_symbol" => {
+                            let mut path = child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                            // Remove leading ':'
+                            if path.starts_with(':') {
+                                path = path.trim_start_matches(':').to_string();
+                            }
+
+                            let line_number = child.start_position().row + 1;
+                            let key = (path.clone(), line_number);
+
+                            // Deduplicate
+                            if seen.contains(&key) {
+                                continue;
+                            }
+                            seen.insert(key);
+
+                            let import_type = classify_ruby_import(&path, &method);
+
+                            imports.push(ImportInfo {
+                                imported_path: path,
+                                line_number,
+                                import_type,
+                                imported_symbols: None,
+                            });
+                        }
+                        // Ignore all other node types (identifiers, constants, calls, binary expressions, etc.)
+                        // These are dynamic requires and should be filtered out
+                        _ => {}
+                    }
+                }
             }
         }
 

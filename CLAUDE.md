@@ -504,6 +504,115 @@ Dependency extraction is designed for **codebase structure analysis**, not exhau
 - Runtime dependency resolution
 - Dynamic code analysis
 
+### Dependency Analysis Commands
+
+Reflex provides two commands for analyzing dependencies:
+
+#### `rfx deps` - Single File Analysis
+
+Show dependencies for a specific file:
+
+```bash
+# Show dependencies of a file (depth 1, default)
+rfx deps src/main.rs
+
+# Show what depends on this file (reverse lookup)
+rfx deps src/config.rs --reverse
+
+# Show transitive dependencies (depth 3)
+rfx deps src/api.rs --depth 3
+
+# Output as JSON
+rfx deps src/main.rs --json
+
+# Filter by dependency type
+rfx deps src/main.rs --only-internal   # Show only internal dependencies
+rfx deps src/main.rs --only-external   # Show only external dependencies
+rfx deps src/main.rs --only-stdlib     # Show only standard library imports
+
+# Different output formats
+rfx deps src/main.rs --format tree     # ASCII tree (default)
+rfx deps src/main.rs --format table    # Table format
+rfx deps src/main.rs --format dot      # Graphviz DOT format
+```
+
+**Example output (tree format):**
+```
+src/main.rs
+├── src/config.rs (internal)
+│   └── src/env.rs (internal)
+├── src/api.rs (internal)
+│   ├── reqwest (external)
+│   └── src/models/user.rs (internal)
+└── std::collections (stdlib)
+```
+
+#### `rfx analyze` - Codebase-Wide Analysis
+
+Analyze dependency patterns across the entire codebase:
+
+```bash
+# Summary report (default - shows all analysis types)
+rfx analyze
+
+# Find circular dependencies
+rfx analyze --circular
+
+# Find most-imported files (hotspots)
+rfx analyze --hotspots
+rfx analyze --hotspots --min-dependents 5  # Filter by minimum import count
+
+# Find unused/orphaned files
+rfx analyze --unused
+
+# Find disconnected components (islands)
+rfx analyze --islands
+rfx analyze --islands --min-island-size 3
+
+# Combine with filters
+rfx analyze --circular --glob "src/**/*.rs"     # Only analyze Rust files
+rfx analyze --hotspots --exclude "target/**"    # Exclude build artifacts
+
+# Output as JSON
+rfx analyze --circular --json
+
+# Just show count (no detailed results)
+rfx analyze --hotspots --count
+```
+
+**Example output (summary report):**
+```
+Dependency Analysis Summary
+===========================
+
+Total Files: 1,234
+Total Dependencies: 5,678
+Average Dependencies per File: 4.6
+
+Circular Dependencies: 2 cycles found
+  → Use 'rfx analyze --circular' for details
+
+Hotspots: 156 files with 3+ dependents
+  Top 5:
+    - src/config.rs (47 dependents) ⚠️
+    - src/utils.rs (33 dependents)
+    - src/types.rs (28 dependents)
+  → Use 'rfx analyze --hotspots' for full list
+
+Unused Files: 5 found
+  → Use 'rfx analyze --unused' for details
+
+Islands: 1 disconnected component (3 files)
+  → Use 'rfx analyze --islands' for details
+```
+
+**Use cases:**
+- **Refactoring**: Understand impact before changes (`rfx deps --reverse`)
+- **Architecture review**: Find circular dependencies (`rfx analyze --circular`)
+- **Code cleanup**: Identify unused files (`rfx analyze --unused`)
+- **Hotspot detection**: Find over-imported files (`rfx analyze --hotspots`)
+- **Monorepo analysis**: Understand component boundaries (`rfx analyze --islands`)
+
 ---
 
 ## Tech Stack
