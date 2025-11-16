@@ -84,10 +84,15 @@ rfx index [OPTIONS]
 Options:
   --force              Force full reindex (ignore incremental)
   --languages <LANGS>  Limit to specific languages (comma-separated)
-  --status             Show background symbol indexing status
+
+Subcommands:
+  status               Show background symbol indexing status
+  compact              Compact cache (remove deleted files, reclaim space)
 ```
 
-**Background Symbol Indexing:** After indexing, Reflex automatically starts a background process to cache symbols for faster queries. Check status with `rfx index --status`.
+**Background Symbol Indexing:** After indexing, Reflex automatically starts a background process to cache symbols for faster queries. Check status with `rfx index status`.
+
+**Cache Compaction:** Reflex automatically compacts the cache every 24 hours to remove deleted files and reclaim space. You can also manually compact with `rfx index compact`.
 
 ### `rfx query`
 
