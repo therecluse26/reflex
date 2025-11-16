@@ -853,6 +853,206 @@ fn classify_python_import(import_path: &str) -> ImportType {
     }
 }
 
+// ============================================================================
+// Monorepo Support & Path Resolution
+// ============================================================================
+
+/// Represents a Python package configuration with its location
+#[derive(Debug, Clone)]
+pub struct PythonPackage {
+    /// Package name (e.g., "django", "myapp")
+    pub name: String,
+    /// Project root relative to index root (e.g., "packages/backend")
+    pub project_root: String,
+    /// Absolute path to project root
+    pub abs_project_root: std::path::PathBuf,
+}
+
+/// Recursively find all Python configuration files (pyproject.toml, setup.py, setup.cfg)
+/// in the repository, respecting .gitignore
+pub fn find_all_python_configs(index_root: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
+    use ignore::WalkBuilder;
+
+    let mut config_files = Vec::new();
+
+    let walker = WalkBuilder::new(index_root)
+        .follow_links(false)
+        .git_ignore(true)
+        .build();
+
+    for entry in walker {
+        let entry = entry?;
+        let path = entry.path();
+
+        if !path.is_file() {
+            continue;
+        }
+
+        let filename = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+
+        // Look for Python config files
+        if filename == "pyproject.toml" || filename == "setup.py" || filename == "setup.cfg" {
+            // Skip virtual environments and build directories
+            let path_str = path.to_string_lossy();
+            if path_str.contains("/venv/")
+                || path_str.contains("/.venv/")
+                || path_str.contains("/site-packages/")
+                || path_str.contains("/dist/")
+                || path_str.contains("/build/")
+                || path_str.contains("/__pycache__/") {
+                log::trace!("Skipping Python config in vendor/build directory: {:?}", path);
+                continue;
+            }
+
+            config_files.push(path.to_path_buf());
+        }
+    }
+
+    log::debug!("Found {} Python config files", config_files.len());
+    Ok(config_files)
+}
+
+/// Parse all Python packages in a monorepo and track their project roots
+pub fn parse_all_python_packages(index_root: &std::path::Path) -> Result<Vec<PythonPackage>> {
+    let config_files = find_all_python_configs(index_root)?;
+
+    if config_files.is_empty() {
+        log::debug!("No Python config files found in {:?}", index_root);
+        return Ok(Vec::new());
+    }
+
+    let mut packages = Vec::new();
+    let config_count = config_files.len();
+
+    for config_path in &config_files {
+        let project_root = config_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Config file has no parent directory"))?;
+
+        // Try to extract package name from this config
+        if let Some(package_name) = find_python_package_name(project_root) {
+            let relative_project_root = project_root
+                .strip_prefix(index_root)
+                .unwrap_or(project_root)
+                .to_string_lossy()
+                .to_string();
+
+            log::debug!(
+                "Found Python package '{}' at {:?}",
+                package_name,
+                relative_project_root
+            );
+
+            packages.push(PythonPackage {
+                name: package_name,
+                project_root: relative_project_root,
+                abs_project_root: project_root.to_path_buf(),
+            });
+        }
+    }
+
+    log::info!(
+        "Loaded {} Python packages from {} config files",
+        packages.len(),
+        config_count
+    );
+
+    Ok(packages)
+}
+
+/// Resolve a Python import to a file path
+///
+/// Handles:
+/// - Absolute imports: `from myapp.models import User` → `myapp/models.py` or `myapp/models/__init__.py`
+/// - Relative imports: `from .models import User` (requires current_file_path)
+/// - Package imports: `import myapp.utils` → `myapp/utils.py` or `myapp/utils/__init__.py`
+pub fn resolve_python_import_to_path(
+    import_path: &str,
+    packages: &[PythonPackage],
+    current_file_path: Option<&str>,
+) -> Option<String> {
+    // Handle relative imports (. or ..)
+    if import_path.starts_with('.') {
+        return resolve_relative_python_import(import_path, current_file_path);
+    }
+
+    // Handle absolute imports using package mappings
+    // Extract first component: "django.conf.settings" → "django"
+    let first_component = import_path.split('.').next()?;
+
+    // Find matching package
+    for package in packages {
+        if package.name == first_component {
+            // Convert import path to file path
+            // "django.conf.settings" → "django/conf/settings.py"
+            let module_path = import_path.replace('.', "/");
+
+            // Try both .py file and __init__.py in package
+            let candidates = vec![
+                format!("{}/{}.py", package.project_root, module_path),
+                format!("{}/{}/__init__.py", package.project_root, module_path),
+            ];
+
+            for candidate in candidates {
+                log::trace!("Checking Python module path: {}", candidate);
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+/// Resolve relative Python imports (. or ..)
+/// Requires the current file path to determine the relative location
+fn resolve_relative_python_import(
+    import_path: &str,
+    current_file_path: Option<&str>,
+) -> Option<String> {
+    let current_file = current_file_path?;
+
+    // Count leading dots to determine how many levels to go up
+    let dots = import_path.chars().take_while(|&c| c == '.').count();
+    if dots == 0 {
+        return None;
+    }
+
+    // Get the directory of the current file
+    let current_dir = std::path::Path::new(current_file).parent()?;
+
+    // Go up (dots - 1) levels (one dot means current directory)
+    let mut target_dir = current_dir.to_path_buf();
+    for _ in 1..dots {
+        target_dir = target_dir.parent()?.to_path_buf();
+    }
+
+    // Get the module path after the dots
+    let module_path = import_path.trim_start_matches('.');
+
+    if module_path.is_empty() {
+        // Just "from ." means import from current package's __init__.py
+        return Some(format!("{}/__init__.py", target_dir.to_string_lossy()));
+    }
+
+    // Convert dots to slashes: "models.user" → "models/user"
+    let file_path = module_path.replace('.', "/");
+
+    // Try both .py file and __init__.py in package
+    let candidates = vec![
+        format!("{}/{}.py", target_dir.to_string_lossy(), file_path),
+        format!("{}/{}/__init__.py", target_dir.to_string_lossy(), file_path),
+    ];
+
+    for candidate in candidates {
+        log::trace!("Checking relative Python import: {}", candidate);
+        return Some(candidate);
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1162,5 +1362,215 @@ def get_config():
         for var in variables {
             // Removed: scope field no longer exists: assert_eq!(var.scope, None);
         }
+    }
+
+    #[test]
+    fn test_find_all_python_configs() {
+        use tempfile::TempDir;
+        use std::fs;
+
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+
+        // Create multiple Python projects
+        let project1 = root.join("backend");
+        fs::create_dir_all(&project1).unwrap();
+        fs::write(project1.join("pyproject.toml"), "[project]\nname = \"backend\"").unwrap();
+
+        let project2 = root.join("frontend/api");
+        fs::create_dir_all(&project2).unwrap();
+        fs::write(project2.join("setup.py"), "setup(name='api')").unwrap();
+
+        // Create venv directory that should be skipped
+        let venv = root.join("venv");
+        fs::create_dir_all(&venv).unwrap();
+        fs::write(venv.join("setup.py"), "setup(name='should_skip')").unwrap();
+
+        let configs = find_all_python_configs(root).unwrap();
+
+        // Should find 2 configs (skipping venv)
+        assert_eq!(configs.len(), 2);
+        assert!(configs.iter().any(|p| p.ends_with("backend/pyproject.toml")));
+        assert!(configs.iter().any(|p| p.ends_with("frontend/api/setup.py")));
+    }
+
+    #[test]
+    fn test_parse_all_python_packages() {
+        use tempfile::TempDir;
+        use std::fs;
+
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+
+        // Create multiple Python projects with different config types
+        let project1 = root.join("services/auth");
+        fs::create_dir_all(&project1).unwrap();
+        fs::write(
+            project1.join("pyproject.toml"),
+            "[project]\nname = \"auth-service\"\n"
+        ).unwrap();
+
+        let project2 = root.join("services/api");
+        fs::create_dir_all(&project2).unwrap();
+        fs::write(
+            project2.join("setup.py"),
+            "setup(name=\"api-service\")"
+        ).unwrap();
+
+        let packages = parse_all_python_packages(root).unwrap();
+
+        // Should find 2 packages
+        assert_eq!(packages.len(), 2);
+
+        // Check package names (normalized to lowercase)
+        let names: Vec<_> = packages.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"auth-service"));
+        assert!(names.contains(&"api-service"));
+
+        // Check project roots
+        for package in &packages {
+            assert!(package.project_root.starts_with("services/"));
+            assert!(package.abs_project_root.ends_with(&package.project_root));
+        }
+    }
+
+    #[test]
+    fn test_resolve_python_import_absolute() {
+        use tempfile::TempDir;
+        use std::fs;
+
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+
+        // Create a Python package structure
+        let myapp = root.join("myapp");
+        fs::create_dir_all(myapp.join("models")).unwrap();
+        fs::write(
+            myapp.join("pyproject.toml"),
+            "[project]\nname = \"myapp\"\n"
+        ).unwrap();
+
+        let packages = parse_all_python_packages(root).unwrap();
+        assert_eq!(packages.len(), 1);
+
+        // Test absolute import resolution
+        // "myapp.models.user" → "myapp/models/user.py"
+        let resolved = resolve_python_import_to_path(
+            "myapp.models.user",
+            &packages,
+            None
+        );
+
+        assert!(resolved.is_some());
+        let path = resolved.unwrap();
+        assert!(path.contains("myapp/models/user.py") || path.contains("myapp/models/user/__init__.py"));
+    }
+
+    #[test]
+    fn test_resolve_python_import_relative() {
+        // Test relative imports: from .models import User
+        let current_file = "myapp/views/admin.py";
+
+        // Test single dot (current package)
+        let resolved = resolve_python_import_to_path(
+            ".models",
+            &[],  // Empty packages array - relative imports don't need it
+            Some(current_file),
+        );
+
+        assert!(resolved.is_some());
+        let path = resolved.unwrap();
+        // from .models → myapp/views/models.py or myapp/views/models/__init__.py
+        assert!(path.contains("myapp/views/models"));
+
+        // Test double dot (parent package)
+        let resolved = resolve_python_import_to_path(
+            "..utils",
+            &[],
+            Some(current_file),
+        );
+
+        assert!(resolved.is_some());
+        let path = resolved.unwrap();
+        // from ..utils → myapp/utils.py or myapp/utils/__init__.py
+        assert!(path.contains("myapp/utils"));
+    }
+
+    #[test]
+    fn test_resolve_python_import_relative_with_module() {
+        // Test relative imports with module path: from ..models.user import User
+        let current_file = "myapp/views/dashboard/index.py";
+
+        let resolved = resolve_python_import_to_path(
+            "..models.user",
+            &[],
+            Some(current_file),
+        );
+
+        assert!(resolved.is_some());
+        let path = resolved.unwrap();
+        // from ..models.user → myapp/views/models/user.py
+        assert!(path.contains("models/user"));
+    }
+
+    #[test]
+    fn test_resolve_python_import_not_found() {
+        use tempfile::TempDir;
+        use std::fs;
+
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+
+        let myapp = root.join("myapp");
+        fs::create_dir_all(&myapp).unwrap();
+        fs::write(
+            myapp.join("pyproject.toml"),
+            "[project]\nname = \"myapp\"\n"
+        ).unwrap();
+
+        let packages = parse_all_python_packages(root).unwrap();
+
+        // Try to resolve an import for a different package
+        let resolved = resolve_python_import_to_path(
+            "other_package.module",
+            &packages,
+            None
+        );
+
+        // Should return None for packages not in the monorepo
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn test_dynamic_imports_filtered() {
+        let source = r#"
+import os
+import sys
+from json import loads
+from .models import User
+
+# Dynamic imports - should be filtered out
+import importlib
+mod = importlib.import_module("some_module")
+pkg = __import__("package")
+exec("import dynamic")
+        "#;
+
+        let deps = PythonDependencyExtractor::extract_dependencies(source).unwrap();
+
+        // Should only find static imports (os, sys, json, .models, importlib)
+        // importlib.import_module(), __import__(), and exec() are NOT import statements
+        assert_eq!(deps.len(), 5, "Should extract 5 static imports only");
+
+        assert!(deps.iter().any(|d| d.imported_path == "os"));
+        assert!(deps.iter().any(|d| d.imported_path == "sys"));
+        assert!(deps.iter().any(|d| d.imported_path == "json"));
+        assert!(deps.iter().any(|d| d.imported_path == ".models"));
+        assert!(deps.iter().any(|d| d.imported_path == "importlib"));
+
+        // Verify dynamic imports are NOT captured
+        assert!(!deps.iter().any(|d| d.imported_path.contains("some_module")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("package") && d.imported_path != "json"));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("dynamic")));
     }
 }

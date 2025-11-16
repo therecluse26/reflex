@@ -182,6 +182,36 @@ impl CacheManager {
             [],
         )?;
 
+        // Create file exports table for tracking barrel re-exports
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS file_exports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id INTEGER NOT NULL,
+                exported_symbol TEXT,
+                source_path TEXT NOT NULL,
+                resolved_source_id INTEGER,
+                line_number INTEGER NOT NULL,
+                FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+                FOREIGN KEY (resolved_source_id) REFERENCES files(id) ON DELETE SET NULL
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_exports_file ON file_exports(file_id)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_exports_resolved ON file_exports(resolved_source_id)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_exports_symbol ON file_exports(exported_symbol)",
+            [],
+        )?;
+
         log::debug!("Created meta.db with schema");
         Ok(())
     }
@@ -262,7 +292,7 @@ compression_level = 3  # zstd level
         match tables {
             Ok(table_list) => {
                 // Check for required tables
-                let required_tables = vec!["files", "statistics", "config", "file_branches", "branches", "file_dependencies"];
+                let required_tables = vec!["files", "statistics", "config", "file_branches", "branches", "file_dependencies", "file_exports"];
                 for table in &required_tables {
                     if !table_list.iter().any(|t| t == table) {
                         anyhow::bail!("Required table '{}' missing from database schema", table);
@@ -1676,6 +1706,7 @@ mod tests {
         assert!(tables.contains(&"file_branches".to_string()));
         assert!(tables.contains(&"branches".to_string()));
         assert!(tables.contains(&"file_dependencies".to_string()));
+        assert!(tables.contains(&"file_exports".to_string()));
     }
 
     #[test]

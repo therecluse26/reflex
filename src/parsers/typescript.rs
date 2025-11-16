@@ -824,6 +824,20 @@ pub struct TypeScriptDependencyExtractor;
 
 impl DependencyExtractor for TypeScriptDependencyExtractor {
     fn extract_dependencies(source: &str) -> Result<Vec<ImportInfo>> {
+        // Delegate to the version without alias map for compatibility
+        Self::extract_dependencies_with_alias_map(source, None)
+    }
+}
+
+impl TypeScriptDependencyExtractor {
+    /// Extract dependencies with optional tsconfig alias map support
+    ///
+    /// This version properly classifies path alias imports (like @packages/*, ~/*) as Internal
+    /// when they match configured aliases from tsconfig.json.
+    pub fn extract_dependencies_with_alias_map(
+        source: &str,
+        alias_map: Option<&crate::parsers::tsconfig::PathAliasMap>,
+    ) -> Result<Vec<ImportInfo>> {
         let mut parser = Parser::new();
         let language = tree_sitter_typescript::LANGUAGE_TSX; // Use TSX for JS/TS compatibility
 
@@ -840,10 +854,10 @@ impl DependencyExtractor for TypeScriptDependencyExtractor {
         let mut imports = Vec::new();
 
         // Extract ES6 import statements
-        imports.extend(extract_import_declarations(source, &root_node)?);
+        imports.extend(extract_import_declarations(source, &root_node, alias_map)?);
 
         // Extract require() statements
-        imports.extend(extract_require_statements(source, &root_node)?);
+        imports.extend(extract_require_statements(source, &root_node, alias_map)?);
 
         Ok(imports)
     }
@@ -853,6 +867,7 @@ impl DependencyExtractor for TypeScriptDependencyExtractor {
 fn extract_import_declarations(
     source: &str,
     root: &tree_sitter::Node,
+    alias_map: Option<&crate::parsers::tsconfig::PathAliasMap>,
 ) -> Result<Vec<ImportInfo>> {
     let language = tree_sitter_typescript::LANGUAGE_TSX;
 
@@ -889,7 +904,7 @@ fn extract_import_declarations(
         }
 
         if let (Some(path), Some(node)) = (import_path, import_node) {
-            let import_type = classify_js_import(&path);
+            let import_type = classify_js_import(&path, alias_map);
             let line_number = node.start_position().row + 1;
 
             // Extract imported symbols
@@ -911,6 +926,7 @@ fn extract_import_declarations(
 fn extract_require_statements(
     source: &str,
     root: &tree_sitter::Node,
+    alias_map: Option<&crate::parsers::tsconfig::PathAliasMap>,
 ) -> Result<Vec<ImportInfo>> {
     let language = tree_sitter_typescript::LANGUAGE_TSX;
 
@@ -954,7 +970,7 @@ fn extract_require_statements(
         // Only process if it's actually a require() call
         if func_name == Some("require") {
             if let (Some(path), Some(node)) = (require_path, require_node) {
-                let import_type = classify_js_import(&path);
+                let import_type = classify_js_import(&path, alias_map);
                 let line_number = node.start_position().row + 1;
 
                 imports.push(ImportInfo {
@@ -1016,15 +1032,49 @@ fn extract_imported_symbols_js(source: &str, import_node: &tree_sitter::Node) ->
 }
 
 /// Classify a JavaScript/TypeScript import as internal, external, or stdlib
-fn classify_js_import(import_path: &str) -> ImportType {
+///
+/// # Arguments
+///
+/// * `import_path` - The import path string
+/// * `alias_map` - Optional tsconfig path alias mappings
+///
+/// Path alias imports (like `@packages/*` from tsconfig.json) are classified as Internal
+/// when they match a configured alias pattern.
+fn classify_js_import(import_path: &str, alias_map: Option<&crate::parsers::tsconfig::PathAliasMap>) -> ImportType {
     // Relative imports (./ or ../)
     if import_path.starts_with("./") || import_path.starts_with("../") {
+        log::trace!("classify_js_import: '{}' => Internal (relative)", import_path);
         return ImportType::Internal;
     }
 
-    // Absolute imports starting with / or @ (monorepo paths like @company/package)
+    // Absolute imports starting with /
     if import_path.starts_with("/") {
+        log::trace!("classify_js_import: '{}' => Internal (absolute)", import_path);
         return ImportType::Internal;
+    }
+
+    // Check if import matches a configured path alias (e.g., @packages/*, ~/*)
+    if let Some(map) = alias_map {
+        log::trace!("classify_js_import: checking '{}' against {} aliases", import_path, map.aliases.len());
+        for alias_pattern in map.aliases.keys() {
+            // Check for wildcard patterns like "@packages/*"
+            if alias_pattern.ends_with("/*") {
+                let alias_prefix = alias_pattern.trim_end_matches("/*");
+                if import_path.starts_with(alias_prefix) {
+                    log::info!("classify_js_import: '{}' => Internal (matches alias pattern '{}')", import_path, alias_pattern);
+                    return ImportType::Internal;
+                }
+            } else {
+                // Exact match
+                if import_path == alias_pattern {
+                    log::info!("classify_js_import: '{}' => Internal (exact match alias '{}')", import_path, alias_pattern);
+                    return ImportType::Internal;
+                }
+            }
+        }
+        log::trace!("classify_js_import: '{}' did not match any of {} alias patterns", import_path, map.aliases.len());
+    } else {
+        log::trace!("classify_js_import: no alias map provided for '{}'", import_path);
     }
 
     // Node.js built-in modules (stdlib)
@@ -1041,9 +1091,497 @@ fn classify_js_import(import_path: &str) -> ImportType {
 
     // Check if it's a stdlib module
     if STDLIB_MODULES.contains(&import_path) {
+        log::trace!("classify_js_import: '{}' => Stdlib", import_path);
         return ImportType::Stdlib;
     }
 
     // Everything else is external (third-party packages from npm)
+    log::info!("classify_js_import: '{}' => External (not alias, relative, absolute, or stdlib)", import_path);
     ImportType::External
+}
+
+// ============================================================================
+// Export Extraction (for barrel export tracking)
+// ============================================================================
+
+use crate::parsers::ExportInfo;
+
+impl TypeScriptDependencyExtractor {
+    /// Extract export/re-export statements for barrel export tracking
+    ///
+    /// Extracts:
+    /// - `export * from './module'` (wildcard re-exports)
+    /// - `export { Named } from './module'` (named re-exports)
+    /// - `export { default as Name } from './module'` (default re-exports)
+    ///
+    /// Returns ExportInfo records with the exported symbol name (None for wildcard)
+    /// and the source path. The indexer will resolve these to file IDs.
+    pub fn extract_export_declarations(
+        source: &str,
+        alias_map: Option<&crate::parsers::tsconfig::PathAliasMap>,
+    ) -> Result<Vec<ExportInfo>> {
+        let mut parser = Parser::new();
+        let language = tree_sitter_typescript::LANGUAGE_TSX;
+
+        parser
+            .set_language(&language.into())
+            .context("Failed to set TypeScript/JavaScript language")?;
+
+        let tree = parser
+            .parse(source, None)
+            .context("Failed to parse TypeScript/JavaScript source for export extraction")?;
+
+        let root_node = tree.root_node();
+
+        let mut exports = Vec::new();
+
+        // Extract ES6 export statements with source paths
+        exports.extend(extract_export_from_statements(source, &root_node)?);
+
+        Ok(exports)
+    }
+}
+
+/// Extract export statements that re-export from other modules
+///
+/// Handles:
+/// - export * from './module'
+/// - export { Named } from './module'
+/// - export { Named as Alias } from './module'
+/// - export { default as Name } from './module.vue'
+fn extract_export_from_statements(
+    source: &str,
+    root: &tree_sitter::Node,
+) -> Result<Vec<ExportInfo>> {
+    let language = tree_sitter_typescript::LANGUAGE_TSX;
+
+    // Query for export statements with a source clause
+    let query_str = r#"
+        (export_statement
+            source: (string) @source_path) @export
+    "#;
+
+    let query = Query::new(&language.into(), query_str)
+        .context("Failed to create export statement query")?;
+
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, *root, source.as_bytes());
+
+    let mut exports = Vec::new();
+
+    while let Some(match_) = matches.next() {
+        let mut source_path = None;
+        let mut export_node = None;
+
+        for capture in match_.captures {
+            let capture_name: &str = &query.capture_names()[capture.index as usize];
+            match capture_name {
+                "source_path" => {
+                    // Remove quotes from string literal
+                    let raw_path = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
+                    source_path = Some(raw_path.trim_matches(|c| c == '"' || c == '\'' || c == '`').to_string());
+                }
+                "export" => {
+                    export_node = Some(capture.node);
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(path), Some(node)) = (source_path, export_node) {
+            let line_number = node.start_position().row + 1;
+
+            // Extract exported symbols from this export statement
+            let exported_symbols = extract_exported_symbols(source, &node)?;
+
+            // If no specific symbols extracted (export *), create one entry with None
+            if exported_symbols.is_empty() {
+                exports.push(ExportInfo {
+                    exported_symbol: None, // Wildcard export
+                    source_path: path,
+                    line_number,
+                });
+            } else {
+                // Create one entry per exported symbol
+                for symbol in exported_symbols {
+                    exports.push(ExportInfo {
+                        exported_symbol: Some(symbol),
+                        source_path: path.clone(),
+                        line_number,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(exports)
+}
+
+/// Extract the list of symbols being exported from an export statement
+///
+/// For `export { A, B as C } from './module'`, returns ["A", "B"]
+/// For `export * from './module'`, returns empty vec (handled by caller)
+fn extract_exported_symbols(source: &str, export_node: &tree_sitter::Node) -> Result<Vec<String>> {
+    let mut symbols = Vec::new();
+
+    // Walk children to find export_clause
+    let mut cursor = export_node.walk();
+    for child in export_node.children(&mut cursor) {
+        if child.kind() == "export_clause" {
+            // Extract individual export specifiers
+            let mut specifier_cursor = child.walk();
+            for specifier in child.children(&mut specifier_cursor) {
+                if specifier.kind() == "export_specifier" {
+                    // Get the exported name (before "as" if aliased)
+                    // For `export { foo as bar }`, we want "foo" (the original name)
+                    if let Ok(text) = specifier.utf8_text(source.as_bytes()) {
+                        // Parse "foo as bar" or just "foo"
+                        let name = text.split_whitespace().next().unwrap_or(text);
+                        symbols.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(symbols)
+}
+
+// ============================================================================
+// Path Resolution
+// ============================================================================
+
+/// Resolve a TypeScript/JavaScript import to a file path
+///
+/// Handles:
+/// - Path aliases: `@packages/ui/store` → `../../packages/ui/store.ts` (requires tsconfig.json)
+/// - Relative imports: `./components/Button` → `components/Button.tsx` or `components/Button/index.tsx`
+/// - Parent directory imports: `../../utils/helper` → `../../utils/helper.ts`
+/// - Index files: `./components` → `components/index.ts`
+///
+/// Does NOT handle:
+/// - Node modules (external dependencies)
+pub fn resolve_ts_import_to_path(
+    import_path: &str,
+    current_file_path: Option<&str>,
+    alias_map: Option<&crate::parsers::tsconfig::PathAliasMap>,
+) -> Option<String> {
+    log::debug!("resolve_ts_import_to_path: import_path={}, current_file={:?}, has_alias_map={}",
+               import_path, current_file_path, alias_map.is_some());
+
+    // Try path alias resolution first (if alias map is provided)
+    if let Some(map) = alias_map {
+        log::debug!("  Trying alias resolution with {} aliases (config_dir: {:?}, base_url: {:?})",
+                   map.aliases.len(), map.config_dir, map.base_url);
+        if let Some(resolved_alias) = map.resolve_alias(import_path) {
+            log::debug!("  Alias matched! {} => {}", import_path, resolved_alias);
+            // Alias matched! Now resolve relative to the tsconfig directory
+            let resolved_path = map.resolve_relative_to_config(&resolved_alias);
+            let path_str = resolved_path.to_string_lossy().to_string();
+            log::debug!("  After resolve_relative_to_config: {}", path_str);
+
+            // Check if resolved path has an extension
+            let has_extension = path_str.ends_with(".vue")
+                || path_str.ends_with(".svelte")
+                || path_str.ends_with(".ts")
+                || path_str.ends_with(".tsx")
+                || path_str.ends_with(".js")
+                || path_str.ends_with(".jsx")
+                || path_str.ends_with(".mjs")
+                || path_str.ends_with(".cjs");
+
+            if has_extension {
+                log::trace!("Resolved alias {} => {}", import_path, path_str);
+                return Some(path_str);
+            }
+
+            // No extension - generate candidates
+            let extensions = vec![
+                ".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs",
+                "/index.tsx", "/index.ts", "/index.jsx", "/index.js",
+            ];
+
+            let candidates: Vec<String> = extensions
+                .iter()
+                .map(|ext| format!("{}{}", path_str, ext))
+                .collect();
+
+            log::trace!("Resolved alias {} => {} (candidates: {})",
+                       import_path, path_str, candidates.join(" | "));
+            return Some(candidates.join("|"));
+        }
+    }
+
+    // Fall back to relative import resolution
+    // Only handle relative imports
+    if !import_path.starts_with("./") && !import_path.starts_with("../") {
+        return None;
+    }
+
+    let current_file = current_file_path?;
+
+    // Get the directory of the current file
+    let current_dir = std::path::Path::new(current_file).parent()?;
+
+    // Resolve the import path relative to current directory
+    let resolved = current_dir.join(import_path);
+
+    // Normalize the path (resolve .. and . components)
+    // Use components() to properly handle . and .. without requiring filesystem access
+    let normalized_path = std::path::Path::new(&resolved)
+        .components()
+        .fold(std::path::PathBuf::new(), |mut acc, component| {
+            match component {
+                std::path::Component::CurDir => acc, // Skip .
+                std::path::Component::ParentDir => {
+                    acc.pop(); // Go up one level for ..
+                    acc
+                }
+                _ => {
+                    acc.push(component);
+                    acc
+                }
+            }
+        });
+
+    let normalized = normalized_path.to_string_lossy().to_string();
+
+    // Check if the import already has a known extension
+    // Vue/Svelte files are imported with their extension: import Foo from './Foo.vue'
+    let has_extension = normalized.ends_with(".vue")
+        || normalized.ends_with(".svelte")
+        || normalized.ends_with(".ts")
+        || normalized.ends_with(".tsx")
+        || normalized.ends_with(".js")
+        || normalized.ends_with(".jsx")
+        || normalized.ends_with(".mjs")
+        || normalized.ends_with(".cjs");
+
+    if has_extension {
+        // Import already has an extension - just return it normalized
+        log::trace!("TS/JS import with extension: {}", normalized);
+        return Some(normalized);
+    }
+
+    // No extension - try multiple file extensions in order of preference
+    // TypeScript: .ts, .tsx, .d.ts
+    // JavaScript: .js, .jsx, .mjs, .cjs
+    // Also try index files if the import is a directory
+    //
+    // NOTE: We return a list of candidates separated by "|" delimiter
+    // The indexer will try each one in order until it finds a match in the database
+    let extensions = vec![
+        ".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs",
+        "/index.tsx", "/index.ts", "/index.jsx", "/index.js",
+    ];
+
+    let candidates: Vec<String> = extensions
+        .iter()
+        .map(|ext| format!("{}{}", normalized, ext))
+        .collect();
+
+    log::trace!("TS/JS import candidates (no extension): {}", candidates.join(" | "));
+
+    // Return all candidates as a pipe-delimited string
+    // Format: "path.tsx|path.ts|path.jsx|path.js|..."
+    Some(candidates.join("|"))
+}
+
+#[cfg(test)]
+mod path_resolution_tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_relative_import_same_directory() {
+        // import { Button } from './Button'
+        let result = resolve_ts_import_to_path(
+            "./Button",
+            Some("src/components/App.tsx"),
+            None,
+        );
+
+        assert!(result.is_some());
+        let candidates = result.unwrap();
+        // Should contain pipe-delimited candidates with .tsx first, then .ts, etc.
+        assert!(candidates.contains("Button.tsx"));
+        assert!(candidates.contains("Button.ts"));
+        // First candidate should be .tsx
+        assert!(candidates.starts_with("src/components/Button.tsx") || candidates.contains("/Button.tsx|"));
+    }
+
+    #[test]
+    fn test_resolve_relative_import_parent_directory() {
+        // import { helper} from '../utils/helper'
+        let result = resolve_ts_import_to_path(
+            "../utils/helper",
+            Some("src/components/Button.tsx"),
+            None,
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        assert!(path.contains("utils/helper"));
+    }
+
+    #[test]
+    fn test_resolve_relative_import_multiple_parents() {
+        // import { config } from '../../config/app'
+        let result = resolve_ts_import_to_path(
+            "../../config/app",
+            Some("src/components/ui/Button.tsx"),
+            None,
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        assert!(path.contains("config/app"));
+    }
+
+    #[test]
+    fn test_resolve_index_file() {
+        // import { components } from './components' (should try ./components/index.tsx)
+        let result = resolve_ts_import_to_path(
+            "./components",
+            Some("src/App.tsx"),
+            None,
+        );
+
+        assert!(result.is_some());
+        // The function returns the first candidate, which is .tsx
+        // In reality, the indexer would try each candidate
+        assert!(result.unwrap().contains("components"));
+    }
+
+    #[test]
+    fn test_absolute_import_not_supported_without_alias_map() {
+        // import { Button } from '@components/Button' (requires tsconfig.json)
+        let result = resolve_ts_import_to_path(
+            "@components/Button",
+            Some("src/App.tsx"),
+            None,
+        );
+
+        // Should return None for absolute imports when no alias map provided
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_node_modules_import_not_supported() {
+        // import { React } from 'react'
+        let result = resolve_ts_import_to_path(
+            "react",
+            Some("src/App.tsx"),
+            None,
+        );
+
+        // Should return None for node_modules imports
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_without_current_file() {
+        let result = resolve_ts_import_to_path(
+            "./Button",
+            None,
+            None,
+        );
+
+        // Should return None if no current file provided
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_nested_directory_structure() {
+        // import { api } from './api/client'
+        let result = resolve_ts_import_to_path(
+            "./api/client",
+            Some("src/services/http.ts"),
+            None,
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        // Should resolve to src/services/api/client with an extension
+        assert!(path.contains("api/client"));
+    }
+}
+
+#[cfg(test)]
+mod dependency_extraction_tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_basic_imports() {
+        let source = r#"
+            import { Button } from './components/Button';
+            import React from 'react';
+            import fs from 'fs';
+            import '../styles.css';
+        "#;
+
+        let deps = TypeScriptDependencyExtractor::extract_dependencies(source).unwrap();
+
+        assert_eq!(deps.len(), 4, "Should extract 4 import statements");
+        assert!(deps.iter().any(|d| d.imported_path == "./components/Button"));
+        assert!(deps.iter().any(|d| d.imported_path == "react"));
+        assert!(deps.iter().any(|d| d.imported_path == "fs"));
+        assert!(deps.iter().any(|d| d.imported_path == "../styles.css"));
+    }
+
+    #[test]
+    fn test_dynamic_imports_filtered() {
+        let source = r#"
+            import { Button } from './components/Button';
+            import React from 'react';
+            const fs = require('fs');
+
+            // Dynamic imports - should be filtered out
+            const moduleName = './dynamic-module';
+            import(moduleName);
+            import(`./templates/${template}`);
+            require(variable);
+            require(CONFIG_PATH + '/settings.js');
+        "#;
+
+        let deps = TypeScriptDependencyExtractor::extract_dependencies(source).unwrap();
+
+        // Should only find static imports (Button, React, fs)
+        // Variable and template literal imports are filtered (not (string) nodes)
+        assert_eq!(deps.len(), 3, "Should extract 3 static imports only");
+
+        assert!(deps.iter().any(|d| d.imported_path == "./components/Button"));
+        assert!(deps.iter().any(|d| d.imported_path == "react"));
+        assert!(deps.iter().any(|d| d.imported_path == "fs"));
+
+        // Verify dynamic imports are NOT captured
+        assert!(!deps.iter().any(|d| d.imported_path.contains("moduleName")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("template")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("variable")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("CONFIG_PATH")));
+    }
+
+    #[test]
+    fn test_require_with_template_literals_filtered() {
+        let source = r#"
+            const path = require('path');
+            const utils = require('./utils');
+
+            // Dynamic requires with template literals - should be filtered out
+            const config = require(`./config/${env}.json`);
+            const plugin = require(`${PLUGIN_DIR}/loader`);
+        "#;
+
+        let deps = TypeScriptDependencyExtractor::extract_dependencies(source).unwrap();
+
+        // Should only find static requires (path, ./utils)
+        // Template literal requires are filtered (template_string nodes, not string nodes)
+        assert_eq!(deps.len(), 2, "Should extract 2 static requires only");
+
+        assert!(deps.iter().any(|d| d.imported_path == "path"));
+        assert!(deps.iter().any(|d| d.imported_path == "./utils"));
+
+        // Verify dynamic requires are NOT captured
+        assert!(!deps.iter().any(|d| d.imported_path.contains("env")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("PLUGIN_DIR")));
+    }
 }

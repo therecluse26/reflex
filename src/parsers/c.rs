@@ -650,3 +650,181 @@ fn classify_c_include(include_path: &str, source: &str, node: &tree_sitter::Node
     // Everything else with angle brackets is external (third-party libraries)
     ImportType::External
 }
+
+// ============================================================================
+// Path Resolution
+// ============================================================================
+
+/// Resolve a C #include directive to a file path
+///
+/// # Arguments
+/// * `include_path` - The path from the #include directive (e.g., "utils/helper.h")
+/// * `current_file_path` - Path to the file containing the #include directive
+///
+/// # Returns
+/// * `Some(path)` if the include can be resolved (quoted includes only)
+/// * `None` for angle bracket includes (system/library headers)
+pub fn resolve_c_include_to_path(
+    include_path: &str,
+    current_file_path: Option<&str>,
+) -> Option<String> {
+    // Only resolve relative includes (quoted includes, which are Internal)
+    // Angle bracket includes are system/library headers and won't be resolved
+
+    let current_file = current_file_path?;
+
+    // Get directory of current file
+    let current_dir = std::path::Path::new(current_file).parent()?;
+
+    // Resolve the include path relative to current file
+    let resolved = current_dir.join(include_path);
+
+    // Normalize the path
+    match resolved.canonicalize() {
+        Ok(normalized) => Some(normalized.display().to_string()),
+        Err(_) => {
+            // If canonicalize fails (file doesn't exist yet), return the joined path
+            Some(resolved.display().to_string())
+        }
+    }
+}
+
+// ============================================================================
+// Tests for Path Resolution
+// ============================================================================
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_c_include_same_directory() {
+        let result = resolve_c_include_to_path(
+            "helper.h",
+            Some("/project/src/main.c"),
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        assert!(path.ends_with("src/helper.h") || path.ends_with("src\\helper.h"));
+    }
+
+    #[test]
+    fn test_resolve_c_include_subdirectory() {
+        let result = resolve_c_include_to_path(
+            "utils/helper.h",
+            Some("/project/src/main.c"),
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        assert!(path.ends_with("src/utils/helper.h") || path.ends_with("src\\utils\\helper.h"));
+    }
+
+    #[test]
+    fn test_resolve_c_include_parent_directory() {
+        let result = resolve_c_include_to_path(
+            "../include/common.h",
+            Some("/project/src/main.c"),
+        );
+
+        assert!(result.is_some());
+        let path = result.unwrap();
+        assert!(path.contains("include") && path.contains("common.h"));
+    }
+
+    #[test]
+    fn test_resolve_c_include_no_current_file() {
+        let result = resolve_c_include_to_path(
+            "helper.h",
+            None,
+        );
+
+        assert!(result.is_none());
+    }
+}
+
+#[cfg(test)]
+mod dependency_extraction_tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_basic_includes() {
+        let source = r#"
+            #include <stdio.h>
+            #include <stdlib.h>
+            #include "utils.h"
+            #include "math/vector.h"
+        "#;
+
+        let deps = CDependencyExtractor::extract_dependencies(source).unwrap();
+
+        assert_eq!(deps.len(), 4, "Should extract 4 include statements");
+        assert!(deps.iter().any(|d| d.imported_path == "stdio.h"));
+        assert!(deps.iter().any(|d| d.imported_path == "stdlib.h"));
+        assert!(deps.iter().any(|d| d.imported_path == "utils.h"));
+        assert!(deps.iter().any(|d| d.imported_path == "math/vector.h"));
+    }
+
+    #[test]
+    fn test_macro_includes_filtered() {
+        let source = r#"
+            #include <stdio.h>
+            #include "config.h"
+
+            // Macro-based includes - should be filtered out
+            #define HEADER_NAME "dynamic.h"
+            #include HEADER_NAME
+
+            #define STRINGIFY(x) #x
+            #include STRINGIFY(runtime_header.h)
+
+            // Conditional includes with macros
+            #ifdef USE_FEATURE_X
+            #define FEATURE_HEADER <feature_x.h>
+            #include FEATURE_HEADER
+            #endif
+        "#;
+
+        let deps = CDependencyExtractor::extract_dependencies(source).unwrap();
+
+        // Should only find static includes (stdio.h, config.h)
+        // Macro-based includes are filtered (not string_literal or system_lib_string nodes)
+        assert_eq!(deps.len(), 2, "Should extract 2 static includes only");
+
+        assert!(deps.iter().any(|d| d.imported_path == "stdio.h"));
+        assert!(deps.iter().any(|d| d.imported_path == "config.h"));
+
+        // Verify macro-based includes are NOT captured
+        assert!(!deps.iter().any(|d| d.imported_path.contains("HEADER_NAME")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("dynamic.h")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("runtime_header")));
+        assert!(!deps.iter().any(|d| d.imported_path.contains("FEATURE_HEADER")));
+    }
+
+    #[test]
+    fn test_include_classification() {
+        let source = r#"
+            #include <stdio.h>
+            #include "utils.h"
+            #include <mylib/api.h>
+        "#;
+
+        let deps = CDependencyExtractor::extract_dependencies(source).unwrap();
+
+        // Check stdlib classification
+        let stdio_dep = deps.iter().find(|d| d.imported_path == "stdio.h").unwrap();
+        assert!(matches!(stdio_dep.import_type, ImportType::Stdlib),
+                "stdio.h should be classified as Stdlib");
+
+        // Check internal classification (quoted includes)
+        let utils_dep = deps.iter().find(|d| d.imported_path == "utils.h").unwrap();
+        assert!(matches!(utils_dep.import_type, ImportType::Internal),
+                "quoted include should be classified as Internal");
+
+        // Check external classification (non-stdlib angle bracket includes)
+        let mylib_dep = deps.iter().find(|d| d.imported_path == "mylib/api.h").unwrap();
+        assert!(matches!(mylib_dep.import_type, ImportType::External),
+                "non-stdlib angle bracket include should be classified as External");
+    }
+}

@@ -684,6 +684,182 @@ func main() {
         assert!(deps.iter().any(|d| d.imported_path == "time/tzdata"));
         assert!(deps.iter().any(|d| d.imported_path == "k8s.io/component-base/cli"));
     }
+
+    #[test]
+    fn test_find_all_go_mods() {
+        use tempfile::TempDir;
+        use std::fs;
+
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+
+        // Create multiple Go modules
+        let service1 = root.join("services/auth");
+        fs::create_dir_all(&service1).unwrap();
+        fs::write(service1.join("go.mod"), "module github.com/myorg/auth\n\ngo 1.21\n").unwrap();
+
+        let service2 = root.join("services/api");
+        fs::create_dir_all(&service2).unwrap();
+        fs::write(service2.join("go.mod"), "module github.com/myorg/api\n\ngo 1.21\n").unwrap();
+
+        // Create vendor directory that should be skipped
+        let vendor = root.join("vendor");
+        fs::create_dir_all(&vendor).unwrap();
+        fs::write(vendor.join("go.mod"), "module github.com/external/lib\n").unwrap();
+
+        let mods = find_all_go_mods(root).unwrap();
+
+        // Should find 2 modules (skipping vendor)
+        assert_eq!(mods.len(), 2);
+        assert!(mods.iter().any(|p| p.ends_with("services/auth/go.mod")));
+        assert!(mods.iter().any(|p| p.ends_with("services/api/go.mod")));
+    }
+
+    #[test]
+    fn test_parse_all_go_modules() {
+        use tempfile::TempDir;
+        use std::fs;
+
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+
+        // Create multiple Go modules
+        let service1 = root.join("services/auth");
+        fs::create_dir_all(&service1).unwrap();
+        fs::write(
+            service1.join("go.mod"),
+            "module github.com/myorg/auth\n\ngo 1.21\n"
+        ).unwrap();
+
+        let service2 = root.join("cmd/api");
+        fs::create_dir_all(&service2).unwrap();
+        fs::write(
+            service2.join("go.mod"),
+            "module github.com/myorg/api\n\ngo 1.21\n"
+        ).unwrap();
+
+        let modules = parse_all_go_modules(root).unwrap();
+
+        // Should find 2 modules
+        assert_eq!(modules.len(), 2);
+
+        // Check module names
+        let names: Vec<_> = modules.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"github.com/myorg/auth"));
+        assert!(names.contains(&"github.com/myorg/api"));
+
+        // Check project roots
+        for module in &modules {
+            assert!(module.project_root.starts_with("services/") || module.project_root.starts_with("cmd/"));
+            assert!(module.abs_project_root.ends_with(&module.project_root));
+        }
+    }
+
+    #[test]
+    fn test_resolve_go_import() {
+        use tempfile::TempDir;
+        use std::fs;
+
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+
+        // Create a Go module structure
+        let myapp = root.join("myapp");
+        fs::create_dir_all(myapp.join("pkg/models")).unwrap();
+        fs::write(
+            myapp.join("go.mod"),
+            "module github.com/myorg/myapp\n\ngo 1.21\n"
+        ).unwrap();
+
+        let modules = parse_all_go_modules(root).unwrap();
+        assert_eq!(modules.len(), 1);
+
+        // Test sub-package import resolution
+        // "github.com/myorg/myapp/pkg/models" → "myapp/pkg/models.go" or "myapp/pkg/models/models.go"
+        let resolved = resolve_go_import_to_path(
+            "github.com/myorg/myapp/pkg/models",
+            &modules,
+            None
+        );
+
+        assert!(resolved.is_some());
+        let path = resolved.unwrap();
+        assert!(path.contains("myapp/pkg/models"));
+        assert!(path.ends_with(".go"));
+    }
+
+    #[test]
+    fn test_resolve_go_import_module_root() {
+        use tempfile::TempDir;
+        use std::fs;
+
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+
+        let myapp = root.join("cmd/server");
+        fs::create_dir_all(&myapp).unwrap();
+        fs::write(
+            myapp.join("go.mod"),
+            "module github.com/myorg/server\n\ngo 1.21\n"
+        ).unwrap();
+
+        let modules = parse_all_go_modules(root).unwrap();
+
+        // Test module root import (no sub-package)
+        let resolved = resolve_go_import_to_path(
+            "github.com/myorg/server",
+            &modules,
+            None
+        );
+
+        assert!(resolved.is_some());
+        let path = resolved.unwrap();
+        // Should try main.go or server.go
+        assert!(path.contains("cmd/server"));
+        assert!(path.ends_with(".go"));
+    }
+
+    #[test]
+    fn test_resolve_go_import_not_found() {
+        use tempfile::TempDir;
+        use std::fs;
+
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+
+        let myapp = root.join("myapp");
+        fs::create_dir_all(&myapp).unwrap();
+        fs::write(
+            myapp.join("go.mod"),
+            "module github.com/myorg/myapp\n\ngo 1.21\n"
+        ).unwrap();
+
+        let modules = parse_all_go_modules(root).unwrap();
+
+        // Try to resolve an import for a different module
+        let resolved = resolve_go_import_to_path(
+            "github.com/other/package",
+            &modules,
+            None
+        );
+
+        // Should return None for modules not in the monorepo
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn test_resolve_go_import_relative() {
+        let modules = vec![];
+
+        // Relative imports are not supported yet
+        let resolved = resolve_go_import_to_path(
+            "./utils",
+            &modules,
+            Some("myapp/pkg/api/handler.go"),
+        );
+
+        assert!(resolved.is_none());
+    }
 }
 
 // ============================================================================
@@ -870,4 +1046,173 @@ fn classify_go_import_impl(import_path: &str, module_prefix: Option<&str>) -> Im
 
     // Everything else is external
     ImportType::External
+}
+
+// ============================================================================
+// Monorepo Support & Path Resolution
+// ============================================================================
+
+/// Represents a Go module with its location
+#[derive(Debug, Clone)]
+pub struct GoModule {
+    /// Module name (e.g., "k8s.io/kubernetes", "github.com/myorg/myproject")
+    pub name: String,
+    /// Project root relative to index root (e.g., "services/api")
+    pub project_root: String,
+    /// Absolute path to project root
+    pub abs_project_root: std::path::PathBuf,
+}
+
+/// Recursively find all go.mod files in the repository, respecting .gitignore
+pub fn find_all_go_mods(index_root: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
+    use ignore::WalkBuilder;
+
+    let mut go_mod_files = Vec::new();
+
+    let walker = WalkBuilder::new(index_root)
+        .follow_links(false)
+        .git_ignore(true)
+        .build();
+
+    for entry in walker {
+        let entry = entry?;
+        let path = entry.path();
+
+        if !path.is_file() {
+            continue;
+        }
+
+        let filename = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+
+        // Look for go.mod files
+        if filename == "go.mod" {
+            // Skip vendor directories
+            let path_str = path.to_string_lossy();
+            if path_str.contains("/vendor/") {
+                log::trace!("Skipping go.mod in vendor directory: {:?}", path);
+                continue;
+            }
+
+            go_mod_files.push(path.to_path_buf());
+        }
+    }
+
+    log::debug!("Found {} go.mod files", go_mod_files.len());
+    Ok(go_mod_files)
+}
+
+/// Parse all Go modules in a monorepo and track their project roots
+pub fn parse_all_go_modules(index_root: &std::path::Path) -> Result<Vec<GoModule>> {
+    let go_mod_files = find_all_go_mods(index_root)?;
+
+    if go_mod_files.is_empty() {
+        log::debug!("No go.mod files found in {:?}", index_root);
+        return Ok(Vec::new());
+    }
+
+    let mut modules = Vec::new();
+    let mod_count = go_mod_files.len();
+
+    for go_mod_path in &go_mod_files {
+        let project_root = go_mod_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("go.mod has no parent directory"))?;
+
+        // Read and parse go.mod to extract module name
+        if let Ok(content) = std::fs::read_to_string(go_mod_path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("module ") {
+                    let module_name = trimmed["module ".len()..].trim().to_string();
+
+                    let relative_project_root = project_root
+                        .strip_prefix(index_root)
+                        .unwrap_or(project_root)
+                        .to_string_lossy()
+                        .to_string();
+
+                    log::debug!(
+                        "Found Go module '{}' at {:?}",
+                        module_name,
+                        relative_project_root
+                    );
+
+                    modules.push(GoModule {
+                        name: module_name,
+                        project_root: relative_project_root,
+                        abs_project_root: project_root.to_path_buf(),
+                    });
+                    break;
+                }
+            }
+        }
+    }
+
+    log::info!(
+        "Loaded {} Go modules from {} go.mod files",
+        modules.len(),
+        mod_count
+    );
+
+    Ok(modules)
+}
+
+/// Resolve a Go import to a file path
+///
+/// Handles:
+/// - Internal imports: `mymodule/pkg/utils` → `pkg/utils.go` or `pkg/utils/utils.go`
+/// - Sub-packages: `mymodule/internal/models` → `internal/models/models.go`
+/// - Relative imports: `./utils` (rare in Go but possible)
+pub fn resolve_go_import_to_path(
+    import_path: &str,
+    modules: &[GoModule],
+    _current_file_path: Option<&str>,
+) -> Option<String> {
+    // Handle relative imports (rare in Go)
+    if import_path.starts_with("./") || import_path.starts_with("../") {
+        // Go relative imports are rare and complex - skip for now
+        return None;
+    }
+
+    // Find matching module
+    for module in modules {
+        if import_path.starts_with(&module.name) {
+            // Strip module name to get sub-package path
+            // "k8s.io/kubernetes/pkg/api" with module "k8s.io/kubernetes" → "pkg/api"
+            let sub_path = import_path.strip_prefix(&module.name)
+                .unwrap_or(import_path)
+                .trim_start_matches('/');
+
+            if sub_path.is_empty() {
+                // Importing the module root - could be multiple files
+                // Try common patterns
+                let candidates = vec![
+                    format!("{}/main.go", module.project_root),
+                    format!("{}/{}.go", module.project_root, module.name.split('/').last().unwrap_or("main")),
+                ];
+
+                for candidate in candidates {
+                    log::trace!("Checking Go module root: {}", candidate);
+                    return Some(candidate);
+                }
+            } else {
+                // Sub-package import
+                // Try both single file and package directory patterns
+                let package_name = sub_path.split('/').last().unwrap_or(sub_path);
+                let candidates = vec![
+                    format!("{}/{}.go", module.project_root, sub_path),
+                    format!("{}/{}/{}.go", module.project_root, sub_path, package_name),
+                ];
+
+                for candidate in candidates {
+                    log::trace!("Checking Go package path: {}", candidate);
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+
+    None
 }

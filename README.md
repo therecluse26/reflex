@@ -98,7 +98,7 @@ Search the codebase. Run `rfx query --help` for full options.
 - `--regex, -r` - Treat pattern as regex
 - `--lang <LANG>` - Filter by language
 - `--kind <KIND>` - Filter by symbol kind (function, class, struct, etc.)
-- `--dependencies` - Include dependency information (currently Rust only)
+- `--dependencies` - Include dependency information (supports: Rust, TypeScript, JavaScript, Python, Go, Java, C, C++, C#, PHP, Ruby, Kotlin)
 - `--paths, -p` - Return only file paths (no content)
 - `--json` - Output as JSON
 - `--limit <N>` - Limit number of results
@@ -160,6 +160,121 @@ Start as an MCP (Model Context Protocol) server for AI coding assistants.
 4. **`search_regex`** - Regex pattern matching
 5. **`search_ast`** - AST pattern matching (structure-aware, slow)
 6. **`index_project`** - Trigger reindexing
+7. **`get_dependencies`** - Get all dependencies of a specific file
+8. **`get_dependents`** - Get all files that depend on a file (reverse lookup)
+9. **`get_transitive_deps`** - Get transitive dependencies up to a specified depth
+10. **`find_hotspots`** - Find most-imported files (with pagination)
+11. **`find_circular`** - Detect circular dependencies (with pagination)
+12. **`find_unused`** - Find files with no incoming dependencies (with pagination)
+13. **`find_islands`** - Find disconnected components (with pagination)
+14. **`analyze_summary`** - Get dependency analysis summary (counts only)
+
+### `rfx analyze`
+
+Analyze codebase structure and dependencies. By default shows a summary; use specific flags for detailed results.
+
+**Subcommands:**
+- `--circular` - Detect circular dependencies (A → B → C → A)
+- `--hotspots` - Find most-imported files
+- `--unused` - Find files with no incoming dependencies
+- `--islands` - Find disconnected components
+
+**Pagination (default: 200 results per page):**
+- Use `--limit N` to specify results per page
+- Use `--offset N` to skip first N results
+- Use `--all` to return unlimited results
+
+**Examples:**
+```bash
+# Show summary of all analyses
+rfx analyze
+
+# Find circular dependencies
+rfx analyze --circular
+
+# Find hotspots (most-imported files)
+rfx analyze --hotspots --min-dependents 5
+
+# Find unused files
+rfx analyze --unused
+
+# Find disconnected components (islands)
+rfx analyze --islands --min-island-size 3
+
+# Get JSON summary of all analyses
+rfx analyze --json
+
+# Get pretty-printed JSON summary
+rfx analyze --json --pretty
+
+# Paginate results
+rfx analyze --hotspots --limit 50 --offset 0  # First 50
+rfx analyze --hotspots --limit 50 --offset 50 # Next 50
+
+# Export as JSON with pagination metadata
+rfx analyze --circular --json
+```
+
+**JSON Output Format (specific analyses with pagination):**
+```json
+{
+  "pagination": {
+    "total": 347,
+    "count": 200,
+    "offset": 0,
+    "limit": 200,
+    "has_more": true
+  },
+  "results": [...]
+}
+```
+
+**Summary JSON Output Format (bare `rfx analyze --json`):**
+```json
+{
+  "circular_dependencies": 17,
+  "hotspots": 10,
+  "unused_files": 82,
+  "islands": 81,
+  "min_dependents": 2
+}
+```
+
+### `rfx deps`
+
+Analyze dependencies for a specific file. Shows what a file imports (dependencies) or what imports it (dependents).
+
+**Key Options:**
+- `--reverse` - Show files that depend on this file (reverse lookup)
+- `--depth N` - Traverse N levels deep for transitive dependencies (default: 1)
+- `--format` - Output format: tree, table, json (default: tree)
+- `--json` - Output as JSON
+- `--pretty` - Pretty-print JSON output
+
+**Examples:**
+```bash
+# Show direct dependencies
+rfx deps src/main.rs
+
+# Show files that import this file (reverse lookup)
+rfx deps src/config.rs --reverse
+
+# Show transitive dependencies (depth 3)
+rfx deps src/api.rs --depth 3
+
+# JSON output
+rfx deps src/main.rs --json
+
+# Pretty-printed JSON
+rfx deps src/main.rs --json --pretty
+
+# Table format
+rfx deps src/main.rs --format table
+```
+
+**Supported Languages:** Rust, TypeScript, JavaScript, Python, Go, Java, C, C++, C#, PHP, Ruby, Kotlin
+
+**Note:** Only static imports (string literals) are tracked. Dynamic imports are filtered by design. See [CLAUDE.md](CLAUDE.md) for details.
 
 ### Other Commands
 

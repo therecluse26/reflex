@@ -10,6 +10,7 @@ use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
 use crate::cache::CacheManager;
+use crate::dependency::DependencyIndex;
 use crate::indexer::Indexer;
 use crate::models::{IndexConfig, Language, SymbolKind};
 use crate::query::{QueryEngine, QueryFilter};
@@ -243,7 +244,7 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         },
                         "dependencies": {
                             "type": "boolean",
-                            "description": "Include dependency information (imports) in results. Currently only available for Rust files."
+                            "description": "Include dependency information (imports) in results. **IMPORTANT:** Only extracts static imports (string literals). Dynamic imports (variables, template literals, expressions) are automatically filtered. See CLAUDE.md for details."
                         }
                     },
                     "required": ["pattern"]
@@ -362,6 +363,157 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         }
                     }
                 }
+            },
+            {
+                "name": "get_dependencies",
+                "description": "Get all dependencies (imports) of a specific file.\n\n**Purpose:** Analyze what modules/files a given file imports.\n\n**Returns:** Array of dependency objects with import path, line number, type (internal/external/stdlib), and optional symbols.\n\n**Use this when:**\n- Understanding file dependencies\n- Analyzing import structure\n- Finding what a file depends on\n\n**IMPORTANT:** Only extracts **static imports** (string literals). Dynamic imports (variables, template literals, expressions) are automatically filtered by tree-sitter query design. See CLAUDE.md section \"Dependency/Import Extraction\" for details.\n\n**Note:** Path matching is fuzzy - supports exact paths, fragments, or just filenames.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "File path (supports fuzzy matching: 'Controllers/FooController.php' or just 'FooController.php')"
+                        }
+                    },
+                    "required": ["path"]
+                }
+            },
+            {
+                "name": "get_dependents",
+                "description": "Get all files that depend on (import) a specific file.\n\n**Purpose:** Find what other files import this file (reverse dependency lookup).\n\n**Returns:** Array of file paths that import the specified file.\n\n**Use this when:**\n- Understanding impact of changes\n- Finding usages of a module\n- Analyzing file importance\n\n**IMPORTANT:** Only considers **static imports** (string literals). Dynamic imports are filtered. See CLAUDE.md section \"Dependency/Import Extraction\" for details.\n\n**Note:** Path matching is fuzzy - supports exact paths, fragments, or just filenames.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "File path (supports fuzzy matching: 'models/User.php' or just 'User.php')"
+                        }
+                    },
+                    "required": ["path"]
+                }
+            },
+            {
+                "name": "get_transitive_deps",
+                "description": "Get transitive dependencies of a file up to a specified depth.\n\n**Purpose:** Find not just direct dependencies, but dependencies of dependencies (the full dependency tree).\n\n**Returns:** Object mapping file IDs to their depth in the dependency tree.\n\n**Use this when:**\n- Understanding full dependency chain\n- Analyzing deep coupling\n- Planning refactoring impact\n\n**IMPORTANT:** Only follows **static imports** (string literals). Dynamic imports are filtered. See CLAUDE.md section \"Dependency/Import Extraction\" for details.\n\n**Example:** depth=2 finds: file → deps → deps of deps",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "File path (supports fuzzy matching)"
+                        },
+                        "depth": {
+                            "type": "integer",
+                            "description": "Maximum depth to traverse (default: 3, max recommended: 5)"
+                        }
+                    },
+                    "required": ["path"]
+                }
+            },
+            {
+                "name": "find_hotspots",
+                "description": "Find the most-imported files in the codebase (dependency hotspots).\n\n**Purpose:** Identify files that many other files depend on.\n\n**Pagination:** Default limit of 200 results per page. Check response.pagination.has_more to fetch more pages.\n\n**Sorting:** Default order is descending (most imports first). Use sort parameter to change.\n\n**Returns:** Object with pagination metadata and array of {path, import_count} objects sorted by import count.\n\n**Use this when:**\n- Finding critical files\n- Identifying potential bottlenecks\n- Understanding architecture\n- Planning refactoring priorities\n\n**IMPORTANT:** Only counts **static imports** (string literals). Dynamic imports are filtered. See CLAUDE.md section \"Dependency/Import Extraction\" for details.\n\n**Example output:** {\"pagination\": {...}, \"results\": [{\"path\": \"src/models.rs\", \"import_count\": 27}]}",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of hotspots per page (default: 200)"
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Pagination offset (skip first N results). Use with limit for pagination."
+                        },
+                        "min_dependents": {
+                            "type": "integer",
+                            "description": "Minimum number of dependents to include (default: 2)"
+                        },
+                        "sort": {
+                            "type": "string",
+                            "description": "Sort order: 'asc' (least imports first) or 'desc' (most imports first, default)"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "find_circular",
+                "description": "Detect circular dependencies in the codebase.\n\n**Purpose:** Find dependency cycles (A → B → C → A).\n\n**Pagination:** Default limit of 200 results per page. Check response.pagination.has_more to fetch more pages.\n\n**Sorting:** Default order is descending (longest cycles first). Use sort parameter to change.\n\n**Returns:** Object with pagination metadata and array of cycles, where each cycle is an array of file paths forming the circular path.\n\n**Use this when:**\n- Debugging circular dependency issues\n- Improving code architecture\n- Validating refactoring\n\n**IMPORTANT:** Only detects cycles in **static imports** (string literals). Dynamic imports are filtered. See CLAUDE.md section \"Dependency/Import Extraction\" for details.\n\n**Note:** Circular dependencies can cause compilation issues and indicate architectural problems.\n\n**Example output:** {\"pagination\": {...}, \"results\": [{\"paths\": [\"a.rs\", \"b.rs\", \"a.rs\"]}]}",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of cycles per page (default: 200)"
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Pagination offset (skip first N cycles). Use with limit for pagination."
+                        },
+                        "sort": {
+                            "type": "string",
+                            "description": "Sort order: 'asc' (shortest cycles first) or 'desc' (longest cycles first, default)"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "find_unused",
+                "description": "Find unused files that no other files import.\n\n**Purpose:** Identify orphaned files that could be safely removed.\n\n**Pagination:** Default limit of 200 results per page. Check response.pagination.has_more to fetch more pages.\n\n**Returns:** Object with pagination metadata and flat array of file path strings (no wrapping objects).\n\n**Use this when:**\n- Cleaning up dead code\n- Reducing codebase size\n- Identifying test-only or entry-point files\n\n**Note:** Entry points (main.rs, index.ts) will appear as unused but should not be deleted.\n\n**Example output:** {\"pagination\": {...}, \"results\": [\"src/unused.rs\", \"tests/old.rs\"]}",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of unused files per page (default: 200)"
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Pagination offset (skip first N files). Use with limit for pagination."
+                        }
+                    }
+                }
+            },
+            {
+                "name": "find_islands",
+                "description": "Find disconnected components (islands) in the dependency graph.\n\n**Purpose:** Identify groups of files that are isolated from the rest of the codebase (no dependencies between groups).\n\n**Pagination:** Default limit of 200 results per page. Check response.pagination.has_more to fetch more pages.\n\n**Sorting:** Default order is descending (largest islands first). Use sort parameter to change.\n\n**Returns:** Object with pagination metadata and array of islands, where each island contains multiple file paths that depend on each other.\n\n**Use this when:**\n- Identifying isolated subsystems\n- Understanding codebase modularity\n- Finding potential code splitting opportunities\n- Detecting disconnected feature modules\n\n**IMPORTANT:** Only considers **static imports** (string literals). Dynamic imports are filtered. See CLAUDE.md section \"Dependency/Import Extraction\" for details.\n\n**Size filtering:** Use min_island_size and max_island_size to filter by component size. Default: 2-500 files (or 50% of total files).\n\n**Example output:** {\"pagination\": {...}, \"results\": [{\"island_id\": 1, \"size\": 5, \"paths\": [\"a.rs\", \"b.rs\", \"c.rs\", \"d.rs\", \"e.rs\"]}]}",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of islands per page (default: 200)"
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Pagination offset (skip first N islands). Use with limit for pagination."
+                        },
+                        "min_island_size": {
+                            "type": "integer",
+                            "description": "Minimum files in an island to include (default: 2)"
+                        },
+                        "max_island_size": {
+                            "type": "integer",
+                            "description": "Maximum files in an island to include (default: 500 or 50% of total files)"
+                        },
+                        "sort": {
+                            "type": "string",
+                            "description": "Sort order: 'asc' (smallest islands first) or 'desc' (largest islands first, default)"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "analyze_summary",
+                "description": "Get a summary of all dependency analyses.\n\n**Purpose:** Quick overview of codebase dependency health.\n\n**Returns:** Object with counts: {circular_dependencies, hotspots, unused_files, islands, min_dependents}\n\n**Use this when:**\n- Getting a quick health check of the codebase\n- Understanding overall dependency structure\n- Deciding which specific analysis to run next\n\n**IMPORTANT:** Only considers **static imports** (string literals). Dynamic imports are filtered. See CLAUDE.md section \"Dependency/Import Extraction\" for details.\n\n**Example output:** {\"circular_dependencies\": 17, \"hotspots\": 10, \"unused_files\": 82, \"islands\": 81, \"min_dependents\": 2}",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "min_dependents": {
+                            "type": "integer",
+                            "description": "Minimum number of dependents for hotspots (default: 2)"
+                        }
+                    }
+                }
             }
         ]
     }))
@@ -426,10 +578,14 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 
             // Extract locations (path + line) for each match
             let locations: Vec<serde_json::Value> = response.results.iter()
-                .map(|r| json!({
-                    "path": r.path,
-                    "line": r.span.start_line
-                }))
+                .flat_map(|file_group| {
+                    file_group.matches.iter().map(move |m| {
+                        json!({
+                            "path": file_group.path.clone(),
+                            "line": m.span.start_line
+                        })
+                    })
+                })
                 .collect();
 
             // Return compact response (just locations + count)
@@ -498,9 +654,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 
             // Count unique files
             use std::collections::HashSet;
-            let unique_files: HashSet<String> = response.results.iter()
-                .map(|r| r.path.clone())
-                .collect();
+            let unique_files: HashSet<String> = response.results.iter().map(|fg| fg.path.clone()).collect();
 
             // Return minimal stats
             let stats = json!({
@@ -587,13 +741,18 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 
             // Apply preview truncation for token efficiency (100 chars max)
             const MAX_PREVIEW_LENGTH: usize = 100;
-            for result in &mut response.results {
-                result.preview = crate::cli::truncate_preview(&result.preview, MAX_PREVIEW_LENGTH);
+            for file_group in response.results.iter_mut() {
+                for m in file_group.matches.iter_mut() {
+                    m.preview = crate::cli::truncate_preview(&m.preview, MAX_PREVIEW_LENGTH);
+                }
             }
+
+            // Calculate result count for AI instruction
+            let result_count: usize = response.results.iter().map(|fg| fg.matches.len()).sum();
 
             // Generate AI instruction (MCP always uses AI mode)
             response.ai_instruction = crate::query::generate_ai_instruction(
-                response.results.len(),
+                result_count,
                 response.pagination.total,
                 response.pagination.has_more,
                 symbols_mode,
@@ -671,13 +830,18 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
 
             // Apply preview truncation for token efficiency (100 chars max)
             const MAX_PREVIEW_LENGTH: usize = 100;
-            for result in &mut response.results {
-                result.preview = crate::cli::truncate_preview(&result.preview, MAX_PREVIEW_LENGTH);
+            for file_group in response.results.iter_mut() {
+                for m in file_group.matches.iter_mut() {
+                    m.preview = crate::cli::truncate_preview(&m.preview, MAX_PREVIEW_LENGTH);
+                }
             }
+
+            // Calculate result count for AI instruction
+            let result_count: usize = response.results.iter().map(|fg| fg.matches.len()).sum();
 
             // Generate AI instruction (MCP always uses AI mode)
             response.ai_instruction = crate::query::generate_ai_instruction(
-                response.results.len(),
+                result_count,
                 response.pagination.total,
                 response.pagination.has_more,
                 false,  // symbols_mode
@@ -817,6 +981,427 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 "content": [{
                     "type": "text",
                     "text": serde_json::to_string(&stats)?
+                }]
+            }))
+        }
+        "get_dependencies" => {
+            let path = arguments["path"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing path"))?
+                .to_string();
+
+            let cache = CacheManager::new(".");
+            let deps_index = DependencyIndex::new(cache);
+
+            // Fuzzy path matching
+            let file_id = deps_index.get_file_id_by_path(&path)?
+                .ok_or_else(|| anyhow::anyhow!("File '{}' not found in index", path))?;
+
+            let dependencies = deps_index.get_dependencies_info(file_id)?;
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&dependencies)?
+                }]
+            }))
+        }
+        "get_dependents" => {
+            let path = arguments["path"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing path"))?
+                .to_string();
+
+            let cache = CacheManager::new(".");
+            let deps_index = DependencyIndex::new(cache);
+
+            // Fuzzy path matching
+            let file_id = deps_index.get_file_id_by_path(&path)?
+                .ok_or_else(|| anyhow::anyhow!("File '{}' not found in index", path))?;
+
+            let dependents = deps_index.get_dependents(file_id)?;
+            let paths = deps_index.get_file_paths(&dependents)?;
+
+            // Convert to array of paths
+            let path_list: Vec<String> = dependents.iter()
+                .filter_map(|id| paths.get(id).cloned())
+                .collect();
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&path_list)?
+                }]
+            }))
+        }
+        "get_transitive_deps" => {
+            let path = arguments["path"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing path"))?
+                .to_string();
+
+            let depth = arguments["depth"]
+                .as_u64()
+                .map(|n| n as usize)
+                .unwrap_or(3);  // Default depth of 3
+
+            let cache = CacheManager::new(".");
+            let deps_index = DependencyIndex::new(cache);
+
+            // Fuzzy path matching
+            let file_id = deps_index.get_file_id_by_path(&path)?
+                .ok_or_else(|| anyhow::anyhow!("File '{}' not found in index", path))?;
+
+            let transitive = deps_index.get_transitive_deps(file_id, depth)?;
+
+            // Get paths for all file IDs
+            let file_ids: Vec<i64> = transitive.keys().copied().collect();
+            let paths = deps_index.get_file_paths(&file_ids)?;
+
+            // Build result with path → depth mapping
+            let result: Vec<serde_json::Value> = transitive.iter()
+                .filter_map(|(id, depth)| {
+                    paths.get(id).map(|path| json!({
+                        "path": path,
+                        "depth": depth
+                    }))
+                })
+                .collect();
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&result)?
+                }]
+            }))
+        }
+        "find_hotspots" => {
+            let limit = arguments["limit"].as_u64().map(|n| n as usize);
+            let offset = arguments["offset"].as_u64().map(|n| n as usize);
+            let min_dependents = arguments["min_dependents"]
+                .as_u64()
+                .map(|n| n as usize)
+                .unwrap_or(2);
+            let sort = arguments["sort"].as_str().map(|s| s.to_string());
+
+            let cache = CacheManager::new(".");
+            let deps_index = DependencyIndex::new(cache);
+
+            // Get all hotspots first (without limit) to track total count
+            let mut all_hotspots = deps_index.find_hotspots(None, min_dependents)?;
+
+            // Apply sorting (default: descending - most imports first)
+            let sort_order = sort.as_deref().unwrap_or("desc");
+            match sort_order {
+                "asc" => {
+                    // Ascending: least imports first
+                    all_hotspots.sort_by(|a, b| a.1.cmp(&b.1));
+                }
+                "desc" => {
+                    // Descending: most imports first (default)
+                    all_hotspots.sort_by(|a, b| b.1.cmp(&a.1));
+                }
+                _ => {
+                    return Err(anyhow::anyhow!("Invalid sort order '{}'. Supported: asc, desc", sort_order));
+                }
+            }
+
+            let total_count = all_hotspots.len();
+
+            // Apply offset pagination
+            let offset_val = offset.unwrap_or(0);
+            let mut hotspots: Vec<_> = all_hotspots.into_iter().skip(offset_val).collect();
+
+            // Apply limit (default 200)
+            let limit_val = limit.unwrap_or(200);
+            hotspots.truncate(limit_val);
+
+            let count = hotspots.len();
+            let has_more = offset_val + count < total_count;
+
+            // Get paths for all file IDs
+            let file_ids: Vec<i64> = hotspots.iter().map(|(id, _)| *id).collect();
+            let paths = deps_index.get_file_paths(&file_ids)?;
+
+            // Build result with path + import_count (no file_id)
+            let results: Vec<serde_json::Value> = hotspots.iter()
+                .filter_map(|(id, import_count)| {
+                    paths.get(id).map(|path| json!({
+                        "path": path,
+                        "import_count": import_count,
+                    }))
+                })
+                .collect();
+
+            let response = json!({
+                "pagination": {
+                    "total": total_count,
+                    "count": count,
+                    "offset": offset_val,
+                    "limit": limit_val,
+                    "has_more": has_more,
+                },
+                "results": results,
+            });
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&response)?
+                }]
+            }))
+        }
+        "find_circular" => {
+            let limit = arguments["limit"].as_u64().map(|n| n as usize);
+            let offset = arguments["offset"].as_u64().map(|n| n as usize);
+            let sort = arguments["sort"].as_str().map(|s| s.to_string());
+
+            let cache = CacheManager::new(".");
+            let deps_index = DependencyIndex::new(cache);
+
+            let mut all_cycles = deps_index.detect_circular_dependencies()?;
+
+            // Apply sorting (default: descending - longest cycles first)
+            let sort_order = sort.as_deref().unwrap_or("desc");
+            match sort_order {
+                "asc" => {
+                    // Ascending: shortest cycles first
+                    all_cycles.sort_by_key(|cycle| cycle.len());
+                }
+                "desc" => {
+                    // Descending: longest cycles first (default)
+                    all_cycles.sort_by_key(|cycle| std::cmp::Reverse(cycle.len()));
+                }
+                _ => {
+                    return Err(anyhow::anyhow!("Invalid sort order '{}'. Supported: asc, desc", sort_order));
+                }
+            }
+
+            let total_count = all_cycles.len();
+
+            // Apply offset pagination
+            let offset_val = offset.unwrap_or(0);
+            let mut cycles: Vec<_> = all_cycles.into_iter().skip(offset_val).collect();
+
+            // Apply limit (default 200)
+            let limit_val = limit.unwrap_or(200);
+            cycles.truncate(limit_val);
+
+            let count = cycles.len();
+            let has_more = offset_val + count < total_count;
+
+            // Convert cycles to paths (without file_ids)
+            let file_ids: Vec<i64> = cycles.iter().flat_map(|c| c.iter()).copied().collect();
+            let paths = deps_index.get_file_paths(&file_ids)?;
+
+            let results: Vec<serde_json::Value> = cycles.iter()
+                .map(|cycle| {
+                    let cycle_paths: Vec<_> = cycle.iter()
+                        .filter_map(|id| paths.get(id).cloned())
+                        .collect();
+                    json!({
+                        "paths": cycle_paths,
+                    })
+                })
+                .collect();
+
+            let response = json!({
+                "pagination": {
+                    "total": total_count,
+                    "count": count,
+                    "offset": offset_val,
+                    "limit": limit_val,
+                    "has_more": has_more,
+                },
+                "results": results,
+            });
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&response)?
+                }]
+            }))
+        }
+        "find_unused" => {
+            let limit = arguments["limit"].as_u64().map(|n| n as usize);
+            let offset = arguments["offset"].as_u64().map(|n| n as usize);
+
+            let cache = CacheManager::new(".");
+            let deps_index = DependencyIndex::new(cache);
+
+            let all_unused = deps_index.find_unused_files()?;
+            let total_count = all_unused.len();
+
+            // Apply offset pagination
+            let offset_val = offset.unwrap_or(0);
+            let mut unused: Vec<_> = all_unused.into_iter().skip(offset_val).collect();
+
+            // Apply limit (default 200)
+            let limit_val = limit.unwrap_or(200);
+            unused.truncate(limit_val);
+
+            let count = unused.len();
+            let has_more = offset_val + count < total_count;
+
+            // Get paths for all unused file IDs
+            let paths = deps_index.get_file_paths(&unused)?;
+
+            // Build result (flat array of path strings)
+            let results: Vec<String> = unused.iter()
+                .filter_map(|id| paths.get(id).cloned())
+                .collect();
+
+            let response = json!({
+                "pagination": {
+                    "total": total_count,
+                    "count": count,
+                    "offset": offset_val,
+                    "limit": limit_val,
+                    "has_more": has_more,
+                },
+                "results": results,
+            });
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&response)?
+                }]
+            }))
+        }
+        "find_islands" => {
+            let limit = arguments["limit"].as_u64().map(|n| n as usize);
+            let offset = arguments["offset"].as_u64().map(|n| n as usize);
+            let min_island_size = arguments["min_island_size"]
+                .as_u64()
+                .map(|n| n as usize)
+                .unwrap_or(2);
+            let max_island_size = arguments["max_island_size"]
+                .as_u64()
+                .map(|n| n as usize);
+            let sort = arguments["sort"].as_str().map(|s| s.to_string());
+
+            let cache = CacheManager::new(".");
+            let deps_index = DependencyIndex::new(cache);
+
+            let all_islands = deps_index.find_islands()?;
+            let total_components = all_islands.len();
+
+            // Get total file count for percentage calculation
+            let total_files = deps_index.get_cache().stats()?.total_files as usize;
+
+            // Calculate max_island_size default: min of 500 or 50% of total files
+            let max_size = max_island_size.unwrap_or_else(|| {
+                let fifty_percent = (total_files as f64 * 0.5) as usize;
+                fifty_percent.min(500)
+            });
+
+            // Filter islands by size
+            let mut islands: Vec<_> = all_islands.into_iter()
+                .filter(|island| {
+                    let size = island.len();
+                    size >= min_island_size && size <= max_size
+                })
+                .collect();
+
+            // Apply sorting (default: descending - largest islands first)
+            let sort_order = sort.as_deref().unwrap_or("desc");
+            match sort_order {
+                "asc" => {
+                    // Ascending: smallest islands first
+                    islands.sort_by_key(|island| island.len());
+                }
+                "desc" => {
+                    // Descending: largest islands first (default)
+                    islands.sort_by_key(|island| std::cmp::Reverse(island.len()));
+                }
+                _ => {
+                    return Err(anyhow::anyhow!("Invalid sort order '{}'. Supported: asc, desc", sort_order));
+                }
+            }
+
+            let filtered_count = total_components - islands.len();
+            let total_after_filter = islands.len();
+
+            // Apply offset pagination
+            let offset_val = offset.unwrap_or(0);
+            if offset_val > 0 && offset_val < islands.len() {
+                islands = islands.into_iter().skip(offset_val).collect();
+            } else if offset_val >= islands.len() {
+                islands.clear();
+            }
+
+            // Apply limit (default 200)
+            let limit_val = limit.unwrap_or(200);
+            islands.truncate(limit_val);
+
+            let count = islands.len();
+            let has_more = offset_val + count < total_after_filter;
+
+            // Get all file IDs from all islands
+            let file_ids: Vec<i64> = islands.iter().flat_map(|island| island.iter()).copied().collect();
+            let paths = deps_index.get_file_paths(&file_ids)?;
+
+            // Build result (array of islands with paths, no file_ids)
+            let results: Vec<serde_json::Value> = islands.iter()
+                .enumerate()
+                .map(|(idx, island)| {
+                    let island_paths: Vec<_> = island.iter()
+                        .filter_map(|id| paths.get(id).cloned())
+                        .collect();
+                    json!({
+                        "island_id": idx + 1,
+                        "size": island.len(),
+                        "paths": island_paths,
+                    })
+                })
+                .collect();
+
+            let response = json!({
+                "pagination": {
+                    "total": total_after_filter,
+                    "count": count,
+                    "offset": offset_val,
+                    "limit": limit_val,
+                    "has_more": has_more,
+                },
+                "results": results,
+            });
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&response)?
+                }]
+            }))
+        }
+        "analyze_summary" => {
+            let min_dependents = arguments["min_dependents"]
+                .as_u64()
+                .map(|n| n as usize)
+                .unwrap_or(2);
+
+            let cache = CacheManager::new(".");
+            let deps_index = DependencyIndex::new(cache);
+
+            let cycles = deps_index.detect_circular_dependencies()?;
+            let hotspots = deps_index.find_hotspots(None, min_dependents)?;
+            let unused = deps_index.find_unused_files()?;
+            let all_islands = deps_index.find_islands()?;
+
+            let summary = json!({
+                "circular_dependencies": cycles.len(),
+                "hotspots": hotspots.len(),
+                "unused_files": unused.len(),
+                "islands": all_islands.len(),
+                "min_dependents": min_dependents,
+            });
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&summary)?
                 }]
             }))
         }

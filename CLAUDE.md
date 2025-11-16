@@ -347,6 +347,165 @@ rfx query "validation" --kind Attribute --lang csharp
 
 ---
 
+## Dependency/Import Extraction
+
+Reflex includes **experimental support for dependency extraction** across multiple languages. This feature analyzes import statements to understand codebase structure, but operates under strict design constraints to ensure accuracy and performance.
+
+### Static-Only Import Resolution
+
+**IMPORTANT**: Reflex **intentionally** extracts **only static imports** (string literals) and filters out dynamic imports.
+
+This is **not a limitation** - it's a deliberate design decision enforced by tree-sitter query patterns:
+
+```rust
+// Python: Only matches static import statements with dotted_name nodes
+(import_statement
+    name: (dotted_name) @import_path)
+
+// TypeScript/JavaScript: Only matches static string literal nodes
+(import_statement
+    source: (string) @import_path)
+
+// Ruby: Only matches static string or symbol nodes
+(call
+    method: (identifier) @method_name
+    arguments: (argument_list
+        [(string (string_content) @import_path)
+         (simple_symbol) @import_path]))
+
+// PHP: Only matches static string literal nodes
+(require_expression
+    (string) @require_path)
+
+// C: Only matches static string_literal or system_lib_string nodes
+(preproc_include
+    path: (string_literal) @include_path)
+```
+
+**Why static-only?**
+- **Deterministic results**: Same codebase → same dependency graph
+- **Performance**: No runtime code evaluation or complex pattern matching required
+- **Accuracy**: Avoids false positives from computed imports that may never execute
+- **Maintainability**: Simple tree-sitter queries are easy to understand and test
+
+### What Gets Filtered Out
+
+Dynamic imports are automatically filtered because they use different AST node types:
+
+**Python**
+```python
+# ✅ Captured (static imports)
+import os
+from json import loads
+
+# ❌ Filtered (dynamic imports - use identifier/call_expression nodes, not dotted_name)
+module = importlib.import_module("some_module")
+pkg = __import__("package")
+exec("import dynamic")
+```
+
+**TypeScript/JavaScript**
+```typescript
+// ✅ Captured (static imports)
+import { Button } from './Button';
+const fs = require('fs');
+
+// ❌ Filtered (dynamic imports - use template_string or identifier nodes, not string)
+import(moduleName);
+import(`./templates/${template}`);
+require(variable);
+require(`${CONFIG_PATH}/settings.js`);
+```
+
+**Ruby**
+```ruby
+# ✅ Captured (static requires)
+require 'json'
+require_relative '../models/user'
+
+# ❌ Filtered (dynamic requires - use identifier or expression nodes, not string/symbol)
+require variable
+require CONSTANT
+require File.join('path', 'to', 'file')
+require_relative File.dirname(__FILE__) + '/dynamic'
+```
+
+**PHP**
+```php
+// ✅ Captured (static use/require)
+use App\Models\User;
+require 'config.php';
+
+// ❌ Filtered (dynamic requires - use identifier or binary_expression nodes, not string)
+require $variable;
+require CONSTANT . '/file.php';
+require_once $path;
+```
+
+**C**
+```c
+// ✅ Captured (static includes)
+#include <stdio.h>
+#include "config.h"
+
+// ❌ Filtered (macro-based includes - use identifier nodes, not string_literal)
+#define HEADER_NAME "dynamic.h"
+#include HEADER_NAME
+#include STRINGIFY(runtime_header.h)
+```
+
+### Import Classification
+
+Reflex classifies imports into three categories:
+
+1. **Internal**: Project code (relative paths, quoted C includes, tsconfig aliases)
+2. **External**: Third-party packages (npm modules, gems, composer packages)
+3. **Stdlib**: Standard library (Node.js built-ins, Python stdlib, C stdlib, etc.)
+
+### Monorepo Support
+
+Reflex supports monorepo structures for languages with multi-project config files:
+
+- **TypeScript/JavaScript**: Multiple `tsconfig.json` files (path aliases resolved per-project)
+- **Go**: Multiple `go.mod` files (module names extracted from each file)
+- **Java**: Multiple `pom.xml` or `build.gradle` files (group IDs extracted)
+- **PHP**: Multiple `composer.json` files (PSR-4 autoloading per-project)
+- **Python**: Multiple `pyproject.toml`, `setup.py`, or `setup.cfg` files (package names extracted)
+- **Ruby**: Multiple `.gemspec` files (gem names extracted, hyphen/underscore variants handled)
+- **Rust**: Multiple `Cargo.toml` files (crate names extracted)
+- **C#**: Multiple `.csproj` files (assembly names extracted)
+- **Kotlin**: Multiple `build.gradle.kts` or `pom.xml` files (group/artifact IDs extracted)
+
+### Limitations
+
+**Partial Accuracy** (by design):
+- **C/C++**: Build system integration required for full accuracy (include paths from CMakeLists.txt, Makefiles)
+- **Dynamic imports**: Not supported (filtered by tree-sitter queries)
+- **Computed paths**: Template literals, string concatenation, variable-based imports are filtered
+- **Runtime-only imports**: Conditional requires, lazy loading, plugin systems are filtered
+
+**Not Implemented** (low priority, high complexity):
+- **PHP classmap autoloading**: Deprecated in modern PHP, PSR-4 preferred
+- **Python namespace packages**: Very rare pattern (`__init__.py`-less packages)
+- **C/C++ complex includes**: Macro expansion, conditional compilation
+
+### Use Case
+
+Dependency extraction is designed for **codebase structure analysis**, not exhaustive accuracy:
+
+- Understanding module boundaries
+- Identifying internal vs external dependencies
+- Analyzing import patterns and coupling
+- Supporting limited call graph queries
+
+**Not suitable for**:
+- Build system replacement
+- Package manager functionality
+- Runtime dependency resolution
+- Dynamic code analysis
+
+---
+
 ## Tech Stack
 - **Language**: Rust (Edition 2024)
 - **Core Algorithm**: Trigram-based inverted index (inspired by Zoekt/Google Code Search)

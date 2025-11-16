@@ -345,6 +345,20 @@ pub struct VueDependencyExtractor;
 
 impl DependencyExtractor for VueDependencyExtractor {
     fn extract_dependencies(source: &str) -> Result<Vec<ImportInfo>> {
+        // Delegate to the version without alias map for compatibility
+        Self::extract_dependencies_with_alias_map(source, None)
+    }
+}
+
+impl VueDependencyExtractor {
+    /// Extract dependencies with optional tsconfig alias map support
+    ///
+    /// This version properly classifies path alias imports (like @packages/*, ~/*) as Internal
+    /// when they match configured aliases from tsconfig.json.
+    pub fn extract_dependencies_with_alias_map(
+        source: &str,
+        alias_map: Option<&crate::parsers::tsconfig::PathAliasMap>,
+    ) -> Result<Vec<ImportInfo>> {
         // Extract script blocks from Vue SFC
         let script_blocks = extract_script_blocks(source)?;
 
@@ -352,8 +366,8 @@ impl DependencyExtractor for VueDependencyExtractor {
 
         // Extract dependencies from each script block
         for (script_source, line_offset) in script_blocks {
-            // Use TypeScript dependency extractor for the script content
-            match TypeScriptDependencyExtractor::extract_dependencies(&script_source) {
+            // Use TypeScript dependency extractor for the script content with alias map
+            match TypeScriptDependencyExtractor::extract_dependencies_with_alias_map(&script_source, alias_map) {
                 Ok(mut imports) => {
                     // Adjust line numbers to account for the script block offset in the Vue file
                     for import in &mut imports {
@@ -368,6 +382,38 @@ impl DependencyExtractor for VueDependencyExtractor {
         }
 
         Ok(all_imports)
+    }
+
+    /// Extract export/re-export statements for barrel export tracking
+    ///
+    /// Extracts exports from script blocks in Vue SFCs.
+    pub fn extract_export_declarations(
+        source: &str,
+        alias_map: Option<&crate::parsers::tsconfig::PathAliasMap>,
+    ) -> Result<Vec<crate::parsers::ExportInfo>> {
+        // Extract script blocks from Vue SFC
+        let script_blocks = extract_script_blocks(source)?;
+
+        let mut all_exports = Vec::new();
+
+        // Extract exports from each script block
+        for (script_source, line_offset) in script_blocks {
+            // Use TypeScript export extractor for the script content
+            match TypeScriptDependencyExtractor::extract_export_declarations(&script_source, alias_map) {
+                Ok(mut exports) => {
+                    // Adjust line numbers to account for the script block offset in the Vue file
+                    for export in &mut exports {
+                        export.line_number += line_offset;
+                    }
+                    all_exports.extend(exports);
+                }
+                Err(e) => {
+                    log::warn!("Failed to extract exports from Vue script block: {}", e);
+                }
+            }
+        }
+
+        Ok(all_exports)
     }
 }
 

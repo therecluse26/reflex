@@ -8,6 +8,7 @@
 
 pub mod rust;
 pub mod typescript;
+pub mod tsconfig;
 pub mod vue;
 pub mod svelte;
 pub mod php;
@@ -39,6 +40,17 @@ pub struct ImportInfo {
     pub line_number: usize,
     /// Imported symbols (for selective imports like `from x import a, b`)
     pub imported_symbols: Option<Vec<String>>,
+}
+
+/// Extracted export/re-export information (for barrel export tracking)
+#[derive(Debug, Clone)]
+pub struct ExportInfo {
+    /// Symbol being exported (None for wildcard `export * from`)
+    pub exported_symbol: Option<String>,
+    /// Source path where the symbol is re-exported from
+    pub source_path: String,
+    /// Line number where export appears
+    pub line_number: usize,
 }
 
 /// Trait for extracting dependencies from source code

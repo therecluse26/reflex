@@ -197,8 +197,36 @@ pub struct SearchResult {
     /// Code preview (few lines around the match)
     pub preview: String,
     /// File dependencies (only populated when --dependencies flag is used)
+    /// DEPRECATED: Use FileGroupedResult.dependencies instead for file-level grouping
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dependencies: Option<Vec<DependencyInfo>>,
+}
+
+/// An individual match within a file (no path or dependencies)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchResult {
+    /// Type of symbol found (only included for symbol searches, not text matches)
+    #[serde(skip_serializing_if = "is_unknown_kind")]
+    pub kind: SymbolKind,
+    /// Symbol name (e.g., function name, class name)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    /// Location span in the source file
+    pub span: Span,
+    /// Code preview (few lines around the match)
+    pub preview: String,
+}
+
+/// File-level grouped results with dependencies at file level
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileGroupedResult {
+    /// Absolute or relative path to the file
+    pub path: String,
+    /// File dependencies (only populated when --dependencies flag is used)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dependencies: Option<Vec<DependencyInfo>>,
+    /// Individual matches within this file
+    pub matches: Vec<MatchResult>,
 }
 
 impl SearchResult {
@@ -356,6 +384,7 @@ pub struct QueryResponse {
     pub warning: Option<IndexWarning>,
     /// Pagination information
     pub pagination: PaginationInfo,
-    /// Search results
-    pub results: Vec<SearchResult>,
+    /// File-grouped search results
+    /// Results are always grouped by file path, with dependencies populated when --dependencies flag is used
+    pub results: Vec<FileGroupedResult>,
 }
