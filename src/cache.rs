@@ -105,6 +105,14 @@ impl CacheManager {
             ["cache_version", "1", &now.to_string()],
         )?;
 
+        // Store cache schema hash for automatic invalidation detection
+        // This hash is computed at build time from cache-critical source files
+        let schema_hash = env!("CACHE_SCHEMA_HASH");
+        conn.execute(
+            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            ["schema_hash", schema_hash, &now.to_string()],
+        )?;
+
         // Create config table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS config (
@@ -358,7 +366,38 @@ compression_level = 3  # zstd level
             }
         }
 
-        log::debug!("Cache validation passed");
+        // Check schema hash for automatic invalidation
+        let current_schema_hash = env!("CACHE_SCHEMA_HASH");
+
+        let stored_schema_hash: Option<String> = conn
+            .query_row(
+                "SELECT value FROM statistics WHERE key = 'schema_hash'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(stored_hash) = stored_schema_hash {
+            if stored_hash != current_schema_hash {
+                log::warn!(
+                    "Cache schema hash mismatch! Stored: {}, Current: {}",
+                    stored_hash,
+                    current_schema_hash
+                );
+                anyhow::bail!(
+                    "Cache was built with schema version {} but current binary expects {}. \
+                     Cache format may be incompatible. Run 'rfx index' to rebuild cache.",
+                    stored_hash,
+                    current_schema_hash
+                );
+            }
+        } else {
+            log::warn!("No schema_hash found in cache - this cache was created before automatic invalidation was implemented");
+            // Don't fail for backward compatibility with old caches
+            // They will get the hash on next rebuild
+        }
+
+        log::debug!("Cache validation passed (schema hash: {})", current_schema_hash);
         Ok(())
     }
 
@@ -678,6 +717,27 @@ compression_level = 3  # zstd level
         )?;
 
         log::debug!("Updated statistics for branch '{}': {} files", branch, total_files);
+        Ok(())
+    }
+
+    /// Update cache schema hash in statistics table
+    ///
+    /// This should be called after every index operation to ensure the cache
+    /// is marked as compatible with the current binary version.
+    pub fn update_schema_hash(&self) -> Result<()> {
+        let db_path = self.cache_path.join(META_DB);
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for schema hash update")?;
+
+        let schema_hash = env!("CACHE_SCHEMA_HASH");
+        let now = chrono::Utc::now().timestamp();
+
+        conn.execute(
+            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            ["schema_hash", schema_hash, &now.to_string()],
+        )?;
+
+        log::debug!("Updated schema hash to: {}", schema_hash);
         Ok(())
     }
 
