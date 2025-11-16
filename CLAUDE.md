@@ -525,11 +525,6 @@ rfx deps src/api.rs --depth 3
 # Output as JSON
 rfx deps src/main.rs --json
 
-# Filter by dependency type
-rfx deps src/main.rs --only-internal   # Show only internal dependencies
-rfx deps src/main.rs --only-external   # Show only external dependencies
-rfx deps src/main.rs --only-stdlib     # Show only standard library imports
-
 # Different output formats
 rfx deps src/main.rs --format tree     # ASCII tree (default)
 rfx deps src/main.rs --format table    # Table format

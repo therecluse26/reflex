@@ -214,12 +214,6 @@ rfx deps src/api.rs --depth 3
 
 # Show as tree visualization
 rfx deps src/main.rs --tree
-
-# Filter to internal dependencies only
-rfx deps src/api.rs --only-internal
-
-# Filter to external dependencies only
-rfx deps src/api.rs --only-external
 ```
 
 **Graph-Wide Operations:**
@@ -515,13 +509,10 @@ import { store } from '../stores'         // internal
 **Tasks:**
 1. Add dependency loading to `QueryEngine`
 2. Implement `enrich_with_dependencies()` for results
-3. Add `--only-internal` / `--only-external` filters
-4. Add `--imported-by` flag (reverse lookup)
-5. Optimize queries with indexes
+3. Optimize queries with indexes
 
 **Deliverables:**
 - `rfx query "pattern" --dependencies` returns enriched results
-- `rfx query "pattern" --dependencies --only-internal` filters correctly
 - Fast indexed lookups (<5ms overhead per result)
 
 **Estimated Time:** 2-3 days
@@ -538,7 +529,6 @@ import { store } from '../stores'         // internal
    - `rfx deps <file> --depth N` (traversal)
 3. Implement tree visualization format
 4. Add JSON output for programmatic use
-5. Implement `--only-internal` / `--only-external` filters
 
 **Deliverables:**
 - `rfx deps src/main.rs` shows dependency tree
