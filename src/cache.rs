@@ -273,6 +273,8 @@ compression_level = 3  # zstd level
     ///
     /// Returns Ok(()) if cache is valid, Err with details if corrupted.
     pub fn validate(&self) -> Result<()> {
+        let start = std::time::Instant::now();
+
         // Check if cache directory exists
         if !self.cache_path.exists() {
             anyhow::bail!("Cache directory does not exist: {}", self.cache_path.display());
@@ -310,6 +312,20 @@ compression_level = 3  # zstd level
             Err(e) => {
                 anyhow::bail!("Failed to read database schema: {}", e);
             }
+        }
+
+        // Run SQLite integrity check (fast quick_check)
+        // Use quick_check instead of integrity_check for speed (<10ms vs 100ms+)
+        let integrity_result: String = conn
+            .query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+
+        if integrity_result != "ok" {
+            log::warn!("Database integrity check failed: {}", integrity_result);
+            anyhow::bail!(
+                "Database integrity check failed: {}. Cache may be corrupted. \
+                 Run 'rfx index' to rebuild cache.",
+                integrity_result
+            );
         }
 
         // Check trigrams.bin if it exists
@@ -397,7 +413,8 @@ compression_level = 3  # zstd level
             // They will get the hash on next rebuild
         }
 
-        log::debug!("Cache validation passed (schema hash: {})", current_schema_hash);
+        let elapsed = start.elapsed();
+        log::debug!("Cache validation passed (schema hash: {}, took {:?})", current_schema_hash, elapsed);
         Ok(())
     }
 
@@ -1803,5 +1820,90 @@ mod tests {
         let cache = CacheManager::new(&cache_path);
         let files = cache.list_files().unwrap();
         assert_eq!(files.len(), 10);
+    }
+
+    // ===== Corruption Detection Tests =====
+
+    #[test]
+    fn test_validate_corrupted_database() {
+        use std::io::Write;
+
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+
+        // Corrupt the database by overwriting it with invalid data
+        let db_path = cache.path().join(META_DB);
+        let mut file = File::create(&db_path).unwrap();
+        file.write_all(b"CORRUPTED DATA").unwrap();
+
+        // Validation should fail due to database corruption
+        let result = cache.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        eprintln!("Error message: {}", err_msg);
+        assert!(err_msg.contains("corrupted") || err_msg.contains("not a database"));
+    }
+
+    #[test]
+    fn test_validate_corrupted_trigrams() {
+        use std::io::Write;
+
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+
+        // Create trigrams.bin with invalid magic bytes
+        let trigrams_path = cache.path().join("trigrams.bin");
+        let mut file = File::create(&trigrams_path).unwrap();
+        file.write_all(b"BADM").unwrap(); // Wrong magic bytes (should be "RFTG")
+
+        // Validation should fail due to invalid magic bytes
+        let result = cache.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("trigrams.bin") && err.contains("corrupted"));
+    }
+
+    #[test]
+    fn test_validate_corrupted_content() {
+        use std::io::Write;
+
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+
+        // Create content.bin with invalid magic bytes
+        let content_path = cache.path().join("content.bin");
+        let mut file = File::create(&content_path).unwrap();
+        file.write_all(b"BADM").unwrap(); // Wrong magic bytes (should be "RFCT")
+
+        // Validation should fail due to invalid magic bytes
+        let result = cache.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("content.bin") && err.contains("corrupted"));
+    }
+
+    #[test]
+    fn test_validate_missing_schema_table() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+
+        // Drop a required table to simulate schema corruption
+        let db_path = cache.path().join(META_DB);
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute("DROP TABLE files", []).unwrap();
+
+        // Validation should fail due to missing required table
+        let result = cache.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("files") && err.contains("missing"));
     }
 }
