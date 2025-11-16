@@ -1,6 +1,6 @@
 [package]
 name = "reflex-search"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2024"
 authors = ["Reflex Contributors"]
 description = "A local-first, structure-aware code search engine for AI agents"
@@ -99,6 +99,9 @@ crossterm = "0.28"
 syntect = "5.2"
 unicode-width = "0.2"
 owo-colors = "4.1"
+
+[build-dependencies]
+blake3 = "1.5"
 
 [dev-dependencies]
 tempfile = "3.12"

@@ -1422,6 +1422,9 @@ impl Indexer {
         // Update stats for current branch only
         self.cache.update_stats(&branch)?;
 
+        // Update schema hash to mark cache as compatible with current binary
+        self.cache.update_schema_hash()?;
+
         pb.finish_with_message("Indexing complete");
 
         // Return stats

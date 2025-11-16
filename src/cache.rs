@@ -105,6 +105,20 @@ impl CacheManager {
             ["cache_version", "1", &now.to_string()],
         )?;
 
+        // Store cache schema hash for automatic invalidation detection
+        // This hash is computed at build time from cache-critical source files
+        let schema_hash = env!("CACHE_SCHEMA_HASH");
+        conn.execute(
+            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            ["schema_hash", schema_hash, &now.to_string()],
+        )?;
+
+        // Initialize last_compaction timestamp (0 = never compacted)
+        conn.execute(
+            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            ["last_compaction", "0", &now.to_string()],
+        )?;
+
         // Create config table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS config (
@@ -265,6 +279,8 @@ compression_level = 3  # zstd level
     ///
     /// Returns Ok(()) if cache is valid, Err with details if corrupted.
     pub fn validate(&self) -> Result<()> {
+        let start = std::time::Instant::now();
+
         // Check if cache directory exists
         if !self.cache_path.exists() {
             anyhow::bail!("Cache directory does not exist: {}", self.cache_path.display());
@@ -302,6 +318,20 @@ compression_level = 3  # zstd level
             Err(e) => {
                 anyhow::bail!("Failed to read database schema: {}", e);
             }
+        }
+
+        // Run SQLite integrity check (fast quick_check)
+        // Use quick_check instead of integrity_check for speed (<10ms vs 100ms+)
+        let integrity_result: String = conn
+            .query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+
+        if integrity_result != "ok" {
+            log::warn!("Database integrity check failed: {}", integrity_result);
+            anyhow::bail!(
+                "Database integrity check failed: {}. Cache may be corrupted. \
+                 Run 'rfx index' to rebuild cache.",
+                integrity_result
+            );
         }
 
         // Check trigrams.bin if it exists
@@ -358,7 +388,39 @@ compression_level = 3  # zstd level
             }
         }
 
-        log::debug!("Cache validation passed");
+        // Check schema hash for automatic invalidation
+        let current_schema_hash = env!("CACHE_SCHEMA_HASH");
+
+        let stored_schema_hash: Option<String> = conn
+            .query_row(
+                "SELECT value FROM statistics WHERE key = 'schema_hash'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(stored_hash) = stored_schema_hash {
+            if stored_hash != current_schema_hash {
+                log::warn!(
+                    "Cache schema hash mismatch! Stored: {}, Current: {}",
+                    stored_hash,
+                    current_schema_hash
+                );
+                anyhow::bail!(
+                    "Cache was built with schema version {} but current binary expects {}. \
+                     Cache format may be incompatible. Run 'rfx index' to rebuild cache.",
+                    stored_hash,
+                    current_schema_hash
+                );
+            }
+        } else {
+            log::warn!("No schema_hash found in cache - this cache was created before automatic invalidation was implemented");
+            // Don't fail for backward compatibility with old caches
+            // They will get the hash on next rebuild
+        }
+
+        let elapsed = start.elapsed();
+        log::debug!("Cache validation passed (schema hash: {}, took {:?})", current_schema_hash, elapsed);
         Ok(())
     }
 
@@ -678,6 +740,27 @@ compression_level = 3  # zstd level
         )?;
 
         log::debug!("Updated statistics for branch '{}': {} files", branch, total_files);
+        Ok(())
+    }
+
+    /// Update cache schema hash in statistics table
+    ///
+    /// This should be called after every index operation to ensure the cache
+    /// is marked as compatible with the current binary version.
+    pub fn update_schema_hash(&self) -> Result<()> {
+        let db_path = self.cache_path.join(META_DB);
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for schema hash update")?;
+
+        let schema_hash = env!("CACHE_SCHEMA_HASH");
+        let now = chrono::Utc::now().timestamp();
+
+        conn.execute(
+            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            ["schema_hash", schema_hash, &now.to_string()],
+        )?;
+
+        log::debug!("Updated schema hash to: {}", schema_hash);
         Ok(())
     }
 
@@ -1268,6 +1351,245 @@ compression_level = 3  # zstd level
                    results.len(), paths.len(), (paths.len() + BATCH_SIZE - 1) / BATCH_SIZE);
         Ok(results)
     }
+
+    // ===== Cache compaction methods =====
+
+    /// Check if cache compaction should run
+    ///
+    /// Returns true if 24+ hours have passed since last compaction (or never compacted).
+    /// Compaction threshold: 86400 seconds (24 hours)
+    pub fn should_compact(&self) -> Result<bool> {
+        let db_path = self.cache_path.join(META_DB);
+
+        if !db_path.exists() {
+            // No database means no compaction needed
+            return Ok(false);
+        }
+
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for compaction check")?;
+
+        // Get last_compaction timestamp (defaults to "0" if not found)
+        let last_compaction: i64 = conn
+            .query_row(
+                "SELECT value FROM statistics WHERE key = 'last_compaction'",
+                [],
+                |row| {
+                    let value: String = row.get(0)?;
+                    Ok(value.parse::<i64>().unwrap_or(0))
+                },
+            )
+            .unwrap_or(0);
+
+        // Get current timestamp
+        let now = chrono::Utc::now().timestamp();
+
+        // Compaction threshold: 24 hours (86400 seconds)
+        const COMPACTION_THRESHOLD_SECS: i64 = 86400;
+
+        let elapsed_secs = now - last_compaction;
+        let should_run = elapsed_secs >= COMPACTION_THRESHOLD_SECS;
+
+        log::debug!(
+            "Compaction check: last={}, now={}, elapsed={}s, should_compact={}",
+            last_compaction,
+            now,
+            elapsed_secs,
+            should_run
+        );
+
+        Ok(should_run)
+    }
+
+    /// Update last_compaction timestamp in statistics table
+    ///
+    /// Called after successful compaction to record when it ran.
+    pub fn update_compaction_timestamp(&self) -> Result<()> {
+        let db_path = self.cache_path.join(META_DB);
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for compaction timestamp update")?;
+
+        let now = chrono::Utc::now().timestamp();
+
+        conn.execute(
+            "INSERT OR REPLACE INTO statistics (key, value, updated_at) VALUES (?, ?, ?)",
+            ["last_compaction", &now.to_string(), &now.to_string()],
+        )?;
+
+        log::debug!("Updated last_compaction timestamp to: {}", now);
+        Ok(())
+    }
+
+    /// Compact the cache by removing deleted files and reclaiming disk space
+    ///
+    /// This operation:
+    /// 1. Identifies files in the database that no longer exist on disk
+    /// 2. Deletes those files from all database tables (CASCADE handles related data)
+    /// 3. Runs VACUUM to reclaim disk space from deleted rows
+    /// 4. Updates the last_compaction timestamp
+    ///
+    /// Returns a CompactionReport with statistics about the operation.
+    /// Safe to run concurrently with queries (uses SQLite transactions).
+    pub fn compact(&self) -> Result<crate::models::CompactionReport> {
+        let start_time = std::time::Instant::now();
+        log::info!("Starting cache compaction...");
+
+        // Get initial cache size
+        let size_before = self.calculate_cache_size()?;
+
+        // Step 1: Identify deleted files (in DB but not on filesystem)
+        let deleted_files = self.identify_deleted_files()?;
+        log::info!("Found {} deleted files to remove from cache", deleted_files.len());
+
+        if deleted_files.is_empty() {
+            log::info!("No deleted files to compact - cache is clean");
+            // Update timestamp anyway to prevent running compaction too frequently
+            self.update_compaction_timestamp()?;
+
+            return Ok(crate::models::CompactionReport {
+                files_removed: 0,
+                space_saved_bytes: 0,
+                duration_ms: start_time.elapsed().as_millis() as u64,
+            });
+        }
+
+        // Step 2: Delete from database (CASCADE handles file_branches, file_dependencies, file_exports)
+        self.delete_files_from_db(&deleted_files)?;
+        log::info!("Deleted {} files from database", deleted_files.len());
+
+        // Step 3: Run VACUUM to reclaim disk space
+        self.vacuum_database()?;
+        log::info!("Completed VACUUM operation");
+
+        // Get final cache size
+        let size_after = self.calculate_cache_size()?;
+        let space_saved = size_before.saturating_sub(size_after);
+
+        // Step 4: Update last_compaction timestamp
+        self.update_compaction_timestamp()?;
+
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+
+        log::info!(
+            "Cache compaction completed: {} files removed, {} bytes saved ({:.2} MB), took {}ms",
+            deleted_files.len(),
+            space_saved,
+            space_saved as f64 / 1_048_576.0,
+            duration_ms
+        );
+
+        Ok(crate::models::CompactionReport {
+            files_removed: deleted_files.len(),
+            space_saved_bytes: space_saved,
+            duration_ms,
+        })
+    }
+
+    /// Identify files in database that no longer exist on filesystem
+    ///
+    /// Returns a Vec of file IDs for files that should be removed from the cache.
+    fn identify_deleted_files(&self) -> Result<Vec<i64>> {
+        let db_path = self.cache_path.join(META_DB);
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for deleted file identification")?;
+
+        let workspace_root = self.workspace_root();
+
+        // Query all files from database (id, path)
+        let mut stmt = conn.prepare("SELECT id, path FROM files")?;
+        let files = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+        log::debug!("Checking {} files for deletion status", files.len());
+
+        // Check which files no longer exist on disk
+        let mut deleted_file_ids = Vec::new();
+        for (file_id, file_path) in files {
+            let full_path = workspace_root.join(&file_path);
+            if !full_path.exists() {
+                log::trace!("File no longer exists: {} (id={})", file_path, file_id);
+                deleted_file_ids.push(file_id);
+            }
+        }
+
+        Ok(deleted_file_ids)
+    }
+
+    /// Delete files from database by file ID
+    ///
+    /// Uses a transaction for atomicity. CASCADE delete handles:
+    /// - file_branches entries
+    /// - file_dependencies entries
+    /// - file_exports entries
+    fn delete_files_from_db(&self, file_ids: &[i64]) -> Result<()> {
+        if file_ids.is_empty() {
+            return Ok(());
+        }
+
+        let db_path = self.cache_path.join(META_DB);
+        let mut conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for file deletion")?;
+
+        let tx = conn.transaction()?;
+
+        // Delete files in batches to avoid SQLite parameter limit (999 max)
+        const BATCH_SIZE: usize = 900;
+
+        for chunk in file_ids.chunks(BATCH_SIZE) {
+            let placeholders = chunk.iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let delete_query = format!("DELETE FROM files WHERE id IN ({})", placeholders);
+
+            let params: Vec<i64> = chunk.to_vec();
+            tx.execute(&delete_query, rusqlite::params_from_iter(params))?;
+        }
+
+        tx.commit()?;
+        log::debug!("Deleted {} files from database (CASCADE handled related tables)", file_ids.len());
+        Ok(())
+    }
+
+    /// Run VACUUM on SQLite database to reclaim disk space
+    ///
+    /// VACUUM rebuilds the database file, removing free pages and compacting the file.
+    /// This can take several seconds on large databases but significantly reduces disk usage.
+    fn vacuum_database(&self) -> Result<()> {
+        let db_path = self.cache_path.join(META_DB);
+        let conn = Connection::open(&db_path)
+            .context("Failed to open meta.db for VACUUM")?;
+
+        // VACUUM cannot run inside a transaction
+        // It rebuilds the entire database file
+        conn.execute("VACUUM", [])?;
+
+        log::debug!("VACUUM completed successfully");
+        Ok(())
+    }
+
+    /// Calculate total cache size in bytes
+    ///
+    /// Sums up the size of all cache files:
+    /// - meta.db (SQLite database)
+    /// - trigrams.bin (inverted index)
+    /// - content.bin (file contents)
+    /// - config.toml (configuration)
+    fn calculate_cache_size(&self) -> Result<u64> {
+        let mut total_size: u64 = 0;
+
+        for file_name in [META_DB, TOKENS_BIN, CONFIG_TOML, "content.bin", "trigrams.bin"] {
+            let file_path = self.cache_path.join(file_name);
+            if let Ok(metadata) = std::fs::metadata(&file_path) {
+                total_size += metadata.len();
+            }
+        }
+
+        Ok(total_size)
+    }
 }
 
 /// Branch metadata information
@@ -1743,5 +2065,90 @@ mod tests {
         let cache = CacheManager::new(&cache_path);
         let files = cache.list_files().unwrap();
         assert_eq!(files.len(), 10);
+    }
+
+    // ===== Corruption Detection Tests =====
+
+    #[test]
+    fn test_validate_corrupted_database() {
+        use std::io::Write;
+
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+
+        // Corrupt the database by overwriting it with invalid data
+        let db_path = cache.path().join(META_DB);
+        let mut file = File::create(&db_path).unwrap();
+        file.write_all(b"CORRUPTED DATA").unwrap();
+
+        // Validation should fail due to database corruption
+        let result = cache.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        eprintln!("Error message: {}", err_msg);
+        assert!(err_msg.contains("corrupted") || err_msg.contains("not a database"));
+    }
+
+    #[test]
+    fn test_validate_corrupted_trigrams() {
+        use std::io::Write;
+
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+
+        // Create trigrams.bin with invalid magic bytes
+        let trigrams_path = cache.path().join("trigrams.bin");
+        let mut file = File::create(&trigrams_path).unwrap();
+        file.write_all(b"BADM").unwrap(); // Wrong magic bytes (should be "RFTG")
+
+        // Validation should fail due to invalid magic bytes
+        let result = cache.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("trigrams.bin") && err.contains("corrupted"));
+    }
+
+    #[test]
+    fn test_validate_corrupted_content() {
+        use std::io::Write;
+
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+
+        // Create content.bin with invalid magic bytes
+        let content_path = cache.path().join("content.bin");
+        let mut file = File::create(&content_path).unwrap();
+        file.write_all(b"BADM").unwrap(); // Wrong magic bytes (should be "RFCT")
+
+        // Validation should fail due to invalid magic bytes
+        let result = cache.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("content.bin") && err.contains("corrupted"));
+    }
+
+    #[test]
+    fn test_validate_missing_schema_table() {
+        let temp = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp.path());
+
+        cache.init().unwrap();
+
+        // Drop a required table to simulate schema corruption
+        let db_path = cache.path().join(META_DB);
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute("DROP TABLE files", []).unwrap();
+
+        // Validation should fail due to missing required table
+        let result = cache.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("files") && err.contains("missing"));
     }
 }

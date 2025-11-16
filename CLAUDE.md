@@ -46,7 +46,14 @@ Reflex uses **trigram-based indexing** to enable sub-100ms full-text search acro
     rfx index
 
     # Check background symbol indexing status
-    rfx index --status
+    rfx index status
+
+    # Manually compact cache (remove deleted files, reclaim space)
+    rfx index compact
+    rfx index compact --json         # JSON output
+    rfx index compact --json --pretty # Pretty JSON output
+
+    # Note: Cache compaction also runs automatically every 24 hours in the background
 
     # Full-text search (default - finds all occurrences)
     rfx query "extract_symbols"
@@ -524,11 +531,6 @@ rfx deps src/api.rs --depth 3
 
 # Output as JSON
 rfx deps src/main.rs --json
-
-# Filter by dependency type
-rfx deps src/main.rs --only-internal   # Show only internal dependencies
-rfx deps src/main.rs --only-external   # Show only external dependencies
-rfx deps src/main.rs --only-stdlib     # Show only standard library imports
 
 # Different output formats
 rfx deps src/main.rs --format tree     # ASCII tree (default)
