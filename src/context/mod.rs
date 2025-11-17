@@ -36,7 +36,7 @@ pub struct ContextOptions {
     /// List important configuration files
     pub config_files: bool,
 
-    /// Tree depth for --structure (default: 3)
+    /// Tree depth for --structure (default: 1)
     pub depth: usize,
 
     /// Output as JSON
@@ -54,7 +54,7 @@ impl Default for ContextOptions {
             entry_points: false,
             test_layout: false,
             config_files: false,
-            depth: 3,
+            depth: 1,
             json: false,
         }
     }

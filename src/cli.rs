@@ -551,8 +551,8 @@ pub enum Command {
         #[arg(long)]
         full: bool,
 
-        /// Tree depth for --structure (default: 3)
-        #[arg(long, default_value = "3")]
+        /// Tree depth for --structure (default: 1)
+        #[arg(long, default_value = "1")]
         depth: usize,
 
         /// Output as JSON
