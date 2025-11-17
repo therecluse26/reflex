@@ -18,6 +18,8 @@ Translate natural language questions about code into precise query commands for 
 | `--exact` | Exact symbol name match | `--exact` |
 | `--contains` | Use substring matching (expansive) | `--contains` |
 | `--file <path>` or `-f` | Filter by file path substring | `--file src/parser` |
+| `--glob <pattern>` or `-g` | Include files matching glob (can repeat) | `--glob "src/**/*.rs"` |
+| `--exclude <pattern>` or `-x` | Exclude files matching glob (can repeat) | `--exclude "target/**"` |
 | `--limit <n>` or `-n` | Maximum number of results | `--limit 10` |
 | `--offset <n>` or `-o` | Skip first N results (pagination) | `--offset 20` |
 | `--paths` or `-p` | Return only file paths (no content) | `--paths` |
@@ -101,7 +103,24 @@ User: Show me all custom error types
 Command: query "Error" --symbols --kind struct --lang rust
 ```
 
-**11. Multi-query workflow**
+**11. Exclude build artifacts**
+```
+User: Find all TODO comments but skip generated files
+Command: query "TODO" --exclude "target/**" --exclude "*.gen.rs" --exclude "node_modules/**"
+```
+
+**12. Count results across categories**
+```
+User: How many User and Role classes are there?
+Commands:
+# Step 1: Count User classes
+query "User" --symbols --kind class --count
+
+# Step 2: Count Role classes
+query "Role" --symbols --kind class --count
+```
+
+**13. Multi-query workflow**
 ```
 User: Find the ApiClient class and show me all files that use it
 Commands:
@@ -112,7 +131,7 @@ query "ApiClient" --symbols --kind class
 query "ApiClient"
 ```
 
-**12. Cross-language search**
+**14. Cross-language search**
 ```
 User: Find all database connection code in Python and TypeScript
 Commands:

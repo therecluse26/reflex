@@ -2295,20 +2295,18 @@ fn handle_ask(
     println!("\nExecuting queries...");
     println!("====================\n");
 
-    let results = runtime.block_on(async {
+    let (results, total_count, count_only) = runtime.block_on(async {
         crate::semantic::execute_queries(response.queries, &cache).await
     }).context("Failed to execute queries")?;
 
     // Display results
-    if results.is_empty() {
+    if count_only {
+        // Count-only mode: just show the total count (matching direct CLI behavior)
+        println!("Found {} results", total_count);
+    } else if results.is_empty() {
         println!("No results found.");
     } else {
-        // Count total matches
-        let total_matches: usize = results.iter()
-            .map(|file_group| file_group.matches.len())
-            .sum();
-
-        println!("Found {} matches across {} files:\n", total_matches, results.len());
+        println!("Found {} total results across {} files:\n", total_count, results.len());
 
         for file_group in &results {
             println!("{}:", file_group.path);

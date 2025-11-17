@@ -56,6 +56,7 @@ pub fn parse_command(command: &str) -> Result<ParsedCommand> {
         all: false,
         force: false,
         dependencies: false,
+        count: false,
     };
 
     let mut i = 2;
@@ -154,6 +155,10 @@ pub fn parse_command(command: &str) -> Result<ParsedCommand> {
                 parsed.dependencies = true;
                 i += 1;
             }
+            "--count" | "-c" => {
+                parsed.count = true;
+                i += 1;
+            }
             unknown => {
                 log::warn!("Ignoring unknown flag: {}", unknown);
                 i += 1;
@@ -185,6 +190,7 @@ pub struct ParsedCommand {
     pub all: bool,
     pub force: bool,
     pub dependencies: bool,
+    pub count: bool,
 }
 
 impl ParsedCommand {
@@ -282,12 +288,15 @@ impl ParsedCommand {
 ///
 /// Results are deduplicated by (file_path, start_line, end_line) to avoid duplicates
 /// across multiple queries.
+///
+/// Returns a tuple of (merged results, total count across all queries, count_only mode).
+/// If count_only is true, all queries had --count flag and only the count should be displayed.
 pub async fn execute_queries(
     queries: Vec<QueryCommand>,
     cache: &CacheManager,
-) -> Result<Vec<FileGroupedResult>> {
+) -> Result<(Vec<FileGroupedResult>, usize, bool)> {
     if queries.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), 0, false));
     }
 
     // Sort queries by order field
@@ -298,6 +307,8 @@ pub async fn execute_queries(
 
     let mut merged_results: Vec<FileGroupedResult> = Vec::new();
     let mut seen_matches: HashSet<(String, usize, usize)> = HashSet::new();
+    let mut total_count: usize = 0;
+    let mut all_count_only = true;
 
     for query_cmd in sorted_queries {
         log::debug!("Executing query {}: {}", query_cmd.order, query_cmd.command);
@@ -305,6 +316,11 @@ pub async fn execute_queries(
         // Parse command
         let parsed = parse_command(&query_cmd.command)
             .with_context(|| format!("Failed to parse query command: {}", query_cmd.command))?;
+
+        // Track if this query has --count flag
+        if !parsed.count {
+            all_count_only = false;
+        }
 
         // Convert to QueryFilter
         let filter = parsed.to_query_filter()?;
@@ -316,10 +332,14 @@ pub async fn execute_queries(
         let response = engine.search_with_metadata(&parsed.pattern, filter)
             .with_context(|| format!("Failed to execute query: {}", query_cmd.command))?;
 
+        // Always accumulate total count from all queries
+        total_count += response.pagination.total;
+
         log::debug!(
-            "Query {} returned {} file groups (merge={})",
+            "Query {} returned {} file groups, {} total matches (merge={})",
             query_cmd.order,
             response.results.len(),
+            response.pagination.total,
             query_cmd.merge
         );
 
@@ -364,12 +384,14 @@ pub async fn execute_queries(
     }
 
     log::info!(
-        "Merged results: {} file groups, {} unique matches",
+        "Merged results: {} file groups, {} unique matches, {} total count (count_only={})",
         merged_results.len(),
-        seen_matches.len()
+        seen_matches.len(),
+        total_count,
+        all_count_only
     );
 
-    Ok(merged_results)
+    Ok((merged_results, total_count, all_count_only))
 }
 
 #[cfg(test)]
