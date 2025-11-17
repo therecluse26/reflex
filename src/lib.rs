@@ -29,6 +29,7 @@ pub mod ast_query;
 pub mod background_indexer;
 pub mod cache;
 pub mod cli;
+pub mod context;
 pub mod content_store;
 pub mod dependency;
 pub mod formatter;

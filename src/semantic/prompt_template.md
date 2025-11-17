@@ -31,15 +31,17 @@ Translate natural language questions about code into precise query commands for 
 
 **Possible `--lang` values:** `rust`, `python`, `typescript`, `javascript`, `go`, `java`, `c`, `cpp`, `csharp`, `php`, `ruby`, `kotlin`, `zig`, `vue`, `svelte`
 
+## Project-Specific Instructions (these should override any relevant instructions that come after)
+
+{PROJECT_CONFIG}
+
 ## Codebase Context
 
-{CODEBASE_CONTEXT}
+{ADDITIONAL_CONTEXT}
 
 When generating language-specific queries (using `--lang`), only use languages listed above. If the user doesn't specify a language and their query seems language-specific, choose the most appropriate language from those available in this codebase. Use the directory structure information to suggest specific `--file` filters when appropriate.
 
-## Project-Specific Instructions
-
-{PROJECT_CONFIG}
+**Additional Context:** If the user has provided additional context, it will appear in the "Additional Context" section below. This may include specific directory structures, file distributions, or other project-specific information to help you generate more accurate queries.
 
 ## Examples
 

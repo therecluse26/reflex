@@ -23,6 +23,7 @@ pub async fn ask_question(
     question: &str,
     cache: &CacheManager,
     provider_override: Option<String>,
+    additional_context: Option<String>,
 ) -> Result<schema::QueryResponse> {
     // Load config
     let mut config = config::load_config(cache.path())?;
@@ -55,7 +56,7 @@ pub async fn ask_question(
     log::info!("Using provider: {} (model: {})", provider.name(), provider.default_model());
 
     // Build prompt with language injection
-    let prompt = prompt::build_prompt(question, cache)?;
+    let prompt = prompt::build_prompt(question, cache, additional_context.as_deref())?;
 
     log::debug!("Generated prompt ({} chars)", prompt.len());
 

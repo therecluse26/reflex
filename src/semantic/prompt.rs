@@ -35,7 +35,11 @@ fn read_project_config(workspace_root: &std::path::Path) -> Option<String> {
 /// Build the complete prompt for the LLM
 ///
 /// Extracts comprehensive codebase context and injects it into the prompt template
-pub fn build_prompt(question: &str, cache: &CacheManager) -> Result<String> {
+pub fn build_prompt(
+    question: &str,
+    cache: &CacheManager,
+    additional_context: Option<&str>,
+) -> Result<String> {
     // Extract comprehensive codebase context
     let context = CodebaseContext::extract(cache)
         .unwrap_or_else(|e| {
@@ -67,10 +71,16 @@ pub fn build_prompt(question: &str, cache: &CacheManager) -> Result<String> {
             "No project-specific instructions provided.".to_string()
         });
 
+    // Format additional context
+    let additional_context_str = additional_context
+        .map(|ctx| format!("\n## Additional Context\n\n{}\n", ctx))
+        .unwrap_or_default();
+
     // Inject context and project config into template
     let prompt = PROMPT_TEMPLATE
         .replace("{CODEBASE_CONTEXT}", &context_str)
-        .replace("{PROJECT_CONFIG}", &project_config);
+        .replace("{PROJECT_CONFIG}", &project_config)
+        .replace("{ADDITIONAL_CONTEXT}", &additional_context_str);
 
     // Build final prompt with JSON schema
     Ok(format!(
@@ -106,7 +116,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let cache = CacheManager::new(temp_dir.path());
 
-        let prompt = build_prompt("find todos", &cache).unwrap();
+        let prompt = build_prompt("find todos", &cache, None).unwrap();
 
         assert!(prompt.contains("Response Format"));
         assert!(prompt.contains("find todos"));
@@ -118,9 +128,22 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let cache = CacheManager::new(temp_dir.path());
 
-        let prompt = build_prompt("test", &cache).unwrap();
+        let prompt = build_prompt("test", &cache, None).unwrap();
 
         // Should handle empty codebase gracefully
         assert!(prompt.contains("No files indexed") || prompt.contains("Languages:"));
+    }
+
+    #[test]
+    fn test_prompt_injects_additional_context() {
+        let temp_dir = TempDir::new().unwrap();
+        let cache = CacheManager::new(temp_dir.path());
+
+        let additional_context = "## Project Structure\nservices/\n  backend/\n  frontend/";
+        let prompt = build_prompt("test", &cache, Some(additional_context)).unwrap();
+
+        assert!(prompt.contains("Additional Context"));
+        assert!(prompt.contains("services/"));
+        assert!(prompt.contains("backend/"));
     }
 }
