@@ -42,578 +42,143 @@ Reflex uses **trigram-based indexing** to enable sub-100ms full-text search acro
 
 ## CLI Usage
 
-    # Build or update the local cache
-    rfx index
+**Indexing:**
+```bash
+rfx index                        # Build/update cache
+rfx index status                 # Check background symbol indexing
+rfx index compact                # Manually compact cache
+rfx watch                        # Auto-reindex on file changes
+```
 
-    # Check background symbol indexing status
-    rfx index status
+**Searching:**
+```bash
+# Full-text search (finds all occurrences)
+rfx query "extract_symbols"
 
-    # Manually compact cache (remove deleted files, reclaim space)
-    rfx index compact
-    rfx index compact --json         # JSON output
-    rfx index compact --json --pretty # Pretty JSON output
+# Symbol definitions only (--symbols finds DEFINITIONS, not usages)
+rfx query "extract_symbols" --symbols
 
-    # Note: Cache compaction also runs automatically every 24 hours in the background
+# Filter by language, file patterns
+rfx query "unwrap" --lang rust --glob "src/**/*.rs"
 
-    # Full-text search (default - finds all occurrences)
-    rfx query "extract_symbols"
-    → Finds function definition + all call sites (11 total)
+# JSON output for AI agents
+rfx query "format!" --json
+```
 
-    # Filter to symbol definitions only (uses runtime tree-sitter parsing)
-    # --symbols finds DEFINITIONS (where symbols are declared), not usages
-    # Includes all scopes: global, local, function parameters, etc.
-    rfx query "extract_symbols" --symbols
-    → Finds only the function definition (1 result)
+**AST Queries** (⚠️ SLOW - use --symbols in 95% of cases):
+```bash
+rfx query "(function_item) @fn" --ast --lang rust --glob "src/**/*.rs"
+```
 
-    rfx query "counter" --symbols
-    → Finds variable declarations (global `var counter` and local `int counter = 0`)
-    → Does NOT find usage sites like `counter++` or `return counter`
+**Dependency Analysis:**
+```bash
+rfx deps src/main.rs             # Show file dependencies
+rfx deps src/config.rs --reverse # Show what depends on this file
+rfx analyze --circular           # Find circular dependencies
+rfx analyze --hotspots           # Find most-imported files
+```
 
-    # Filter to specific symbol kind (find attribute/annotation definitions)
-    rfx query "test" --kind Attribute --lang rust
-    → Finds #[proc_macro_attribute] test attribute definitions in Rust
-    rfx query "test" --kind Attribute --lang java
-    → Finds @interface Test annotation definitions in Java
-    rfx query "deprecated" --kind Attribute --lang csharp
-    → Finds DeprecatedAttribute class definitions in C#
-
-    # Full-text search with language filter
-    rfx query "unwrap" --lang rust
-
-    # Export results as JSON (for AI agents)
-    rfx query "format!" --json
-
-    # Glob pattern filtering (include specific files/directories)
-    rfx query "TODO" --glob "src/**/*.rs"        # Search only Rust files in src/
-    rfx query "extract" --glob "**/*_test.rs"    # Search only test files
-
-    # Exclude pattern filtering (exclude files/directories)
-    rfx query "config" --exclude "target/**"     # Exclude build artifacts
-    rfx query "impl" --exclude "*.gen.rs"        # Exclude generated code
-
-    # Combine glob and exclude patterns
-    rfx query "fn main" --glob "src/**/*.rs" --exclude "src/generated/**"
-
-    # Paths-only mode (return unique file paths, not content)
-    rfx query "TODO" --paths                     # One path per line (plain text)
-    rfx query "extract" --paths --json           # JSON array of paths: ["file1.rs", "file2.rs"]
-    vim $(rfx query "TODO" --paths)              # Open all files with TODOs in vim
-
-    # Pagination (windowed results)
-    rfx query "extract" --limit 10 --offset 0    # First 10 results
-    rfx query "extract" --limit 10 --offset 10   # Next 10 results
-    rfx query "extract" --all                    # All results (no limit)
-
-    # Watch for file changes and auto-reindex
-    rfx watch                    # 15s debounce (default)
-    rfx watch --debounce 20000   # 20s debounce
-    rfx watch --quiet            # Suppress output
-
-    # Serve a local HTTP API (optional)
-    rfx serve --port 7878
-
-    # AST pattern matching (structure-aware search)
-    # ⚠️ WARNING: AST queries are SLOW (500ms-10s+) - use --symbols instead in 95% of cases!
-    # ALWAYS use --glob to limit scope and improve performance
-
-    # Find all Rust functions (scans all indexed .rs files)
-    rfx query "(function_item) @fn" --ast --lang rust --glob "src/**/*.rs"
-
-    # Find Python async function definitions
-    rfx query "(function_definition) @fn" --ast --lang python --glob "**/*.py"
-
-    # Find TypeScript class declarations in src/
-    rfx query "(class_declaration) @class" --ast --lang typescript --glob "src/**/*.ts"
-
-    # Find Go method declarations (limit to specific package)
-    rfx query "(method_declaration) @method" --ast --lang go --glob "internal/**/*.go"
+**Other:**
+```bash
+rfx serve --port 7878            # HTTP API server
+```
 
 ---
 
 ## AST Pattern Matching
 
-⚠️ **PERFORMANCE WARNING**: AST queries are **SLOW** (500ms-10s+) and scan the **ENTIRE codebase**. **In 95% of cases, use `--symbols` instead** (10-100x faster).
+⚠️ **PERFORMANCE WARNING**: AST queries are **SLOW** (500ms-10s+) and scan the **ENTIRE codebase**. **Use `--symbols` instead in 95% of cases** (10-100x faster).
 
-Reflex supports **structure-aware code search** using Tree-sitter S-expression queries via the `--ast` flag. This allows you to match specific code structures rather than just text patterns.
+**When to use** (RARE):
+- Need to match code structure, not just text (e.g., "all async functions with try/catch blocks")
+- `--symbols` search is insufficient
+- Very specific structural pattern that cannot be expressed as text
 
-### When to Use AST Queries (RARE)
+**Supported languages**: All tree-sitter languages (Rust, Python, Go, Java, C, C++, C#, PHP, Ruby, Kotlin, Zig, TypeScript, JavaScript)
 
-Use AST queries **ONLY when**:
-1. You need to match code structure, not just text (e.g., "all async functions with try/catch blocks")
-2. `--symbols` search is insufficient (e.g., need to match specific AST node types)
-3. You have a very specific structural pattern that cannot be expressed as text
+**Architecture**: Centralized grammar loader in `src/parsers/mod.rs` - adding a new language automatically enables AST queries.
 
-**DO NOT use AST queries** for simple symbol searches - use `--symbols` instead.
-
-### How It Works
-
-⚠️ **CRITICAL**: AST queries bypass trigram optimization and scan ALL files for the specified language:
-
-1. **Get all files**: Scan entire codebase for matching language extension
-2. **Filter by glob** (REQUIRED for performance): Reduce file set using --glob patterns
-3. **Parse files**: Use tree-sitter to parse all matching files
-4. **Execute query**: Run S-expression pattern on AST nodes
-5. **Return**: Matched code structures with context
-
-**Performance impact**: 500ms-10s+ depending on codebase size. **ALWAYS use `--glob` to limit scope**.
-
-### Supported Languages
-
-**All tree-sitter languages** support AST queries automatically:
-- Rust, Python, Go, Java, C, C++, C#
-- PHP, Ruby, Kotlin, Zig
-- TypeScript, JavaScript
-
-**Not supported**: Vue, Svelte (use line-based parsing, not tree-sitter)
-
-### Architecture: Centralized Grammar Loading
-
-AST support is **automatic** for all tree-sitter languages through a centralized grammar loader in `src/parsers/mod.rs`:
-
-```rust
-impl ParserFactory {
-    /// Single source of truth for tree-sitter grammars
-    /// Used by both symbol parsers AND AST query matching
-    pub fn get_language_grammar(language: Language) -> Result<tree_sitter::Language> {
-        match language {
-            Language::Rust => Ok(tree_sitter_rust::LANGUAGE.into()),
-            Language::Python => Ok(tree_sitter_python::LANGUAGE.into()),
-            // ... all other languages
-        }
-    }
-}
-```
-
-**Result**: Adding a new language to Reflex automatically enables AST queries. No separate maintenance required.
-
-### Examples
-
-**IMPORTANT**: Always use `--glob` to limit scope for better performance.
-
-**Rust: Find all functions in src/**
+**Example**:
 ```bash
 rfx query "(function_item) @fn" --ast --lang rust --glob "src/**/*.rs"
 ```
 
-**Python: Find all class definitions in specific directory**
-```bash
-rfx query "(class_declaration) @class" --ast --lang python --glob "app/**/*.py"
-```
-
-**Go: Find method declarations in specific package**
-```bash
-rfx query "(method_declaration) @method" --ast --lang go --glob "internal/**/*.go"
-```
-
-**TypeScript: Find interface declarations in src/**
-```bash
-rfx query "(interface_declaration) @interface" --ast --lang typescript --glob "src/**/*.ts"
-```
-
-**C: Find struct definitions in headers**
-```bash
-rfx query "(struct_specifier) @struct" --ast --lang c --glob "include/**/*.h"
-```
-
-### S-Expression Syntax
-
-Tree-sitter queries use S-expression patterns:
-
-- `(node_type)` - Match a node type
-- `(parent (child))` - Match nested structure
-- `@name` - Capture the match (required)
-- Field names: `name:`, `type:`, `body:`
-
-**Example**: Match async functions with specific name
-```
-(function_item
-  (async)
-  name: (identifier) @name) @function
-```
-
-### Performance
-
-⚠️ **AST queries are SLOW** (500ms-10s+) because they:
-- Bypass trigram optimization (no text pre-filtering)
-- Scan ALL files for the specified language
-- Parse every matching file with tree-sitter
-
-**Performance comparison:**
-| Query Type | Time (small codebase) | Time (Linux kernel - 62K files) |
-|------------|----------------------|----------------------------------|
-| **Full-text search** | 2-5ms | 124ms |
-| **--symbols search** | 3-10ms | 224ms (parses ~10 files) |
-| **--ast query (no glob)** | 500ms-2s | 5-10s+ (parses ALL files) |
-| **--ast query (with glob)** | 50-200ms | 500ms-2s (parses filtered files) |
-
-**ALWAYS use `--glob`** to limit scope and reduce parse time.
-
-### Use Cases (RARE - prefer --symbols in most cases)
-
-Use AST queries only for structural matching that cannot be done with `--symbols`:
-
-1. **Complex structural patterns**: Find async functions containing try/catch blocks
-2. **Nested structures**: Find classes with specific method signatures
-3. **AST node filtering**: Match specific tree-sitter node types not exposed via `--symbols`
-
-**For simple searches, use `--symbols` instead:**
-- ❌ AST: `rfx query "(function_item) @fn" --ast --lang rust --glob "src/**/*.rs"` (500ms)
-- ✅ Symbols: `rfx query "my_function" --symbols --lang rust` (5ms)
+**Performance**: 2-5ms (full-text) vs 3-10ms (--symbols) vs 500ms-10s+ (--ast). **ALWAYS use `--glob` with AST queries.**
 
 ---
 
-## Supported Languages & Frameworks
+## Supported Languages
 
-Reflex currently supports symbol extraction for the following languages and frameworks:
+**18 languages** with full symbol extraction support (functions, classes, variables, etc.):
 
-### Fully Supported (Tree-sitter parsers implemented)
+- **Systems**: Rust, C, C++, Zig
+- **Backend**: Python, Go, Java, C#, PHP, Ruby, Kotlin
+- **Frontend**: TypeScript, JavaScript, Vue, Svelte
+- **Swift**: Temporarily disabled (tree-sitter version incompatibility)
 
-| Language/Framework | Extensions | Symbol Extraction | Notes |
-|-------------------|------------|------------------|-------|
-| **Rust** | `.rs` | Functions, structs, enums, traits, impls, modules, methods, constants, local variables (let bindings), type aliases, macros (macro_rules!), static variables, attribute proc macros (#[proc_macro_attribute]) | Complete Rust support |
-| **Python** | `.py` | Functions, classes, methods, constants, local variables, global variables (non-uppercase), lambdas, decorators (@property, etc.) | Full Python support including async/await |
-| **TypeScript** | `.ts`, `.tsx`, `.mts`, `.cts` | Functions, classes, interfaces, types, enums, methods, local variables (const, let, var) | Full TypeScript + JSX support |
-| **JavaScript** | `.js`, `.jsx`, `.mjs`, `.cjs` | Functions, classes, constants, methods, local variables (const, let, var) | Includes React/JSX support via TSX grammar |
-| **Go** | `.go` | Functions, structs, interfaces, methods, constants, variables (global + local var/`:=`), packages | Full Go support |
-| **Java** | `.java` | Classes, interfaces, enums, methods, fields, local variables, constructors, annotation definitions (@interface) | Full Java support including generics and annotations |
-| **C** | `.c`, `.h` | Functions, structs, enums, unions, typedefs, variables (global + local), macros | Complete C support |
-| **C++** | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.C`, `.H` | Functions, classes, structs, namespaces, templates, methods, constructors, destructors, local variables, type aliases | Full C++ support including templates |
-| **C#** | `.cs` | Classes, interfaces, structs, enums, records, delegates, methods, properties, events, indexers (this[]), local variables, namespaces, attribute classes (Attribute suffix or base class) | Full C# support (C# 1-13) |
-| **PHP** | `.php` | Functions, classes, interfaces, traits, methods, properties, constants, local variables, namespaces, enums, attribute classes (#[Attribute]) | Full PHP support including PHP 8.0+ attributes |
-| **Ruby** | `.rb`, `.rake`, `.gemspec` | Classes, modules, methods, singleton methods, constants, local variables, instance variables (@var), class variables (@@var), attr_accessor/reader/writer, blocks | Full Ruby support including Rails patterns |
-| **Kotlin** | `.kt`, `.kts` | Classes, objects, interfaces, functions, properties, local variables (val/var), data classes, sealed classes, annotation classes | Full Kotlin support including Android development |
-| **Zig** | `.zig` | Functions, structs, enums, constants, variables (global + local var/const), tests, error sets | Full Zig support |
-| **~~Swift~~** | `.swift` | ~~Classes, structs, enums, protocols, functions, extensions, properties, actors~~ | **Temporarily disabled** - requires tree-sitter 0.23 (Reflex uses 0.24) |
-| **Vue** | `.vue` | Functions, constants, local variables (const, let, var), methods from `<script>` blocks | Supports both Options API and Composition API |
-| **Svelte** | `.svelte` | Functions, constants, local variables (const, let, var), reactive declarations (`$:`), module context | Full Svelte component support |
+**Symbol extraction**: Functions, classes, methods, variables (global + local), interfaces, traits, enums, attributes/annotations, and more.
 
-### React/JSX Support Details
-- **React Components**: Function and class components automatically detected
-- **Hooks**: Custom hooks extracted as functions (e.g., `useCounter`)
-- **TypeScript + JSX**: Full support for `.tsx` files with type annotations
-- **Interfaces & Types**: Props interfaces and type definitions extracted
+**Special features**:
+- **React/JSX**: Components, hooks, TypeScript support
+- **Attributes/Annotations**: `--kind Attribute` finds annotation definitions (Rust proc macros, Java @interface, Kotlin annotation class, PHP #[Attribute], C# Attribute classes)
 
-### Vue Support Details
-- **Script Blocks**: Extracts symbols from all `<script>` sections
-- **Composition API**: Full support for `<script setup>` syntax
-- **TypeScript**: Supports `<script lang="ts">` and `<script setup lang="ts">`
-- **Parsing Method**: Line-based extraction (tree-sitter-vue incompatible with tree-sitter 0.24+)
+**Coverage**: 90%+ of all codebases across web, mobile, systems, enterprise, and AI/ML development.
 
-### Svelte Support Details
-- **Component Scripts**: Extracts from both regular and `context="module"` scripts
-- **Reactive Declarations**: Tracks `$:` reactive statements
-- **TypeScript**: Supports `<script lang="ts">`
-- **Parsing Method**: Line-based extraction (tree-sitter-svelte incompatible with tree-sitter 0.24+)
-
-### PHP Support Details
-- **Functions**: Global function definitions
-- **Classes**: Regular, abstract, and final classes
-- **Interfaces**: Interface declarations
-- **Traits**: PHP trait definitions and usage
-- **Methods**: With class/trait/interface scope tracking
-- **Properties**: Public, protected, private visibility
-- **Constants**: Class constants and global constants
-- **Namespaces**: Full namespace support
-- **Enums**: PHP 8.1+ enum declarations
-- **Attributes**: PHP 8.0+ attribute class definitions (classes decorated with `#[Attribute]`)
-
-### Attribute/Annotation Support Details
-Reflex supports finding attribute, annotation, and decorator definitions across multiple languages using the `--kind Attribute` filter:
-
-- **Rust**: Attribute proc macros (functions with `#[proc_macro_attribute]`)
-- **Java**: `@interface` annotation definitions (e.g., `@interface Test { ... }`)
-- **Kotlin**: `annotation class` definitions (e.g., `annotation class Entity`)
-- **PHP**: PHP 8.0+ attribute classes (classes with `#[Attribute]` decorator)
-- **C#**: Attribute classes (classes ending with "Attribute" suffix or inheriting from System.Attribute)
-
-**Example queries:**
-```bash
-# Find all test attribute proc macros in Rust
-rfx query "test" --kind Attribute --lang rust
-
-# Find all test annotations in Java
-rfx query "test" --kind Attribute --lang java
-
-# Find all composable annotations in Kotlin (Jetpack Compose)
-rfx query "composable" --kind Attribute --lang kotlin
-
-# Find all route attributes in PHP
-rfx query "route" --kind Attribute --lang php
-
-# Find all validation attributes in C#
-rfx query "validation" --kind Attribute --lang csharp
-```
-
-**Note**: This finds attribute/annotation **definitions**, not their usage sites. For usage, use full-text search without `--kind`.
-
-**Coverage**: Reflex supports **90%+ of all codebases** across web, mobile, systems, enterprise, and AI/ML development (18 languages: Rust, Python, TypeScript, JavaScript, Go, Java, C, C++, C#, PHP, Ruby, Kotlin, Zig, Vue, Svelte, plus experimental Swift support once tree-sitter compatibility is resolved).
-
-**Note on Swift**: Swift support is temporarily disabled due to tree-sitter version incompatibility. The tree-sitter-swift grammar requires tree-sitter 0.23, while Reflex uses tree-sitter 0.24 for better performance and compatibility with other languages. Swift support will be restored when the grammar is updated to 0.24+.
-
-**Note**: Full-text trigram search works for **all file types** regardless of parser support. Symbol filtering (`symbol:` queries) requires a language parser.
+**Note**: Full-text trigram search works for **all file types** regardless of parser support.
 
 ---
 
 ## Dependency/Import Extraction
 
-Reflex includes **experimental support for dependency extraction** across multiple languages. This feature analyzes import statements to understand codebase structure, but operates under strict design constraints to ensure accuracy and performance.
+**Experimental feature** for analyzing import statements to understand codebase structure.
 
-### Static-Only Import Resolution
+### Key Design Principle: Static-Only Imports
 
 **IMPORTANT**: Reflex **intentionally** extracts **only static imports** (string literals) and filters out dynamic imports.
 
-This is **not a limitation** - it's a deliberate design decision enforced by tree-sitter query patterns:
+**Why?**
+- **Deterministic**: Same codebase → same dependency graph
+- **Fast**: No runtime code evaluation required
+- **Accurate**: Avoids false positives from computed imports
 
-```rust
-// Python: Only matches static import statements with dotted_name nodes
-(import_statement
-    name: (dotted_name) @import_path)
-
-// TypeScript/JavaScript: Only matches static string literal nodes
-(import_statement
-    source: (string) @import_path)
-
-// Ruby: Only matches static string or symbol nodes
-(call
-    method: (identifier) @method_name
-    arguments: (argument_list
-        [(string (string_content) @import_path)
-         (simple_symbol) @import_path]))
-
-// PHP: Only matches static string literal nodes
-(require_expression
-    (string) @require_path)
-
-// C: Only matches static string_literal or system_lib_string nodes
-(preproc_include
-    path: (string_literal) @include_path)
-```
-
-**Why static-only?**
-- **Deterministic results**: Same codebase → same dependency graph
-- **Performance**: No runtime code evaluation or complex pattern matching required
-- **Accuracy**: Avoids false positives from computed imports that may never execute
-- **Maintainability**: Simple tree-sitter queries are easy to understand and test
-
-### What Gets Filtered Out
-
-Dynamic imports are automatically filtered because they use different AST node types:
-
-**Python**
+**What gets captured**:
 ```python
-# ✅ Captured (static imports)
-import os
-from json import loads
-
-# ❌ Filtered (dynamic imports - use identifier/call_expression nodes, not dotted_name)
-module = importlib.import_module("some_module")
-pkg = __import__("package")
-exec("import dynamic")
+import os                    # ✅ Static import
+from json import loads       # ✅ Static import
 ```
 
-**TypeScript/JavaScript**
-```typescript
-// ✅ Captured (static imports)
-import { Button } from './Button';
-const fs = require('fs');
-
-// ❌ Filtered (dynamic imports - use template_string or identifier nodes, not string)
-import(moduleName);
-import(`./templates/${template}`);
-require(variable);
-require(`${CONFIG_PATH}/settings.js`);
+**What gets filtered**:
+```python
+importlib.import_module(var) # ❌ Dynamic import (variable)
+import(f"./templates/{name}") # ❌ Template literal
 ```
 
-**Ruby**
-```ruby
-# ✅ Captured (static requires)
-require 'json'
-require_relative '../models/user'
+### Classification
 
-# ❌ Filtered (dynamic requires - use identifier or expression nodes, not string/symbol)
-require variable
-require CONSTANT
-require File.join('path', 'to', 'file')
-require_relative File.dirname(__FILE__) + '/dynamic'
+Imports are classified as:
+1. **Internal**: Project code (relative paths, tsconfig aliases)
+2. **External**: Third-party packages
+3. **Stdlib**: Standard library
+
+### Commands
+
+```bash
+rfx deps src/main.rs            # Show file dependencies
+rfx deps src/config.rs --reverse # What depends on this file
+rfx analyze --circular          # Find circular dependencies
+rfx analyze --hotspots          # Find most-imported files
+rfx analyze --unused            # Find orphaned files
 ```
 
-**PHP**
-```php
-// ✅ Captured (static use/require)
-use App\Models\User;
-require 'config.php';
+### Use Cases
 
-// ❌ Filtered (dynamic requires - use identifier or binary_expression nodes, not string)
-require $variable;
-require CONSTANT . '/file.php';
-require_once $path;
-```
-
-**C**
-```c
-// ✅ Captured (static includes)
-#include <stdio.h>
-#include "config.h"
-
-// ❌ Filtered (macro-based includes - use identifier nodes, not string_literal)
-#define HEADER_NAME "dynamic.h"
-#include HEADER_NAME
-#include STRINGIFY(runtime_header.h)
-```
-
-### Import Classification
-
-Reflex classifies imports into three categories:
-
-1. **Internal**: Project code (relative paths, quoted C includes, tsconfig aliases)
-2. **External**: Third-party packages (npm modules, gems, composer packages)
-3. **Stdlib**: Standard library (Node.js built-ins, Python stdlib, C stdlib, etc.)
-
-### Monorepo Support
-
-Reflex supports monorepo structures for languages with multi-project config files:
-
-- **TypeScript/JavaScript**: Multiple `tsconfig.json` files (path aliases resolved per-project)
-- **Go**: Multiple `go.mod` files (module names extracted from each file)
-- **Java**: Multiple `pom.xml` or `build.gradle` files (group IDs extracted)
-- **PHP**: Multiple `composer.json` files (PSR-4 autoloading per-project)
-- **Python**: Multiple `pyproject.toml`, `setup.py`, or `setup.cfg` files (package names extracted)
-- **Ruby**: Multiple `.gemspec` files (gem names extracted, hyphen/underscore variants handled)
-- **Rust**: Multiple `Cargo.toml` files (crate names extracted)
-- **C#**: Multiple `.csproj` files (assembly names extracted)
-- **Kotlin**: Multiple `build.gradle.kts` or `pom.xml` files (group/artifact IDs extracted)
-
-### Limitations
-
-**Partial Accuracy** (by design):
-- **C/C++**: Build system integration required for full accuracy (include paths from CMakeLists.txt, Makefiles)
-- **Dynamic imports**: Not supported (filtered by tree-sitter queries)
-- **Computed paths**: Template literals, string concatenation, variable-based imports are filtered
-- **Runtime-only imports**: Conditional requires, lazy loading, plugin systems are filtered
-
-**Not Implemented** (low priority, high complexity):
-- **PHP classmap autoloading**: Deprecated in modern PHP, PSR-4 preferred
-- **Python namespace packages**: Very rare pattern (`__init__.py`-less packages)
-- **C/C++ complex includes**: Macro expansion, conditional compilation
-
-### Use Case
-
-Dependency extraction is designed for **codebase structure analysis**, not exhaustive accuracy:
-
+Designed for **codebase structure analysis**:
 - Understanding module boundaries
-- Identifying internal vs external dependencies
-- Analyzing import patterns and coupling
-- Supporting limited call graph queries
+- Identifying coupling hotspots
+- Finding circular dependencies
+- Architecture review
 
-**Not suitable for**:
-- Build system replacement
-- Package manager functionality
-- Runtime dependency resolution
-- Dynamic code analysis
-
-### Dependency Analysis Commands
-
-Reflex provides two commands for analyzing dependencies:
-
-#### `rfx deps` - Single File Analysis
-
-Show dependencies for a specific file:
-
-```bash
-# Show dependencies of a file (depth 1, default)
-rfx deps src/main.rs
-
-# Show what depends on this file (reverse lookup)
-rfx deps src/config.rs --reverse
-
-# Show transitive dependencies (depth 3)
-rfx deps src/api.rs --depth 3
-
-# Output as JSON
-rfx deps src/main.rs --json
-
-# Different output formats
-rfx deps src/main.rs --format tree     # ASCII tree (default)
-rfx deps src/main.rs --format table    # Table format
-rfx deps src/main.rs --format dot      # Graphviz DOT format
-```
-
-**Example output (tree format):**
-```
-src/main.rs
-├── src/config.rs (internal)
-│   └── src/env.rs (internal)
-├── src/api.rs (internal)
-│   ├── reqwest (external)
-│   └── src/models/user.rs (internal)
-└── std::collections (stdlib)
-```
-
-#### `rfx analyze` - Codebase-Wide Analysis
-
-Analyze dependency patterns across the entire codebase:
-
-```bash
-# Summary report (default - shows all analysis types)
-rfx analyze
-
-# Find circular dependencies
-rfx analyze --circular
-
-# Find most-imported files (hotspots)
-rfx analyze --hotspots
-rfx analyze --hotspots --min-dependents 5  # Filter by minimum import count
-
-# Find unused/orphaned files
-rfx analyze --unused
-
-# Find disconnected components (islands)
-rfx analyze --islands
-rfx analyze --islands --min-island-size 3
-
-# Combine with filters
-rfx analyze --circular --glob "src/**/*.rs"     # Only analyze Rust files
-rfx analyze --hotspots --exclude "target/**"    # Exclude build artifacts
-
-# Output as JSON
-rfx analyze --circular --json
-
-# Just show count (no detailed results)
-rfx analyze --hotspots --count
-```
-
-**Example output (summary report):**
-```
-Dependency Analysis Summary
-===========================
-
-Total Files: 1,234
-Total Dependencies: 5,678
-Average Dependencies per File: 4.6
-
-Circular Dependencies: 2 cycles found
-  → Use 'rfx analyze --circular' for details
-
-Hotspots: 156 files with 3+ dependents
-  Top 5:
-    - src/config.rs (47 dependents) ⚠️
-    - src/utils.rs (33 dependents)
-    - src/types.rs (28 dependents)
-  → Use 'rfx analyze --hotspots' for full list
-
-Unused Files: 5 found
-  → Use 'rfx analyze --unused' for details
-
-Islands: 1 disconnected component (3 files)
-  → Use 'rfx analyze --islands' for details
-```
-
-**Use cases:**
-- **Refactoring**: Understand impact before changes (`rfx deps --reverse`)
-- **Architecture review**: Find circular dependencies (`rfx analyze --circular`)
-- **Code cleanup**: Identify unused files (`rfx analyze --unused`)
-- **Hotspot detection**: Find over-imported files (`rfx analyze --hotspots`)
-- **Monorepo analysis**: Understand component boundaries (`rfx analyze --islands`)
+**Not suitable for**: Build systems, package management, runtime resolution
 
 ---
 
@@ -713,39 +278,6 @@ Result: **Simpler, faster, smaller cache, more flexible symbol filtering**
 
 ---
 
-## MVP Goals
-1. **<100ms per query** on 10k+ files (trigram index reduces search space 100-1000x) ✅
-2. **Complete coverage**: Find every occurrence of patterns, not just definitions ✅
-3. **Deterministic results**: Same query → same results (sorted by file:line) ✅
-4. **Fully offline**: No daemon; per-query invocation with memory-mapped cache ✅
-5. **Clean JSON API**: Structured output for AI agents and editor integrations ✅
-6. **Symbol filtering**: Runtime tree-sitter parsing on candidate files (2-224ms overhead) ✅
-7. **Regex support**: Extract trigrams from regex for fast pattern matching ✅
-8. **Incremental indexing**: Only reindex changed files (blake3 hashing) ✅
-
-### Performance Benchmarks (Linux Kernel - 62K files)
-- **Full-text search**: 124ms
-- **Regex search**: 156ms
-- **Symbol search**: 224ms (runtime parsing of ~3 candidate C files)
-- **Reflex codebase** (small): 2-3ms for all query types
-
-**Result**: Reflex is the **fastest structure-aware local code search tool** available.
-
----
-
-## Future Work
-- ✅ **File watcher** (`rfx watch`): Auto-reindex on file changes with configurable debouncing - **COMPLETED (2025-11-03)**
-- ✅ **MCP server** (`rfx mcp`): Model Context Protocol server for AI agents like Claude Code - **COMPLETED (2025-11-03)**
-- ✅ **AST pattern matching** (`--ast` flag): Structure-aware code search using Tree-sitter S-expressions - **COMPLETED (2025-11-03)**
-- ✅ **HTTP server** (`rfx serve`): REST API for programmatic access - **COMPLETED (2025-11-03)**
-- Interactive mode for exploratory workflows
-- Semantic query building (natural language → Reflex commands via tiny local LLMs)
-- Graph queries (imports/exports, limited call graph)
-- Branch-aware context diffing and filters (e.g., `--since`, `--branch`)
-- Binary protocol for ultra-low-latency local queries
-
----
-
 ## Repository Conventions
 - Source: `src/`
 - Core library: `src/lib.rs`
@@ -757,85 +289,19 @@ Result: **Simpler, faster, smaller cache, more flexible symbol filtering**
 
 ---
 
-## Project Configuration with REFLEX.md
+## Project Configuration
 
-Reflex supports per-project configuration through an optional `REFLEX.md` file at the workspace root. This file allows you to customize the behavior of `rfx ask` (semantic query generation) by providing project-specific context that gets injected into the LLM prompt.
+**Optional**: Create a `REFLEX.md` file at workspace root to customize `rfx ask` (semantic query) behavior with project-specific context.
 
-### Location
+**Use cases**:
+- Document unconventional directory structures
+- Provide project-specific search patterns
+- Add domain-specific terminology
+- Explain monorepo organization
 
-Place `REFLEX.md` at the same level as `.reflex/` (workspace root):
+**Location**: Place at same level as `.reflex/` directory.
 
-```
-my-project/
-├── .reflex/          # Cache directory
-├── REFLEX.md         # Project configuration (optional)
-├── src/
-├── tests/
-└── Cargo.toml
-```
-
-### Purpose
-
-The contents of `REFLEX.md` are automatically injected into the `rfx ask` prompt, allowing you to:
-
-- **Document unconventional directory structures**: Explain non-standard organization
-- **Provide project-specific search patterns**: Guide the LLM to find code in your unique architecture
-- **Add domain-specific context**: Help the AI understand specialized terminology or patterns
-- **Override default search behaviors**: Customize how queries are generated for your codebase
-- **Explain monorepo organization**: Document multi-project structures and naming conventions
-
-### Example REFLEX.md
-
-```markdown
-# Project-Specific Search Instructions
-
-## Directory Structure
-
-This project uses an unconventional structure:
-- `core/` - Core business logic (not `src/`)
-- `adapters/` - External integrations
-- `domain/` - Domain models and entities
-- `infra/` - Infrastructure code (databases, caching, etc.)
-
-## Search Patterns
-
-When searching for:
-- **Business logic**: Use `--file core/` or `--glob "core/**/*.rs"`
-- **API endpoints**: Look in `adapters/http/routes/`
-- **Database queries**: Check `infra/db/queries/`
-- **Domain models**: Search `domain/entities/` and `domain/value_objects/`
-
-## Naming Conventions
-
-- All service files end with `_service.rs`
-- Repository files end with `_repo.rs`
-- Use `--contains` when searching for services as they may have prefixes
-
-## Framework Notes
-
-We use a custom hexagonal architecture. Controllers are in `adapters/`,
-use cases in `core/use_cases/`, and domain entities in `domain/entities/`.
-```
-
-### When REFLEX.md is Used
-
-The `REFLEX.md` contents are loaded and injected into the LLM prompt whenever you run:
-
-```bash
-rfx ask "find all user authentication code"
-```
-
-The LLM will see your project-specific instructions and generate more accurate queries based on your architecture.
-
-### Git Tracking
-
-**Recommended**: Commit `REFLEX.md` to version control so the entire team benefits from consistent query generation.
-
-**Alternative**: Add to `.gitignore` for per-developer customization (less common).
-
-### Fallback Behavior
-
-If `REFLEX.md` doesn't exist, Reflex will use default query generation based only on the automatically-extracted codebase context (languages, directory structure, file counts).
+**Git tracking**: Recommended to commit for team-wide consistency.
 
 ---
 
@@ -972,109 +438,6 @@ Reflex favors local autonomy, speed, and clarity.
 
 ## Release Management
 
-Reflex follows **semantic versioning** (SemVer) with a simple manual release workflow powered by cargo-dist.
-
-### Semantic Versioning
-
-Version format: `MAJOR.MINOR.PATCH` (e.g., `0.2.7`)
-
-- **MAJOR**: Breaking changes (incompatible API changes)
-- **MINOR**: New features (backward-compatible functionality)
-- **PATCH**: Bug fixes (backward-compatible bug fixes)
-
-**Examples:**
-- `0.2.6 → 0.2.7`: Bug fix (PATCH bump)
-- `0.2.7 → 0.3.0`: New feature like `--timeout` flag (MINOR bump)
-- `0.3.0 → 1.0.0`: Breaking change or stable release (MAJOR bump)
-
-### Creating a Release
-
-**Simple 3-step process:**
-
-```bash
-# 1. Update version in Cargo.toml
-vim Cargo.toml  # Change version = "0.2.6" to "0.2.7"
-
-# 2. Commit and push
-git add Cargo.toml
-git commit -m "chore: bump version to 0.2.7"
-git push origin main
-
-# 3. Create and push tag
-git tag v0.2.7
-git push origin v0.2.7
-```
-
-**That's it!** When you push the tag, GitHub Actions automatically:
-- Builds binaries for all platforms (Linux, macOS, Windows, ARM, x86_64)
-- Extracts raw executables from cargo-dist archives
-- Creates a GitHub Release with:
-  - Raw binaries (e.g., `rfx-x86_64-unknown-linux-gnu`, `rfx-x86_64-pc-windows-msvc.exe`)
-  - Shell and PowerShell installer scripts
-  - Auto-generated release notes
-
-### What Gets Released
-
-The GitHub Release will contain:
-
-**Binaries (raw executables, no archives):**
-- `rfx-aarch64-apple-darwin` - macOS ARM (Apple Silicon)
-- `rfx-aarch64-unknown-linux-gnu` - Linux ARM64
-- `rfx-x86_64-apple-darwin` - macOS Intel
-- `rfx-x86_64-unknown-linux-gnu` - Linux x64 (glibc)
-- `rfx-x86_64-unknown-linux-musl` - Linux x64 (static, no libc)
-- `rfx-x86_64-pc-windows-msvc.exe` - Windows x64
-
-**Installers:**
-- `reflex-installer.sh` - Shell install script (`curl | sh`)
-- `reflex-installer.ps1` - PowerShell install script
-
-### Workflow Configuration
-
-Releases are configured in:
-- **`dist-workspace.toml`** - cargo-dist configuration (platforms, installers)
-- **`.github/workflows/release.yml`** - GitHub Actions workflow (builds binaries, extracts archives)
-
-**Key settings:**
-```toml
-# dist-workspace.toml
-[dist]
-targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu",
-           "x86_64-apple-darwin", "x86_64-unknown-linux-gnu",
-           "x86_64-unknown-linux-musl", "x86_64-pc-windows-msvc"]
-installers = ["shell", "powershell"]
-auto-includes = false  # Don't bundle README/CHANGELOG in archives
-allow-dirty = ["ci"]   # Allow custom workflow modifications
-```
-
-### CHANGELOG.md Format
-
-```markdown
-# Changelog
-
-All notable changes to Reflex will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/),
-and this project adheres to [Semantic Versioning](https://semver.org/).
-
-## [Unreleased]
-
-## [1.1.0] - 2025-11-03
-
-### Added
-- Query timeout support with `--timeout` flag
-- HTTP API timeout parameter
-
-### Fixed
-- Handle empty files without panicking
-
-## [1.0.0] - 2025-11-01
-
-### Added
-- Initial release
-- Trigram-based full-text search
-- Symbol-aware filtering
-- Multi-language support
-```
+See [RELEASE.md](./RELEASE.md) for full release process, semantic versioning, and changelog format.
 
 ---
