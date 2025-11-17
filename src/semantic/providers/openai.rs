@@ -26,25 +26,36 @@ impl OpenAiProvider {
 #[async_trait]
 impl LlmProvider for OpenAiProvider {
     async fn complete(&self, prompt: &str) -> Result<String> {
+        // GPT-5 models require max_completion_tokens instead of max_tokens
+        let is_gpt5 = self.model.starts_with("gpt-5");
+
+        let mut request_body = json!({
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "temperature": 0.1,
+            "response_format": {
+                "type": "json_object"
+            }
+        });
+
+        // Add the appropriate token limit parameter
+        if is_gpt5 {
+            request_body["max_completion_tokens"] = json!(500);
+        } else {
+            request_body["max_tokens"] = json!(500);
+        }
+
         let response = self
             .client
             .post("https://api.openai.com/v1/chat/completions")
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
-            .json(&json!({
-                "model": self.model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                "temperature": 0.1,
-                "max_tokens": 500,
-                "response_format": {
-                    "type": "json_object"
-                }
-            }))
+            .json(&request_body)
             .send()
             .await
             .context("Failed to send request to OpenAI API")?;

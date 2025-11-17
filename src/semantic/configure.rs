@@ -19,17 +19,35 @@ use std::io::{self, Stdout};
 const PROVIDERS: &[&str] = &["openai", "anthropic", "gemini", "groq"];
 
 /// Available models per provider
-const OPENAI_MODELS: &[&str] = &["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"];
-const ANTHROPIC_MODELS: &[&str] = &[
-    "claude-3-5-sonnet-20241022",
-    "claude-3-5-haiku-20241022",
-    "claude-3-opus-20240229",
+const OPENAI_MODELS: &[&str] = &[
+    "gpt-5.1",
+    "gpt-5.1-mini",
+    "gpt-5.1-nano",
+    "gpt-5",
+    "gpt-5-mini",
+    "gpt-5-nano",
 ];
-const GEMINI_MODELS: &[&str] = &["gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.0-pro"];
+const ANTHROPIC_MODELS: &[&str] = &[
+    "claude-sonnet-4-5",
+    "claude-haiku-4-5",
+    "claude-sonnet-4",
+];
+const GEMINI_MODELS: &[&str] = &[
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+];
 const GROQ_MODELS: &[&str] = &[
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
     "llama-3.3-70b-versatile",
-    "llama-3.1-70b-versatile",
+    "qwen/qwen3-32b",
+    "qwen-2.5-coder-32b",
+    "deepseek-r1-distill-llama-70b",
+    "deepseek-r1-distill-qwen-32b",
+    "gemma2-9b-it",
     "mixtral-8x7b-32768",
+    "moonshotai/kimi-k2-instruct-0905",
 ];
 
 /// Wizard screen states
