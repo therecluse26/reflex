@@ -160,7 +160,7 @@ pub fn parse_command(command: &str) -> Result<ParsedCommand> {
                 i += 1;
             }
             unknown => {
-                log::warn!("Ignoring unknown flag: {}", unknown);
+                log::debug!("Ignoring unknown flag: {}", unknown);
                 i += 1;
             }
         }

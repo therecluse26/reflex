@@ -44,30 +44,43 @@ impl Default for SemanticConfig {
     }
 }
 
-/// Load semantic config from .reflex/config.toml
+/// Load semantic config from ~/.reflex/config.toml
 ///
+/// Semantic configuration is ALWAYS user-level (not project-level).
 /// Falls back to defaults if file doesn't exist or [semantic] section is missing.
-pub fn load_config(cache_dir: &Path) -> Result<SemanticConfig> {
-    let config_path = cache_dir.join("config.toml");
+///
+/// Note: The cache_dir parameter is ignored - kept for API compatibility but will be removed in future.
+pub fn load_config(_cache_dir: &Path) -> Result<SemanticConfig> {
+    // Semantic config is always in user home directory, not project directory
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => {
+            log::debug!("Could not determine home directory, using defaults");
+            return Ok(SemanticConfig::default());
+        }
+    };
+
+    let config_path = home.join(".reflex").join("config.toml");
 
     if !config_path.exists() {
-        log::debug!("No config.toml found, using default semantic config");
+        log::debug!("No ~/.reflex/config.toml found, using default semantic config");
         return Ok(SemanticConfig::default());
     }
 
     let config_str = std::fs::read_to_string(&config_path)
-        .context("Failed to read config.toml")?;
+        .context("Failed to read ~/.reflex/config.toml")?;
 
     let toml_value: toml::Value = toml::from_str(&config_str)
-        .context("Failed to parse config.toml")?;
+        .context("Failed to parse ~/.reflex/config.toml")?;
 
     // Extract [semantic] section
     if let Some(semantic_table) = toml_value.get("semantic") {
         let config: SemanticConfig = semantic_table.clone().try_into()
-            .context("Failed to parse [semantic] section")?;
+            .context("Failed to parse [semantic] section in ~/.reflex/config.toml")?;
+        log::debug!("Loaded semantic config from ~/.reflex/config.toml: provider={}", config.provider);
         Ok(config)
     } else {
-        log::debug!("No [semantic] section in config.toml, using defaults");
+        log::debug!("No [semantic] section in ~/.reflex/config.toml, using defaults");
         Ok(SemanticConfig::default())
     }
 }

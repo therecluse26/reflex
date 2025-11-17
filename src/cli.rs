@@ -4,6 +4,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::time::Instant;
+use indicatif::{ProgressBar, ProgressStyle};
+use owo_colors::OwoColorize;
 
 use crate::cache::CacheManager;
 use crate::indexer::Indexer;
@@ -2242,11 +2244,23 @@ fn handle_ask(
     let runtime = tokio::runtime::Runtime::new()
         .context("Failed to create async runtime")?;
 
+    // Create spinner for LLM query generation
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
+    );
+    spinner.set_message("Generating queries...".to_string());
+    spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+
     // Call the async function using the runtime
     let response = runtime.block_on(async {
         crate::semantic::ask_question(&question, &cache, provider_override).await
     }).context("Failed to generate semantic queries")?;
 
+    spinner.finish_and_clear();
     log::info!("LLM generated {} queries", response.queries.len());
 
     // Output in JSON format if requested
@@ -2260,61 +2274,63 @@ fn handle_ask(
         return Ok(());
     }
 
-    // Display generated queries
-    println!("\nGenerated Queries:");
-    println!("==================");
+    // Display generated queries with color
+    println!("\n{}", "Generated Queries:".bold().cyan());
+    println!("{}", "==================".cyan());
     for (idx, query_cmd) in response.queries.iter().enumerate() {
         println!(
-            "{}. [order: {}, merge: {}] rfx {}",
-            idx + 1,
-            query_cmd.order,
-            query_cmd.merge,
-            query_cmd.command
+            "{}. {} {} {}",
+            (idx + 1).to_string().bright_white().bold(),
+            format!("[order: {}, merge: {}]", query_cmd.order, query_cmd.merge).dimmed(),
+            "rfx".bright_green().bold(),
+            query_cmd.command.bright_white()
         );
     }
     println!();
 
-    // If not auto-execute, ask for confirmation
-    if !auto_execute {
-        use std::io::{self, Write};
-
-        print!("Execute these queries? [y/N]: ");
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-
-        let input = input.trim().to_lowercase();
-        if input != "y" && input != "yes" {
-            println!("Queries not executed.");
-            return Ok(());
-        }
-    }
-
-    // Execute queries
-    println!("\nExecuting queries...");
-    println!("====================\n");
+    // Execute queries with spinner
+    let exec_spinner = ProgressBar::new_spinner();
+    exec_spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} {msg}")
+            .unwrap()
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
+    );
+    exec_spinner.set_message("Executing queries...".to_string());
+    exec_spinner.enable_steady_tick(std::time::Duration::from_millis(80));
 
     let (results, total_count, count_only) = runtime.block_on(async {
         crate::semantic::execute_queries(response.queries, &cache).await
     }).context("Failed to execute queries")?;
 
-    // Display results
+    exec_spinner.finish_and_clear();
+
+    // Display results with color
+    println!();
     if count_only {
         // Count-only mode: just show the total count (matching direct CLI behavior)
-        println!("Found {} results", total_count);
+        println!("{} {}", "Found".bright_green().bold(), format!("{} results", total_count).bright_white().bold());
     } else if results.is_empty() {
-        println!("No results found.");
+        println!("{}", "No results found.".yellow());
     } else {
-        println!("Found {} total results across {} files:\n", total_count, results.len());
+        println!(
+            "{} {} {} {} {}",
+            "Found".bright_green().bold(),
+            total_count.to_string().bright_white().bold(),
+            "total results across".dimmed(),
+            results.len().to_string().bright_white().bold(),
+            "files:".dimmed()
+        );
+        println!();
 
         for file_group in &results {
-            println!("{}:", file_group.path);
+            println!("{}:", file_group.path.bright_cyan().bold());
             for match_result in &file_group.matches {
                 println!(
-                    "  Line {}-{}: {}",
-                    match_result.span.start_line,
-                    match_result.span.end_line,
+                    "  {} {}-{}: {}",
+                    "Line".dimmed(),
+                    match_result.span.start_line.to_string().bright_yellow(),
+                    match_result.span.end_line.to_string().bright_yellow(),
                     match_result.preview.lines().next().unwrap_or("")
                 );
             }

@@ -42,6 +42,32 @@ enum WizardScreen {
     Result { success: bool, message: String },
 }
 
+/// Load existing API key for a provider from ~/.reflex/config.toml
+fn load_existing_api_key(provider: &str) -> Option<String> {
+    match crate::semantic::config::get_api_key(provider) {
+        Ok(key) => {
+            log::debug!("Found existing API key for {}", provider);
+            Some(key)
+        }
+        Err(_) => {
+            log::debug!("No existing API key found for {}", provider);
+            None
+        }
+    }
+}
+
+/// Mask API key for display (show first 7 and last 4 characters)
+fn mask_api_key(key: &str) -> String {
+    if key.len() <= 11 {
+        // Too short to mask meaningfully
+        return "*".repeat(key.len());
+    }
+
+    let start = &key[..7];
+    let end = &key[key.len() - 4..];
+    format!("{}...{}", start, end)
+}
+
 /// Main configuration wizard state
 pub struct ConfigWizard {
     screen: WizardScreen,
@@ -50,6 +76,7 @@ pub struct ConfigWizard {
     api_key_cursor: usize,
     selected_model_idx: usize,
     error_message: Option<String>,
+    existing_api_key: Option<String>,
 }
 
 impl ConfigWizard {
@@ -61,6 +88,7 @@ impl ConfigWizard {
             api_key_cursor: 0,
             selected_model_idx: 0,
             error_message: None,
+            existing_api_key: None,
         }
     }
 
@@ -122,6 +150,9 @@ impl ConfigWizard {
                 }
             }
             KeyCode::Enter => {
+                // Check if API key already exists for this provider
+                self.existing_api_key = load_existing_api_key(self.selected_provider());
+
                 // Move to API key input
                 self.screen = WizardScreen::ApiKeyInput;
                 self.api_key.clear();
@@ -170,10 +201,19 @@ impl ConfigWizard {
                 self.api_key_cursor = self.api_key.len();
             }
             KeyCode::Enter => {
+                // If API key is empty and we have an existing one, keep the existing one
                 if self.api_key.is_empty() {
-                    self.error_message = Some("API key cannot be empty".to_string());
+                    if let Some(ref existing_key) = self.existing_api_key {
+                        log::debug!("Keeping existing API key for {}", self.selected_provider());
+                        self.api_key = existing_key.clone();
+                        self.error_message = None;
+                        self.selected_model_idx = 0;
+                        self.screen = WizardScreen::ModelSelection;
+                    } else {
+                        self.error_message = Some("API key cannot be empty".to_string());
+                    }
                 } else {
-                    // Move to model selection
+                    // Move to model selection with new key
                     self.error_message = None;
                     self.selected_model_idx = 0;
                     self.screen = WizardScreen::ModelSelection;
@@ -330,6 +370,17 @@ impl ConfigWizard {
             Paragraph::new(error.as_str())
                 .style(Style::default().fg(Color::Red))
                 .alignment(Alignment::Center)
+        } else if let Some(ref existing_key) = self.existing_api_key {
+            // Show masked existing key
+            let masked = mask_api_key(existing_key);
+            Paragraph::new(format!(
+                "Current API key: {}\n\
+                Press Enter to keep existing key, or type a new key to replace it\n\
+                Your API key will be securely stored in ~/.reflex/config.toml",
+                masked
+            ))
+            .style(Style::default().fg(Color::Yellow))
+            .alignment(Alignment::Center)
         } else {
             Paragraph::new("Your API key will be securely stored in ~/.reflex/config.toml")
                 .style(Style::default().fg(Color::Green))
@@ -611,7 +662,22 @@ fn save_user_config(provider: &str, api_key: &str, model: &str) -> Result<()> {
     #[derive(Debug, Serialize, Deserialize)]
     struct UserConfig {
         #[serde(default)]
+        semantic: SemanticSection,
+        #[serde(default)]
         credentials: HashMap<String, String>,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct SemanticSection {
+        provider: String,
+    }
+
+    impl Default for SemanticSection {
+        fn default() -> Self {
+            Self {
+                provider: "openai".to_string(),
+            }
+        }
     }
 
     let home = dirs::home_dir()
@@ -629,15 +695,20 @@ fn save_user_config(provider: &str, api_key: &str, model: &str) -> Result<()> {
             .context("Failed to read existing config file")?;
         toml::from_str::<UserConfig>(&config_str)
             .unwrap_or_else(|_| UserConfig {
+                semantic: SemanticSection::default(),
                 credentials: HashMap::new(),
             })
     } else {
         UserConfig {
+            semantic: SemanticSection::default(),
             credentials: HashMap::new(),
         }
     };
 
-    // Update the specific provider's key and model
+    // Update the semantic section with selected provider
+    config.semantic.provider = provider.to_string();
+
+    // Update the specific provider's key and model in credentials
     let key_name = format!("{}_api_key", provider);
     let model_name = format!("{}_model", provider);
     config.credentials.insert(key_name, api_key.to_string());

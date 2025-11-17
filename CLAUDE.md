@@ -36,7 +36,11 @@ Reflex uses **trigram-based indexing** to enable sub-100ms full-text search acro
       meta.db          # SQLite: file metadata, stats, config
       trigrams.bin     # Inverted index: trigram → [file_id, line_no] posting lists
       content.bin      # Memory-mapped full file contents for context extraction
-      config.toml      # Index settings (languages, filters, ignore rules)
+      config.toml      # Project settings (index, search, performance)
+
+### User Configuration (`~/.reflex/`)
+    ~/.reflex/
+      config.toml      # User settings (semantic query provider, API keys, model preferences)
 
 ---
 
@@ -289,9 +293,61 @@ Result: **Simpler, faster, smaller cache, more flexible symbol filtering**
 
 ---
 
-## Project Configuration
+## Configuration Files
 
-**Optional**: Create a `REFLEX.md` file at workspace root to customize `rfx ask` (semantic query) behavior with project-specific context.
+Reflex uses two types of configuration files:
+
+### 1. Project Configuration (`.reflex/config.toml`)
+Located in the workspace's `.reflex/` directory.
+
+**Purpose**: Project-specific settings for indexing and search behavior.
+
+**Sections**:
+- `[index]`: Languages, file size limits, symlink handling
+- `[search]`: Default result limits, fuzzy matching thresholds
+- `[performance]`: Thread count, compression levels
+
+**Example**:
+```toml
+[index]
+languages = []  # Empty = all supported languages
+max_file_size = 10485760  # 10 MB
+
+[search]
+default_limit = 100
+
+[performance]
+parallel_threads = 0  # 0 = auto (80% of cores)
+```
+
+**Git tracking**: Should be committed for team-wide consistency.
+
+### 2. User Configuration (`~/.reflex/config.toml`)
+Located in your home directory's `~/.reflex/` folder.
+
+**Purpose**: User-specific settings for AI providers and credentials.
+
+**Sections**:
+- `[semantic]`: Preferred AI provider for `rfx ask`
+- `[credentials]`: API keys and model preferences
+
+**Example**:
+```toml
+[semantic]
+provider = "openai"  # Options: openai, anthropic, gemini, groq
+
+[credentials]
+openai_api_key = "sk-..."
+openai_model = "gpt-4o-mini"
+anthropic_api_key = "sk-ant-..."
+```
+
+**Git tracking**: Should NOT be committed (contains API keys).
+
+**Configuration wizard**: Run `rfx ask --configure` to set up interactively.
+
+### 3. Project Context (REFLEX.md)
+**Optional**: Create a `REFLEX.md` file at workspace root to customize `rfx ask` behavior with project-specific context.
 
 **Use cases**:
 - Document unconventional directory structures

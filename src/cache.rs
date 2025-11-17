@@ -421,7 +421,7 @@ provider = "groq"  # Options: openai, anthropic, gemini, groq
                 );
             }
         } else {
-            log::warn!("No schema_hash found in cache - this cache was created before automatic invalidation was implemented");
+            log::debug!("No schema_hash found in cache - this cache was created before automatic invalidation was implemented");
             // Don't fail for backward compatibility with old caches
             // They will get the hash on next rebuild
         }
