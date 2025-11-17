@@ -62,6 +62,8 @@ mod tests {
     fn test_create_provider_unknown() {
         let provider = create_provider("unknown", "test-key".to_string(), None);
         assert!(provider.is_err());
-        assert!(provider.unwrap_err().to_string().contains("Unknown provider"));
+        if let Err(e) = provider {
+            assert!(e.to_string().contains("Unknown provider"));
+        }
     }
 }

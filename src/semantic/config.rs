@@ -281,15 +281,21 @@ languages = []
 
     #[test]
     fn test_get_api_key_env_var() {
-        env::set_var("OPENAI_API_KEY", "test-key-123");
+        unsafe {
+            env::set_var("OPENAI_API_KEY", "test-key-123");
+        }
         let key = get_api_key("openai").unwrap();
         assert_eq!(key, "test-key-123");
-        env::remove_var("OPENAI_API_KEY");
+        unsafe {
+            env::remove_var("OPENAI_API_KEY");
+        }
     }
 
     #[test]
     fn test_get_api_key_missing() {
-        env::remove_var("GROQ_API_KEY");
+        unsafe {
+            env::remove_var("GROQ_API_KEY");
+        }
         let result = get_api_key("groq");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("GROQ_API_KEY"));

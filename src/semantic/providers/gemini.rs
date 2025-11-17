@@ -18,7 +18,7 @@ impl GeminiProvider {
         Ok(Self {
             client: reqwest::Client::new(),
             api_key,
-            model: model.unwrap_or_else(|| "gemini-1.5-flash".to_string()),
+            model: model.unwrap_or_else(|| "gemini-2.5-flash".to_string()),
         })
     }
 }
@@ -80,7 +80,7 @@ impl LlmProvider for GeminiProvider {
     }
 
     fn default_model(&self) -> &str {
-        "gemini-1.5-flash"
+        "gemini-2.5-flash"
     }
 }
 
@@ -92,15 +92,15 @@ mod tests {
     fn test_new_with_default_model() {
         let provider = GeminiProvider::new("test-key".to_string(), None).unwrap();
         assert_eq!(provider.name(), "gemini");
-        assert_eq!(provider.model, "gemini-1.5-flash");
+        assert_eq!(provider.model, "gemini-2.5-flash");
     }
 
     #[test]
     fn test_new_with_custom_model() {
         let provider = GeminiProvider::new(
             "test-key".to_string(),
-            Some("gemini-1.5-pro".to_string())
+            Some("gemini-2.5-pro".to_string())
         ).unwrap();
-        assert_eq!(provider.model, "gemini-1.5-pro");
+        assert_eq!(provider.model, "gemini-2.5-pro");
     }
 }

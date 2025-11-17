@@ -104,7 +104,7 @@ mod tests {
     #[test]
     fn test_prompt_contains_schema() {
         let temp_dir = TempDir::new().unwrap();
-        let cache = CacheManager::create(temp_dir.path()).unwrap();
+        let cache = CacheManager::new(temp_dir.path());
 
         let prompt = build_prompt("find todos", &cache).unwrap();
 
@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn test_prompt_injects_codebase_context() {
         let temp_dir = TempDir::new().unwrap();
-        let cache = CacheManager::create(temp_dir.path()).unwrap();
+        let cache = CacheManager::new(temp_dir.path());
 
         let prompt = build_prompt("test", &cache).unwrap();
 

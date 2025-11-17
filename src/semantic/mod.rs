@@ -78,6 +78,39 @@ pub async fn ask_question(
     Ok(response)
 }
 
+/// Strip markdown code fences from LLM response
+///
+/// Some LLMs (especially Claude) wrap JSON in markdown code fences
+/// even when explicitly instructed not to. This function removes them.
+///
+/// Handles:
+/// - ```json\n{...}\n```
+/// - ```\n{...}\n```
+/// - {raw JSON} (no-op, returns as-is)
+fn strip_markdown_fences(text: &str) -> &str {
+    let trimmed = text.trim();
+
+    // Check for markdown code fence pattern
+    if trimmed.starts_with("```") && trimmed.ends_with("```") {
+        // Remove opening fence (either ```json or just ```)
+        let without_start = if let Some(rest) = trimmed.strip_prefix("```json") {
+            rest
+        } else if let Some(rest) = trimmed.strip_prefix("```") {
+            rest
+        } else {
+            return trimmed;
+        };
+
+        // Remove closing fence
+        let without_end = without_start.strip_suffix("```")
+            .unwrap_or(without_start);
+
+        without_end.trim()
+    } else {
+        trimmed
+    }
+}
+
 /// Call LLM provider with retry logic
 ///
 /// Retries up to `max_retries` times on:
@@ -99,11 +132,14 @@ async fn call_with_retry(
 
         match provider.complete(prompt).await {
             Ok(response) => {
+                // Strip markdown code fences (Claude often adds them despite instructions)
+                let cleaned_response = strip_markdown_fences(&response);
+
                 // Validate that response is valid JSON for our schema
-                match serde_json::from_str::<schema::QueryResponse>(&response) {
+                match serde_json::from_str::<schema::QueryResponse>(cleaned_response) {
                     Ok(_) => {
-                        // Valid response
-                        return Ok(response);
+                        // Valid response - return the cleaned version
+                        return Ok(cleaned_response.to_string());
                     }
                     Err(e) => {
                         if attempt < max_retries {
@@ -116,7 +152,7 @@ async fn call_with_retry(
                             last_error = Some(anyhow::anyhow!(
                                 "Invalid JSON format: {}. Response: {}",
                                 e,
-                                response
+                                cleaned_response
                             ));
 
                             // Exponential backoff: 500ms, 1s, 1.5s...
@@ -129,7 +165,7 @@ async fn call_with_retry(
                                 "Invalid JSON format after {} attempts: {}. Response: {}",
                                 max_retries + 1,
                                 e,
-                                response
+                                cleaned_response
                             ));
                         }
                     }
@@ -159,6 +195,55 @@ async fn call_with_retry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_strip_markdown_fences_with_json_label() {
+        let input = r#"```json
+{
+  "queries": [
+    {
+      "command": "query \"User\" --symbols --kind class --lang php",
+      "order": 1,
+      "merge": true
+    }
+  ]
+}
+```"#;
+        let expected = r#"{
+  "queries": [
+    {
+      "command": "query \"User\" --symbols --kind class --lang php",
+      "order": 1,
+      "merge": true
+    }
+  ]
+}"#;
+        assert_eq!(strip_markdown_fences(input), expected);
+    }
+
+    #[test]
+    fn test_strip_markdown_fences_without_json_label() {
+        let input = r#"```
+{"queries": []}
+```"#;
+        let expected = r#"{"queries": []}"#;
+        assert_eq!(strip_markdown_fences(input), expected);
+    }
+
+    #[test]
+    fn test_strip_markdown_fences_no_fences() {
+        let input = r#"{"queries": []}"#;
+        assert_eq!(strip_markdown_fences(input), input);
+    }
+
+    #[test]
+    fn test_strip_markdown_fences_with_whitespace() {
+        let input = r#"  ```json
+{"queries": []}
+```  "#;
+        let expected = r#"{"queries": []}"#;
+        assert_eq!(strip_markdown_fences(input), expected);
+    }
 
     #[test]
     fn test_module_structure() {

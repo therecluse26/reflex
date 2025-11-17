@@ -40,13 +40,7 @@ const GEMINI_MODELS: &[&str] = &[
 const GROQ_MODELS: &[&str] = &[
     "meta-llama/llama-4-maverick-17b-128e-instruct",
     "meta-llama/llama-4-scout-17b-16e-instruct",
-    "llama-3.3-70b-versatile",
     "qwen/qwen3-32b",
-    "qwen-2.5-coder-32b",
-    "deepseek-r1-distill-llama-70b",
-    "deepseek-r1-distill-qwen-32b",
-    "gemma2-9b-it",
-    "mixtral-8x7b-32768",
     "moonshotai/kimi-k2-instruct-0905",
 ];
 
