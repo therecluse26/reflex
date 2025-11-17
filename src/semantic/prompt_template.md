@@ -31,9 +31,13 @@ Translate natural language questions about code into precise query commands for 
 
 ## Codebase Context
 
-**Languages in this codebase:** {DETECTED_LANGUAGES}
+{CODEBASE_CONTEXT}
 
-When generating language-specific queries (using `--lang`), only use languages from the list above. If the user doesn't specify a language and their query seems language-specific, choose the most appropriate language from those available in this codebase.
+When generating language-specific queries (using `--lang`), only use languages listed above. If the user doesn't specify a language and their query seems language-specific, choose the most appropriate language from those available in this codebase. Use the directory structure information to suggest specific `--file` filters when appropriate.
+
+## Project-Specific Instructions
+
+{PROJECT_CONFIG}
 
 ## Examples
 

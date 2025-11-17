@@ -1,26 +1,76 @@
-//! Prompt template generation with language injection
+//! Prompt template generation with codebase context injection
 
 use crate::cache::CacheManager;
-use anyhow::{Context, Result};
-use rusqlite::Connection;
+use anyhow::Result;
 
-/// Embed SEMANTIC_QUERY_PROMPT.md at compile time
-const PROMPT_TEMPLATE: &str = include_str!("../../.context/SEMANTIC_QUERY_PROMPT.md");
+use super::context::CodebaseContext;
+
+/// Embed prompt_template.md at compile time
+const PROMPT_TEMPLATE: &str = include_str!("prompt_template.md");
+
+/// Read project-specific configuration from REFLEX.md
+///
+/// Looks for REFLEX.md at the workspace root and returns its contents.
+/// Returns None if the file doesn't exist or cannot be read.
+fn read_project_config(workspace_root: &std::path::Path) -> Option<String> {
+    let config_path = workspace_root.join("REFLEX.md");
+
+    if !config_path.exists() {
+        log::debug!("No REFLEX.md found at workspace root");
+        return None;
+    }
+
+    match std::fs::read_to_string(&config_path) {
+        Ok(contents) => {
+            log::info!("Loaded project configuration from REFLEX.md ({} bytes)", contents.len());
+            Some(contents)
+        }
+        Err(e) => {
+            log::warn!("Failed to read REFLEX.md: {}", e);
+            None
+        }
+    }
+}
 
 /// Build the complete prompt for the LLM
 ///
-/// Injects detected languages from the cache and adds JSON schema instructions
+/// Extracts comprehensive codebase context and injects it into the prompt template
 pub fn build_prompt(question: &str, cache: &CacheManager) -> Result<String> {
-    // Detect languages from cache
-    let languages = detect_languages(cache)?;
-    let lang_list = if languages.is_empty() {
-        "No languages detected (empty codebase)".to_string()
+    // Extract comprehensive codebase context
+    let context = CodebaseContext::extract(cache)
+        .unwrap_or_else(|e| {
+            log::warn!("Failed to extract full codebase context: {}. Using minimal context.", e);
+            // Fallback to minimal context if extraction fails
+            CodebaseContext {
+                total_files: 0,
+                languages: vec![],
+                top_level_dirs: vec![],
+                common_paths: vec![],
+                is_monorepo: false,
+                project_count: None,
+                dominant_language: None,
+            }
+        });
+
+    // Format context as a prompt-friendly string
+    let context_str = if context.total_files == 0 {
+        "No files indexed yet (empty codebase).".to_string()
     } else {
-        languages.join(", ")
+        context.to_prompt_string()
     };
 
-    // Inject languages into template
-    let prompt = PROMPT_TEMPLATE.replace("{DETECTED_LANGUAGES}", &lang_list);
+    // Read project-specific configuration from REFLEX.md
+    let workspace_root = cache.workspace_root();
+    let project_config = read_project_config(&workspace_root)
+        .unwrap_or_else(|| {
+            log::debug!("No project-specific configuration found, using defaults");
+            "No project-specific instructions provided.".to_string()
+        });
+
+    // Inject context and project config into template
+    let prompt = PROMPT_TEMPLATE
+        .replace("{CODEBASE_CONTEXT}", &context_str)
+        .replace("{PROJECT_CONFIG}", &project_config);
 
     // Build final prompt with JSON schema
     Ok(format!(
@@ -46,26 +96,6 @@ You MUST respond with valid JSON matching this exact schema:
     ))
 }
 
-/// Detect languages present in the indexed codebase
-fn detect_languages(cache: &CacheManager) -> Result<Vec<String>> {
-    let db_path = cache.path().join("meta.db");
-    let conn = Connection::open(&db_path)
-        .context("Failed to open database")?;
-
-    // Query for distinct language extensions
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT language FROM files
-         WHERE language IS NOT NULL
-         ORDER BY language"
-    )?;
-
-    let languages: Vec<String> = stmt
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(languages)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,19 +108,19 @@ mod tests {
 
         let prompt = build_prompt("find todos", &cache).unwrap();
 
-        assert!(prompt.contains("RESPONSE_SCHEMA"));
+        assert!(prompt.contains("Response Format"));
         assert!(prompt.contains("find todos"));
         assert!(prompt.contains("JSON"));
     }
 
     #[test]
-    fn test_prompt_injects_empty_languages() {
+    fn test_prompt_injects_codebase_context() {
         let temp_dir = TempDir::new().unwrap();
         let cache = CacheManager::create(temp_dir.path()).unwrap();
 
         let prompt = build_prompt("test", &cache).unwrap();
 
         // Should handle empty codebase gracefully
-        assert!(prompt.contains("No languages detected") || prompt.contains("Languages in this codebase"));
+        assert!(prompt.contains("No files indexed") || prompt.contains("Languages:"));
     }
 }

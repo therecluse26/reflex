@@ -1205,7 +1205,7 @@ Located in tests/performance_test.rs:
     - Executes query automatically and returns results
     - Option: `--explain` to show generated command without executing
   - **Implementation:**
-    - Few-shot prompting with 8-10 examples (see .context/SEMANTIC_QUERY_PROMPT.md)
+    - Few-shot prompting with 8-10 examples (see src/semantic/prompt_template.md)
     - HTTP client for API requests (reqwest)
     - Prompt template system for provider-specific formats
     - Multi-query support: generate multiple queries, merge results, deduplicate

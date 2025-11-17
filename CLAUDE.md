@@ -753,6 +753,89 @@ Result: **Simpler, faster, smaller cache, more flexible symbol filtering**
 - Tests: `tests/`
 - Local cache/config: `.reflex/` (added to `.gitignore`)
 - Context/planning: `.context/` (tracked in git)
+- Project config: `REFLEX.md` (optional, workspace root)
+
+---
+
+## Project Configuration with REFLEX.md
+
+Reflex supports per-project configuration through an optional `REFLEX.md` file at the workspace root. This file allows you to customize the behavior of `rfx ask` (semantic query generation) by providing project-specific context that gets injected into the LLM prompt.
+
+### Location
+
+Place `REFLEX.md` at the same level as `.reflex/` (workspace root):
+
+```
+my-project/
+├── .reflex/          # Cache directory
+├── REFLEX.md         # Project configuration (optional)
+├── src/
+├── tests/
+└── Cargo.toml
+```
+
+### Purpose
+
+The contents of `REFLEX.md` are automatically injected into the `rfx ask` prompt, allowing you to:
+
+- **Document unconventional directory structures**: Explain non-standard organization
+- **Provide project-specific search patterns**: Guide the LLM to find code in your unique architecture
+- **Add domain-specific context**: Help the AI understand specialized terminology or patterns
+- **Override default search behaviors**: Customize how queries are generated for your codebase
+- **Explain monorepo organization**: Document multi-project structures and naming conventions
+
+### Example REFLEX.md
+
+```markdown
+# Project-Specific Search Instructions
+
+## Directory Structure
+
+This project uses an unconventional structure:
+- `core/` - Core business logic (not `src/`)
+- `adapters/` - External integrations
+- `domain/` - Domain models and entities
+- `infra/` - Infrastructure code (databases, caching, etc.)
+
+## Search Patterns
+
+When searching for:
+- **Business logic**: Use `--file core/` or `--glob "core/**/*.rs"`
+- **API endpoints**: Look in `adapters/http/routes/`
+- **Database queries**: Check `infra/db/queries/`
+- **Domain models**: Search `domain/entities/` and `domain/value_objects/`
+
+## Naming Conventions
+
+- All service files end with `_service.rs`
+- Repository files end with `_repo.rs`
+- Use `--contains` when searching for services as they may have prefixes
+
+## Framework Notes
+
+We use a custom hexagonal architecture. Controllers are in `adapters/`,
+use cases in `core/use_cases/`, and domain entities in `domain/entities/`.
+```
+
+### When REFLEX.md is Used
+
+The `REFLEX.md` contents are loaded and injected into the LLM prompt whenever you run:
+
+```bash
+rfx ask "find all user authentication code"
+```
+
+The LLM will see your project-specific instructions and generate more accurate queries based on your architecture.
+
+### Git Tracking
+
+**Recommended**: Commit `REFLEX.md` to version control so the entire team benefits from consistent query generation.
+
+**Alternative**: Add to `.gitignore` for per-developer customization (less common).
+
+### Fallback Behavior
+
+If `REFLEX.md` doesn't exist, Reflex will use default query generation based only on the automatically-extracted codebase context (languages, directory structure, file counts).
 
 ---
 

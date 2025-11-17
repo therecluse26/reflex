@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod configure;
+pub mod context;
 pub mod executor;
 pub mod prompt;
 pub mod providers;
