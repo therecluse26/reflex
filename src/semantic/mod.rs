@@ -8,10 +8,18 @@ pub mod prompt;
 pub mod providers;
 pub mod schema;
 
+// Agentic mode modules (experimental)
+pub mod schema_agentic;
+pub mod agentic;
+pub mod tools;
+pub mod evaluator;
+pub mod prompt_agentic;
+
 // Re-export main types for convenience
 pub use configure::run_configure_wizard;
 pub use executor::{execute_queries, parse_command, ParsedCommand};
 pub use schema::{QueryCommand, QueryResponse as SemanticQueryResponse};
+pub use agentic::{run_agentic_loop, AgenticConfig};
 
 use anyhow::{Context, Result};
 use crate::cache::CacheManager;
@@ -119,7 +127,9 @@ fn strip_markdown_fences(text: &str) -> &str {
 /// - Invalid JSON responses
 ///
 /// Uses exponential backoff between retries.
-async fn call_with_retry(
+///
+/// NOTE: Exported for use by agentic module
+pub(crate) async fn call_with_retry(
     provider: &dyn providers::LlmProvider,
     prompt: &str,
     max_retries: usize,

@@ -23,6 +23,26 @@ pub struct SemanticConfig {
     /// Auto-execute generated commands without confirmation
     #[serde(default)]
     pub auto_execute: bool,
+
+    /// Enable agentic mode (multi-step reasoning with context gathering)
+    #[serde(default = "default_agentic_enabled")]
+    pub agentic_enabled: bool,
+
+    /// Maximum iterations for query refinement in agentic mode
+    #[serde(default = "default_max_iterations")]
+    pub max_iterations: usize,
+
+    /// Maximum tool calls per context gathering phase
+    #[serde(default = "default_max_tools")]
+    pub max_tools_per_phase: usize,
+
+    /// Enable result evaluation in agentic mode
+    #[serde(default = "default_evaluation_enabled")]
+    pub evaluation_enabled: bool,
+
+    /// Evaluation strictness (0.0-1.0, higher is stricter)
+    #[serde(default = "default_strictness")]
+    pub evaluation_strictness: f32,
 }
 
 fn default_enabled() -> bool {
@@ -33,6 +53,26 @@ fn default_provider() -> String {
     "openai".to_string()
 }
 
+fn default_agentic_enabled() -> bool {
+    false // Disabled by default, opt-in for experimental feature
+}
+
+fn default_max_iterations() -> usize {
+    2
+}
+
+fn default_max_tools() -> usize {
+    5
+}
+
+fn default_evaluation_enabled() -> bool {
+    true
+}
+
+fn default_strictness() -> f32 {
+    0.5
+}
+
 impl Default for SemanticConfig {
     fn default() -> Self {
         Self {
@@ -40,6 +80,11 @@ impl Default for SemanticConfig {
             provider: "openai".to_string(),
             model: None,
             auto_execute: false,
+            agentic_enabled: false,
+            max_iterations: 2,
+            max_tools_per_phase: 5,
+            evaluation_enabled: true,
+            evaluation_strictness: 0.5,
         }
     }
 }

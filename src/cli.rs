@@ -497,6 +497,18 @@ pub enum Command {
         /// Launch interactive configuration wizard to set up AI provider and API key
         #[arg(long)]
         configure: bool,
+
+        /// Enable agentic mode (multi-step reasoning with context gathering)
+        #[arg(long)]
+        agentic: bool,
+
+        /// Maximum iterations for query refinement in agentic mode (default: 2)
+        #[arg(long, default_value = "2")]
+        max_iterations: usize,
+
+        /// Skip result evaluation in agentic mode
+        #[arg(long)]
+        no_eval: bool,
     },
 
     /// Generate codebase context for AI prompts
@@ -712,8 +724,8 @@ impl Cli {
             Some(Command::Deps { file, reverse, depth, format, json, pretty }) => {
                 handle_deps(file, reverse, depth, format, json, pretty)
             }
-            Some(Command::Ask { question, execute, provider, json, pretty, additional_context, configure }) => {
-                handle_ask(question, execute, provider, json, pretty, additional_context, configure)
+            Some(Command::Ask { question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval }) => {
+                handle_ask(question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval)
             }
             Some(Command::Context { structure, path, file_types, project_type, framework, entry_points, test_layout, config_files, full, depth, json }) => {
                 handle_context(structure, path, file_types, project_type, framework, entry_points, test_layout, config_files, full, depth, json)
@@ -2281,6 +2293,9 @@ fn handle_ask(
     pretty_json: bool,
     additional_context: Option<String>,
     configure: bool,
+    agentic: bool,
+    max_iterations: usize,
+    no_eval: bool,
 ) -> Result<()> {
     // If --configure flag is set, launch the configuration wizard
     if configure {
@@ -2321,16 +2336,41 @@ fn handle_ask(
             .unwrap()
             .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
     );
-    spinner.set_message("Generating queries...".to_string());
-    spinner.enable_steady_tick(std::time::Duration::from_millis(80));
 
-    // Call the async function using the runtime
-    let response = runtime.block_on(async {
-        crate::semantic::ask_question(&question, &cache, provider_override, additional_context).await
-    }).context("Failed to generate semantic queries")?;
+    let response = if agentic {
+        // Agentic mode: multi-step reasoning with context gathering
+        spinner.set_message("Agentic mode: Assessing context needs...".to_string());
+        spinner.enable_steady_tick(std::time::Duration::from_millis(80));
 
-    spinner.finish_and_clear();
-    log::info!("LLM generated {} queries", response.queries.len());
+        let agentic_config = crate::semantic::AgenticConfig {
+            max_iterations,
+            max_tools_per_phase: 5,
+            enable_evaluation: !no_eval,
+            eval_config: Default::default(),
+            provider_override: provider_override.clone(),
+            model_override: None,
+        };
+
+        let result = runtime.block_on(async {
+            crate::semantic::run_agentic_loop(&question, &cache, agentic_config).await
+        }).context("Failed to run agentic loop")?;
+
+        spinner.finish_and_clear();
+        log::info!("Agentic loop completed: {} queries generated", result.queries.len());
+        result
+    } else {
+        // Standard mode: single LLM call
+        spinner.set_message("Generating queries...".to_string());
+        spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+
+        let result = runtime.block_on(async {
+            crate::semantic::ask_question(&question, &cache, provider_override, additional_context).await
+        }).context("Failed to generate semantic queries")?;
+
+        spinner.finish_and_clear();
+        log::info!("LLM generated {} queries", result.queries.len());
+        result
+    };
 
     // Output in JSON format if requested
     if as_json {
