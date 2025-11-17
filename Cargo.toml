@@ -51,10 +51,20 @@ rkyv = "0.8"
 memmap2 = "0.9"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
-# HTTP server
+# HTTP server and client
 axum = "0.7"
 tokio = { version = "1.40", features = ["full"] }
 tower-http = { version = "0.6", features = ["cors"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Async traits
+async-trait = "0.1"
+
+# Config parsing
+toml = "0.8"
+
+# Shell command parsing
+shell-words = "1.1"
 
 # Logging
 log = "0.4"

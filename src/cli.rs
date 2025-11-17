@@ -446,6 +446,53 @@ pub enum Command {
         pretty: bool,
     },
 
+    /// Ask a natural language question and generate search queries
+    ///
+    /// Uses an LLM to translate natural language questions into `rfx query` commands.
+    /// Requires API key configuration for one of: OpenAI, Anthropic, Gemini, or Groq.
+    ///
+    /// Configuration:
+    ///   1. Run interactive setup wizard (recommended):
+    ///      rfx ask --configure
+    ///
+    ///   2. OR set API key via environment variable:
+    ///      - OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, or GROQ_API_KEY
+    ///
+    ///   3. Optional: Configure provider in .reflex/config.toml:
+    ///      [semantic]
+    ///      provider = "groq"  # or openai, anthropic, gemini
+    ///      model = "llama-3.3-70b-versatile"  # optional, defaults to provider default
+    ///
+    /// Examples:
+    ///   rfx ask --configure                           # Interactive setup wizard
+    ///   rfx ask "Find all TODOs in Rust files"
+    ///   rfx ask "Where is the main function defined?" --execute
+    ///   rfx ask "Show me error handling code" --provider groq
+    Ask {
+        /// Natural language question
+        question: Option<String>,
+
+        /// Execute queries immediately without confirmation
+        #[arg(short, long)]
+        execute: bool,
+
+        /// Override configured LLM provider (openai, anthropic, gemini, groq)
+        #[arg(short, long)]
+        provider: Option<String>,
+
+        /// Output format as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Pretty-print JSON output (only with --json)
+        #[arg(long)]
+        pretty: bool,
+
+        /// Launch interactive configuration wizard to set up AI provider and API key
+        #[arg(long)]
+        configure: bool,
+    },
+
     /// Internal command: Run background symbol indexing (hidden from help)
     #[command(hide = true)]
     IndexSymbolsInternal {
@@ -597,6 +644,9 @@ impl Cli {
             }
             Some(Command::Deps { file, reverse, depth, format, json, pretty }) => {
                 handle_deps(file, reverse, depth, format, json, pretty)
+            }
+            Some(Command::Ask { question, execute, provider, json, pretty, configure }) => {
+                handle_ask(question, execute, provider, json, pretty, configure)
             }
             Some(Command::IndexSymbolsInternal { cache_dir }) => {
                 handle_index_symbols_internal(cache_dir)
@@ -2146,6 +2196,131 @@ fn handle_deps(
                     anyhow::bail!("Unknown format '{}'. Supported: json, tree, table, dot", format);
                 }
             }
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle the `ask` command
+fn handle_ask(
+    question: Option<String>,
+    auto_execute: bool,
+    provider_override: Option<String>,
+    as_json: bool,
+    pretty_json: bool,
+    configure: bool,
+) -> Result<()> {
+    // If --configure flag is set, launch the configuration wizard
+    if configure {
+        log::info!("Launching configuration wizard");
+        return crate::semantic::run_configure_wizard();
+    }
+
+    // Otherwise, require a question
+    let question = question.ok_or_else(|| {
+        anyhow::anyhow!("Question is required unless --configure is used")
+    })?;
+
+    log::info!("Starting ask command");
+
+    let cache = CacheManager::new(".");
+
+    if !cache.exists() {
+        anyhow::bail!(
+            "No index found in current directory.\n\
+             \n\
+             Run 'rfx index' to build the code search index first.\n\
+             \n\
+             Example:\n\
+             $ rfx index                          # Index current directory\n\
+             $ rfx ask \"Find all TODOs\"          # Ask questions"
+        );
+    }
+
+    // Create a tokio runtime for async operations
+    let runtime = tokio::runtime::Runtime::new()
+        .context("Failed to create async runtime")?;
+
+    // Call the async function using the runtime
+    let response = runtime.block_on(async {
+        crate::semantic::ask_question(&question, &cache, provider_override).await
+    }).context("Failed to generate semantic queries")?;
+
+    log::info!("LLM generated {} queries", response.queries.len());
+
+    // Output in JSON format if requested
+    if as_json {
+        let json_str = if pretty_json {
+            serde_json::to_string_pretty(&response)?
+        } else {
+            serde_json::to_string(&response)?
+        };
+        println!("{}", json_str);
+        return Ok(());
+    }
+
+    // Display generated queries
+    println!("\nGenerated Queries:");
+    println!("==================");
+    for (idx, query_cmd) in response.queries.iter().enumerate() {
+        println!(
+            "{}. [order: {}, merge: {}] rfx {}",
+            idx + 1,
+            query_cmd.order,
+            query_cmd.merge,
+            query_cmd.command
+        );
+    }
+    println!();
+
+    // If not auto-execute, ask for confirmation
+    if !auto_execute {
+        use std::io::{self, Write};
+
+        print!("Execute these queries? [y/N]: ");
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+
+        let input = input.trim().to_lowercase();
+        if input != "y" && input != "yes" {
+            println!("Queries not executed.");
+            return Ok(());
+        }
+    }
+
+    // Execute queries
+    println!("\nExecuting queries...");
+    println!("====================\n");
+
+    let results = runtime.block_on(async {
+        crate::semantic::execute_queries(response.queries, &cache).await
+    }).context("Failed to execute queries")?;
+
+    // Display results
+    if results.is_empty() {
+        println!("No results found.");
+    } else {
+        // Count total matches
+        let total_matches: usize = results.iter()
+            .map(|file_group| file_group.matches.len())
+            .sum();
+
+        println!("Found {} matches across {} files:\n", total_matches, results.len());
+
+        for file_group in &results {
+            println!("{}:", file_group.path);
+            for match_result in &file_group.matches {
+                println!(
+                    "  Line {}-{}: {}",
+                    match_result.span.start_line,
+                    match_result.span.end_line,
+                    match_result.preview.lines().next().unwrap_or("")
+                );
+            }
+            println!();
         }
     }
 

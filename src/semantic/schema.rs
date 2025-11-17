@@ -1,0 +1,107 @@
+//! Schema definitions for LLM responses
+
+use serde::{Deserialize, Serialize};
+
+/// LLM response containing rfx query commands
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryResponse {
+    /// Array of rfx commands to execute. Most queries should have 1 command.
+    /// Only use multiple commands when absolutely necessary (e.g., cross-language search).
+    pub queries: Vec<QueryCommand>,
+}
+
+/// A single rfx query command with execution metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryCommand {
+    /// The rfx query command WITHOUT the 'rfx' prefix
+    ///
+    /// Examples:
+    /// - `query "TODO"`
+    /// - `query "async" --symbols --kind function --lang typescript`
+    pub command: String,
+
+    /// Execution order (1-based). Commands execute sequentially by order.
+    pub order: i32,
+
+    /// Whether to include this result in final output
+    /// - `false`: context-only (used to inform subsequent queries)
+    /// - `true`: include in merged results shown to user
+    pub merge: bool,
+}
+
+/// JSON schema for LLM prompt (OpenAI/Gemini structured output)
+pub const RESPONSE_SCHEMA: &str = r#"{
+  "type": "object",
+  "properties": {
+    "queries": {
+      "type": "array",
+      "description": "Array of rfx commands to execute. Most queries should have 1 command.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "The rfx query command WITHOUT the 'rfx' prefix"
+          },
+          "order": {
+            "type": "integer",
+            "description": "Execution order (1-based, sequential)"
+          },
+          "merge": {
+            "type": "boolean",
+            "description": "Whether to include in final results (false = context-only)"
+          }
+        },
+        "required": ["command", "order", "merge"]
+      }
+    }
+  },
+  "required": ["queries"]
+}"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deserialize_single_query() {
+        let json = r#"{
+            "queries": [{
+                "command": "query \"TODO\"",
+                "order": 1,
+                "merge": true
+            }]
+        }"#;
+
+        let response: QueryResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.queries.len(), 1);
+        assert_eq!(response.queries[0].command, "query \"TODO\"");
+        assert_eq!(response.queries[0].order, 1);
+        assert_eq!(response.queries[0].merge, true);
+    }
+
+    #[test]
+    fn test_deserialize_multiple_queries() {
+        let json = r#"{
+            "queries": [
+                {
+                    "command": "query \"User\" --symbols --kind struct --lang rust",
+                    "order": 1,
+                    "merge": false
+                },
+                {
+                    "command": "query \"User\" --lang rust",
+                    "order": 2,
+                    "merge": true
+                }
+            ]
+        }"#;
+
+        let response: QueryResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.queries.len(), 2);
+        assert_eq!(response.queries[0].order, 1);
+        assert_eq!(response.queries[0].merge, false);
+        assert_eq!(response.queries[1].order, 2);
+        assert_eq!(response.queries[1].merge, true);
+    }
+}

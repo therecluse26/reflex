@@ -42,6 +42,7 @@ pub mod output;
 pub mod parsers;
 pub mod query;
 pub mod regex_trigrams;
+pub mod semantic;
 pub mod symbol_cache;
 pub mod trigram;
 pub mod watcher;

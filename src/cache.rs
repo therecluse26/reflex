@@ -256,6 +256,13 @@ fuzzy_threshold = 0.8
 [performance]
 parallel_threads = 0  # 0 = auto (80% of available cores), or set a specific number
 compression_level = 3  # zstd level
+
+[semantic]
+# Semantic query generation using LLMs
+# Translate natural language questions into rfx query commands
+provider = "groq"  # Options: openai, anthropic, gemini, groq
+# model = "llama-3.3-70b-versatile"  # Optional: override provider default model
+# auto_execute = false  # Optional: auto-execute queries without confirmation
 "#;
 
         std::fs::write(&config_path, default_config)?;

@@ -2,13 +2,15 @@
 
 ## Task
 
-Translate natural language questions about code into precise `rfx query` commands. Reflex is a local code search engine that finds code patterns across your codebase.
+Translate natural language questions about code into precise query commands for Reflex (a local code search engine).
+
+**IMPORTANT:** Generate commands WITHOUT the 'rfx' prefix. Commands should start with 'query', not 'rfx query'.
 
 ## Syntax Reference
 
 | Flag | Purpose | Example |
 |------|---------|---------|
-| `<pattern>` | Search text (required) | `rfx query "extract_symbols"` |
+| `<pattern>` | Search text (required) | `query "extract_symbols"` |
 | `--symbols` or `-s` | Find definitions only (not usages) | `--symbols` |
 | `--kind <type>` or `-k` | Filter by symbol type (implies --symbols) | `--kind function` |
 | `--lang <lang>` or `-l` | Filter by language | `--lang rust` |
@@ -38,61 +40,61 @@ When generating language-specific queries (using `--lang`), only use languages f
 **1. Find all function definitions**
 ```
 User: Find all functions
-Command: rfx query "fn" --symbols --kind function
+Command: query "fn" --symbols --kind function
 ```
 
 **2. Find usages of a function**
 ```
 User: Where is parse_token called?
-Command: rfx query "parse_token"
+Command: query "parse_token"
 ```
 
 **3. Find specific symbol type in language**
 ```
 User: Show me all Rust structs
-Command: rfx query "" --symbols --kind struct --lang rust
+Command: query "" --symbols --kind struct --lang rust
 ```
 
 **4. Find TODO comments**
 ```
 User: Find all TODO comments in the codebase
-Command: rfx query "TODO"
+Command: query "TODO"
 ```
 
 **5. Find error handling**
 ```
 User: Find all error handlers
-Command: rfx query "Result" --symbols --kind function --lang rust
+Command: query "Result" --symbols --kind function --lang rust
 ```
 
 **6. Find test functions**
 ```
 User: Show me all test functions
-Command: rfx query "test" --regex -r "fn.*test|test.*fn" --lang rust
+Command: query "test" --regex -r "fn.*test|test.*fn" --lang rust
 ```
 
 **7. Find imports in specific directory**
 ```
 User: What imports are in the parser module?
-Command: rfx query "import|use|require" --regex --file app/parser.ts
+Command: query "import|use|require" --regex --file app/parser.ts
 ```
 
 **8. Find async functions**
 ```
 User: Find all async functions
-Command: rfx query "async" --symbols --kind function
+Command: query "async" --symbols --kind function
 ```
 
 **9. Find specific file patterns**
 ```
 User: Search for 'config' in TypeScript files under src/
-Command: rfx query "config" --lang typescript --glob "src/**/*.ts"
+Command: query "config" --lang typescript --glob "src/**/*.ts"
 ```
 
 **10. Find error types**
 ```
 User: Show me all custom error types
-Command: rfx query "Error" --symbols --kind struct --lang rust
+Command: query "Error" --symbols --kind struct --lang rust
 ```
 
 **11. Multi-query workflow**
@@ -100,10 +102,10 @@ Command: rfx query "Error" --symbols --kind struct --lang rust
 User: Find the ApiClient class and show me all files that use it
 Commands:
 # Step 1: Find the ApiClient class definition
-rfx query "ApiClient" --symbols --kind class
+query "ApiClient" --symbols --kind class
 
 # Step 2: Find all usages of ApiClient
-rfx query "ApiClient"
+query "ApiClient"
 ```
 
 **12. Cross-language search**
@@ -111,10 +113,10 @@ rfx query "ApiClient"
 User: Find all database connection code in Python and TypeScript
 Commands:
 # Step 1: Search Python files
-rfx query "database.*connect" --regex --lang python
+query "database.*connect" --regex --lang python
 
 # Step 2: Search TypeScript files
-rfx query "database.*connect" --regex --lang typescript
+query "database.*connect" --regex --lang typescript
 ```
 
 ## Guidelines
@@ -154,18 +156,20 @@ rfx query "database.*connect" --regex --lang typescript
 
 ## Output Format
 
+**IMPORTANT: Commands should NOT include the 'rfx' prefix. Start commands with 'query' only.**
+
 **IMPORTANT: Default to single query unless absolutely necessary to use multiple queries.**
 
-**Single query (PREFERRED):** Return ONLY the command, nothing else.
+**Single query (PREFERRED):** Return ONLY the command without 'rfx' prefix.
 
 ```
-rfx query "parse" --symbols --kind function --lang rust
+query "parse" --symbols --kind function --lang rust
 ```
 
-**Multiple queries (ONLY when one query cannot satisfy the request):** Return each command on a separate line, in execution order. ONLY return the commands, no explanations.
+**Multiple queries (ONLY when one query cannot satisfy the request):** Return each command on a separate line, in execution order. Commands should NOT include the 'rfx' prefix.
 
 ```
-rfx query "User" --symbols --kind struct --lang rust
+query "User" --symbols --kind struct --lang rust
 
-rfx query "User" --lang rust
+query "User" --lang rust
 ```
