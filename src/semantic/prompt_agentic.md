@@ -93,8 +93,8 @@ Analyzes codebase dependencies and structure.
 | Flag | Purpose | Example |
 |------|---------|---------|
 | `<pattern>` | Search text (required) | `query "extract_symbols"` |
-| `--symbols` or `-s` | Find definitions only (not usages) | `--symbols` |
-| `--kind <type>` or `-k` | Filter by symbol type (implies --symbols) | `--kind function` |
+| `--symbols` or `-s` | **Symbol-only mode**: Find where code is DEFINED (functions, classes, methods declared) | `--symbols` |
+| `--kind <type>` or `-k` | Filter to specific symbol type - **automatically enables symbol-only mode** | `--kind function` |
 | `--lang <lang>` or `-l` | Filter by language | `--lang rust` |
 | `--regex` or `-r` | Regex pattern matching | `-r "fn.*test"` |
 | `--exact` | Exact symbol name match | `--exact` |
@@ -108,6 +108,37 @@ Analyzes codebase dependencies and structure.
 **Symbol kinds:** `function`, `class`, `struct`, `enum`, `interface`, `method`, `constant`, `variable`, `trait`, `module`
 
 **Languages:** `rust`, `python`, `typescript`, `javascript`, `go`, `java`, `c`, `cpp`, `csharp`, `php`, `ruby`, `kotlin`, `zig`, `vue`, `svelte`
+
+## Understanding --symbols: Definitions vs Usages
+
+**CRITICAL DISTINCTION:**
+
+**Symbol mode (`--symbols` or `--kind`)**: Finds where code is **DEFINED/DECLARED**
+- Function definitions: `function myFunc() { ... }`
+- Class definitions: `class MyClass { ... }`
+- Method definitions: `public function myMethod() { ... }`
+
+**Full-text mode (default - no `--symbols`)**: Finds **ALL occurrences** (definitions + calls/usages)
+- Function calls: `myFunc(param)`
+- Class instantiations: `new MyClass()`
+- Method calls: `$obj->myMethod()`
+
+**Common mistake - DO NOT use `--symbols` or `--kind` for calls/usages:**
+
+❌ **WRONG**: `query "belongsTo" --kind method --file User.php`
+   - This finds where `belongsTo` **method is defined** (in Laravel framework code, not your file)
+   - Result: Empty or wrong file
+
+✓ **CORRECT**: `query "belongsTo" --file User.php`
+   - This finds where `belongsTo` **is called** (in your User model)
+   - Result: Shows relationship definitions in your code
+
+❌ **WRONG**: `query "fetchData" --symbols --kind method --file api.js`
+   - Looks for `fetchData` **method definition** (probably doesn't exist in api.js)
+
+✓ **CORRECT**: `query "fetchData(" --file api.js`
+   - Finds all **calls** to `fetchData()` function
+   - The `(` helps match function calls specifically
 
 ## Decision Guidelines
 
@@ -144,18 +175,27 @@ Analyzes codebase dependencies and structure.
 
 ### Query Generation Best Practices
 
-1. **Full-text vs symbols:**
-   - Use `--symbols` to find definitions (where code is declared)
-   - Omit `--symbols` to find all occurrences (definitions + usages)
+1. **Full-text vs symbols (MOST IMPORTANT):**
+   - **Use `--symbols` or `--kind`**: When searching for where code is **defined/declared**
+     - "Find the User class definition" → `query "User" --kind class`
+     - "Where is the login function defined?" → `query "login" --kind function`
+   - **Use full-text (no `--symbols`)**: When searching for **usages/calls/references**
+     - "Where is login called?" → `query "login("`
+     - "What relationships does User have?" → `query "belongsTo" --file User.php`
+     - "Find API calls" → `query "fetch("`
+   - **Default to full-text** when unsure - it finds everything (definitions + usages)
 
 2. **Pattern specificity:**
    - Use exact names when searching for specific symbols
    - Use partial names or keywords for broader searches
    - Use `--regex` for complex patterns
+   - Add `(` to pattern when searching for function/method calls: `query "myFunc("`
 
 3. **Filtering:**
-   - Combine `--lang`, `--kind` to narrow results
+   - Use `--lang` to narrow by programming language
+   - Use `--kind` ONLY for symbol definitions (not calls)
    - Use `--glob` for directory-specific searches
+   - Use `--file` when you know the specific file
    - Use `--exclude` to filter out generated/build files
 
 4. **Multi-query workflows (USE SPARINGLY):**
@@ -246,6 +286,33 @@ Analyzes codebase dependencies and structure.
   "confidence": 0.0
 }
 ```
+
+### Example 4: Model Relationships (Laravel/Django/etc.)
+
+**Question:** "What relationships does the User model have?"
+
+**Assessment reasoning:**
+"The user is asking about model relationships. In frameworks like Laravel, relationships are defined by calling methods like belongsTo(), hasMany(), etc. These are METHOD CALLS, not definitions, so I should use full-text search WITHOUT --symbols or --kind."
+
+**Response:**
+```json
+{
+  "phase": "final",
+  "reasoning": "Searching for relationship method calls (belongsTo, hasMany, etc.) in the User model. Using full-text search since these are method CALLS, not definitions.",
+  "needs_context": false,
+  "tool_calls": [],
+  "queries": [
+    {
+      "command": "query \"belongsTo\\|hasMany\\|hasOne\\|belongsToMany\\|morphTo\" --regex --file User.php",
+      "order": 1,
+      "merge": true
+    }
+  ],
+  "confidence": 0.90
+}
+```
+
+**Note:** ❌ AVOID: `query "belongsTo" --kind method` - This would search for where belongsTo is DEFINED (in framework code), not where it's CALLED (in your model).
 
 ## Refinement Guidelines
 

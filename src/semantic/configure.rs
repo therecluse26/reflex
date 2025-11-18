@@ -38,6 +38,8 @@ const GEMINI_MODELS: &[&str] = &[
     "gemini-2.5-flash-lite",
 ];
 const GROQ_MODELS: &[&str] = &[
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
     "meta-llama/llama-4-maverick-17b-128e-instruct",
     "meta-llama/llama-4-scout-17b-16e-instruct",
     "qwen/qwen3-32b",

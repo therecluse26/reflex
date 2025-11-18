@@ -17,6 +17,7 @@ use super::schema::QueryResponse;
 use super::schema_agentic::{AgenticResponse, Phase, ToolCall};
 use super::tools::{execute_tool, format_tool_results, ToolResult};
 use super::evaluator::{evaluate_results, format_evaluation_for_llm, EvaluationConfig};
+use super::reporter::AgenticReporter;
 
 /// Configuration for agentic loop
 #[derive(Debug, Clone)]
@@ -38,6 +39,12 @@ pub struct AgenticConfig {
 
     /// Model override
     pub model_override: Option<String>,
+
+    /// Show LLM reasoning blocks (default: false)
+    pub show_reasoning: bool,
+
+    /// Verbose output (show tool results, etc.) (default: false)
+    pub verbose: bool,
 }
 
 impl Default for AgenticConfig {
@@ -49,6 +56,8 @@ impl Default for AgenticConfig {
             eval_config: EvaluationConfig::default(),
             provider_override: None,
             model_override: None,
+            show_reasoning: false,
+            verbose: false,
         }
     }
 }
@@ -58,6 +67,7 @@ pub async fn run_agentic_loop(
     question: &str,
     cache: &CacheManager,
     config: AgenticConfig,
+    reporter: &dyn AgenticReporter,
 ) -> Result<QueryResponse> {
     log::info!("Starting agentic loop for question: {}", question);
 
@@ -69,6 +79,7 @@ pub async fn run_agentic_loop(
         question,
         cache,
         &*provider,
+        reporter,
     ).await?;
 
     // Phase 2: Context gathering (if needed)
@@ -79,6 +90,7 @@ pub async fn run_agentic_loop(
             cache,
             &*provider,
             &config,
+            reporter,
         ).await?
     } else {
         String::new()
@@ -90,6 +102,7 @@ pub async fn run_agentic_loop(
         &gathered_context,
         cache,
         &*provider,
+        reporter,
     ).await?;
 
     // Phase 4: Execute queries
@@ -111,6 +124,9 @@ pub async fn run_agentic_loop(
 
         log::info!("Evaluation: success={}, score={:.2}", evaluation.success, evaluation.score);
 
+        // Report evaluation
+        reporter.report_evaluation(&evaluation);
+
         // Phase 6: Refinement (if needed and iterations remaining)
         if !evaluation.success && config.max_iterations > 1 {
             log::info!("Results unsatisfactory, attempting refinement");
@@ -123,6 +139,7 @@ pub async fn run_agentic_loop(
                 cache,
                 &*provider,
                 &config,
+                reporter,
             ).await;
         }
     }
@@ -135,6 +152,7 @@ async fn phase_1_assess(
     question: &str,
     cache: &CacheManager,
     provider: &dyn LlmProvider,
+    reporter: &dyn AgenticReporter,
 ) -> Result<(bool, AgenticResponse)> {
     log::info!("Phase 1: Assessing context needs");
 
@@ -161,6 +179,9 @@ async fn phase_1_assess(
         response.tool_calls.len()
     );
 
+    // Report assessment
+    reporter.report_assessment(&response.reasoning, needs_context, &response.tool_calls);
+
     Ok((needs_context, response))
 }
 
@@ -171,6 +192,7 @@ async fn phase_2_gather(
     cache: &CacheManager,
     provider: &dyn LlmProvider,
     config: &AgenticConfig,
+    reporter: &dyn AgenticReporter,
 ) -> Result<String> {
     log::info!("Phase 2: Gathering context via tools");
 
@@ -188,19 +210,25 @@ async fn phase_2_gather(
     for (idx, tool) in tool_calls.iter().enumerate() {
         log::debug!("Executing tool {}/{}: {:?}", idx + 1, tool_calls.len(), tool);
 
+        // Report tool start
+        reporter.report_tool_start(idx + 1, tool);
+
         match execute_tool(tool, cache).await {
             Ok(result) => {
                 log::info!("Tool {} succeeded: {}", idx + 1, result.description);
+                reporter.report_tool_complete(idx + 1, &result);
                 all_tool_results.push(result);
             }
             Err(e) => {
                 log::warn!("Tool {} failed: {}", idx + 1, e);
                 // Continue with other tools even if one fails
-                all_tool_results.push(ToolResult {
+                let failed_result = ToolResult {
                     description: format!("Tool {} (failed)", idx + 1),
                     output: format!("Error: {}", e),
                     success: false,
-                });
+                };
+                reporter.report_tool_complete(idx + 1, &failed_result);
+                all_tool_results.push(failed_result);
             }
         }
     }
@@ -219,6 +247,7 @@ async fn phase_3_generate(
     gathered_context: &str,
     cache: &CacheManager,
     provider: &dyn LlmProvider,
+    reporter: &dyn AgenticReporter,
 ) -> Result<QueryResponse> {
     log::info!("Phase 3: Generating final queries");
 
@@ -236,6 +265,13 @@ async fn phase_3_generate(
     // Try AgenticResponse first (for agentic mode)
     if let Ok(agentic_response) = serde_json::from_str::<AgenticResponse>(&json_response) {
         if agentic_response.phase == Phase::Final {
+            // Report generation with reasoning
+            reporter.report_generation(
+                Some(&agentic_response.reasoning),
+                agentic_response.queries.len(),
+                agentic_response.confidence,
+            );
+
             // Convert to QueryResponse
             return Ok(QueryResponse {
                 queries: agentic_response.queries,
@@ -249,6 +285,9 @@ async fn phase_3_generate(
 
     log::info!("Generated {} queries", query_response.queries.len());
 
+    // Report generation without reasoning (fallback mode)
+    reporter.report_generation(None, query_response.queries.len(), 1.0);
+
     Ok(query_response)
 }
 
@@ -261,8 +300,12 @@ async fn phase_6_refine(
     cache: &CacheManager,
     provider: &dyn LlmProvider,
     config: &AgenticConfig,
+    reporter: &dyn AgenticReporter,
 ) -> Result<QueryResponse> {
     log::info!("Phase 6: Refining queries based on evaluation");
+
+    // Report refinement start
+    reporter.report_refinement_start();
 
     // Build refinement prompt with evaluation feedback
     let prompt = super::prompt_agentic::build_refinement_prompt(

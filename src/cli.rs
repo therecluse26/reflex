@@ -509,6 +509,18 @@ pub enum Command {
         /// Skip result evaluation in agentic mode
         #[arg(long)]
         no_eval: bool,
+
+        /// Show LLM reasoning blocks at each phase (agentic mode only)
+        #[arg(long)]
+        show_reasoning: bool,
+
+        /// Verbose output: show tool results and details (agentic mode only)
+        #[arg(long)]
+        verbose: bool,
+
+        /// Quiet mode: suppress progress output (agentic mode only)
+        #[arg(long)]
+        quiet: bool,
     },
 
     /// Generate codebase context for AI prompts
@@ -724,8 +736,8 @@ impl Cli {
             Some(Command::Deps { file, reverse, depth, format, json, pretty }) => {
                 handle_deps(file, reverse, depth, format, json, pretty)
             }
-            Some(Command::Ask { question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval }) => {
-                handle_ask(question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval)
+            Some(Command::Ask { question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet }) => {
+                handle_ask(question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet)
             }
             Some(Command::Context { structure, path, file_types, project_type, framework, entry_points, test_layout, config_files, full, depth, json }) => {
                 handle_context(structure, path, file_types, project_type, framework, entry_points, test_layout, config_files, full, depth, json)
@@ -2296,6 +2308,9 @@ fn handle_ask(
     agentic: bool,
     max_iterations: usize,
     no_eval: bool,
+    show_reasoning: bool,
+    verbose: bool,
+    quiet: bool,
 ) -> Result<()> {
     // If --configure flag is set, launch the configuration wizard
     if configure {
@@ -2339,8 +2354,19 @@ fn handle_ask(
 
     let response = if agentic {
         // Agentic mode: multi-step reasoning with context gathering
-        spinner.set_message("Agentic mode: Assessing context needs...".to_string());
-        spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+
+        // Create reporter based on flags
+        let reporter: Box<dyn crate::semantic::AgenticReporter> = if quiet {
+            Box::new(crate::semantic::QuietReporter)
+        } else {
+            Box::new(crate::semantic::ConsoleReporter::new(show_reasoning, verbose))
+        };
+
+        // Only show spinner in quiet mode (reporter handles its own output otherwise)
+        if quiet {
+            spinner.set_message("Agentic mode: Assessing context needs...".to_string());
+            spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+        }
 
         let agentic_config = crate::semantic::AgenticConfig {
             max_iterations,
@@ -2349,13 +2375,17 @@ fn handle_ask(
             eval_config: Default::default(),
             provider_override: provider_override.clone(),
             model_override: None,
+            show_reasoning,
+            verbose,
         };
 
         let result = runtime.block_on(async {
-            crate::semantic::run_agentic_loop(&question, &cache, agentic_config).await
+            crate::semantic::run_agentic_loop(&question, &cache, agentic_config, &*reporter).await
         }).context("Failed to run agentic loop")?;
 
-        spinner.finish_and_clear();
+        if quiet {
+            spinner.finish_and_clear();
+        }
         log::info!("Agentic loop completed: {} queries generated", result.queries.len());
         result
     } else {
