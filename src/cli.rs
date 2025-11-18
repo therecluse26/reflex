@@ -2450,16 +2450,26 @@ fn handle_ask(
     let runtime = tokio::runtime::Runtime::new()
         .context("Failed to create async runtime")?;
 
-    // Create spinner for LLM query generation
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} {msg}")
-            .unwrap()
-            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-    );
+    // Force quiet mode for JSON output (machine-readable, no UI output)
+    let quiet = quiet || as_json;
 
-    let response = if agentic {
+    // Create optional spinner (skip entirely in JSON mode for clean machine-readable output)
+    let spinner = if !as_json {
+        let s = ProgressBar::new_spinner();
+        s.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} {msg}")
+                .unwrap()
+                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
+        );
+        s.set_message("Generating queries...".to_string());
+        s.enable_steady_tick(std::time::Duration::from_millis(80));
+        Some(s)
+    } else {
+        None
+    };
+
+    let (queries, results, total_count, count_only) = if agentic {
         // Agentic mode: multi-step reasoning with context gathering
 
         // Create reporter based on flags
@@ -2470,9 +2480,11 @@ fn handle_ask(
         };
 
         // Only show spinner in quiet mode (reporter handles its own output otherwise)
-        if quiet {
-            spinner.set_message("Agentic mode: Assessing context needs...".to_string());
-            spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+        if let Some(ref s) = spinner {
+            if quiet {
+                s.set_message("Agentic mode: Assessing context needs...".to_string());
+                s.enable_steady_tick(std::time::Duration::from_millis(80));
+            }
         }
 
         let agentic_config = crate::semantic::AgenticConfig {
@@ -2486,35 +2498,64 @@ fn handle_ask(
             verbose,
         };
 
-        let result = runtime.block_on(async {
+        let agentic_response = runtime.block_on(async {
             crate::semantic::run_agentic_loop(&question, &cache, agentic_config, &*reporter).await
         }).context("Failed to run agentic loop")?;
 
-        if quiet {
-            spinner.finish_and_clear();
+        if let Some(ref s) = spinner {
+            if quiet {
+                s.finish_and_clear();
+            }
         }
-        log::info!("Agentic loop completed: {} queries generated", result.queries.len());
-        result
-    } else {
-        // Standard mode: single LLM call
-        spinner.set_message("Generating queries...".to_string());
-        spinner.enable_steady_tick(std::time::Duration::from_millis(80));
 
-        let result = runtime.block_on(async {
+        // Clear ephemeral output (Phase 5 evaluation) before showing final results
+        if !as_json {
+            reporter.clear_all();
+        }
+
+        log::info!("Agentic loop completed: {} queries generated", agentic_response.queries.len());
+
+        // Destructure AgenticQueryResponse into tuple
+        let count_only_mode = agentic_response.total_count.is_none();
+        let count = agentic_response.total_count.unwrap_or(0);
+        (agentic_response.queries, agentic_response.results, count, count_only_mode)
+    } else {
+        // Standard mode: single LLM call + execution
+        if let Some(ref s) = spinner {
+            s.set_message("Generating queries...".to_string());
+            s.enable_steady_tick(std::time::Duration::from_millis(80));
+        }
+
+        let semantic_response = runtime.block_on(async {
             crate::semantic::ask_question(&question, &cache, provider_override, additional_context).await
         }).context("Failed to generate semantic queries")?;
 
-        spinner.finish_and_clear();
-        log::info!("LLM generated {} queries", result.queries.len());
-        result
+        if let Some(ref s) = spinner {
+            s.finish_and_clear();
+        }
+        log::info!("LLM generated {} queries", semantic_response.queries.len());
+
+        // Execute queries for standard mode
+        let (exec_results, exec_total, exec_count_only) = runtime.block_on(async {
+            crate::semantic::execute_queries(semantic_response.queries.clone(), &cache).await
+        }).context("Failed to execute queries")?;
+
+        (semantic_response.queries, exec_results, exec_total, exec_count_only)
     };
 
     // Output in JSON format if requested
     if as_json {
+        // Build AgenticQueryResponse for JSON output (includes both queries and results)
+        let json_response = crate::semantic::AgenticQueryResponse {
+            queries: queries.clone(),
+            results: results.clone(),
+            total_count: if count_only { None } else { Some(total_count) },
+        };
+
         let json_str = if pretty_json {
-            serde_json::to_string_pretty(&response)?
+            serde_json::to_string_pretty(&json_response)?
         } else {
-            serde_json::to_string(&response)?
+            serde_json::to_string(&json_response)?
         };
         println!("{}", json_str);
         return Ok(());
@@ -2523,7 +2564,7 @@ fn handle_ask(
     // Display generated queries with color
     println!("\n{}", "Generated Queries:".bold().cyan());
     println!("{}", "==================".cyan());
-    for (idx, query_cmd) in response.queries.iter().enumerate() {
+    for (idx, query_cmd) in queries.iter().enumerate() {
         println!(
             "{}. {} {} {}",
             (idx + 1).to_string().bright_white().bold(),
@@ -2534,22 +2575,9 @@ fn handle_ask(
     }
     println!();
 
-    // Execute queries with spinner
-    let exec_spinner = ProgressBar::new_spinner();
-    exec_spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.green} {msg}")
-            .unwrap()
-            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-    );
-    exec_spinner.set_message("Executing queries...".to_string());
-    exec_spinner.enable_steady_tick(std::time::Duration::from_millis(80));
-
-    let (results, total_count, count_only) = runtime.block_on(async {
-        crate::semantic::execute_queries(response.queries, &cache).await
-    }).context("Failed to execute queries")?;
-
-    exec_spinner.finish_and_clear();
+    // Note: queries already executed in both modes above
+    // Agentic mode: executed during run_agentic_loop
+    // Standard mode: executed after ask_question
 
     // Display results with color
     println!();

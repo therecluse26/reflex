@@ -10,6 +10,21 @@ pub struct QueryResponse {
     pub queries: Vec<QueryCommand>,
 }
 
+/// Enhanced response for agentic mode containing both queries and results
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgenticQueryResponse {
+    /// Generated query commands
+    pub queries: Vec<QueryCommand>,
+
+    /// Executed search results (file-grouped)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub results: Vec<crate::models::FileGroupedResult>,
+
+    /// Total count of matches across all results
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_count: Option<usize>,
+}
+
 /// A single rfx query command with execution metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryCommand {

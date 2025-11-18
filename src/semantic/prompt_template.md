@@ -31,6 +31,22 @@ Translate natural language questions about code into precise query commands for 
 
 **Possible `--lang` values:** `rust`, `python`, `typescript`, `javascript`, `go`, `java`, `c`, `cpp`, `csharp`, `php`, `ruby`, `kotlin`, `zig`, `vue`, `svelte`
 
+**CRITICAL: `--lang` accepts ONLY ONE language per query. DO NOT use comma-separated languages:**
+
+❌ **WRONG** - Comma-separated languages (will fail):
+```
+query "keycloak" --lang typescript,vue
+```
+
+✓ **CORRECT** - Separate queries for each language:
+```
+# Query 1: Search TypeScript files
+query "keycloak" --lang typescript
+
+# Query 2: Search Vue files
+query "keycloak" --lang vue
+```
+
 ## Regex Pattern Syntax
 
 When using `--regex` flag, use standard regex syntax. **IMPORTANT: Special characters do NOT need backslash escaping in patterns.**
@@ -316,6 +332,7 @@ Command: query "fetchData(" --file api.js
 
 3. **Filtering:**
    - Use `--lang` to narrow by programming language
+   - **IMPORTANT: `--lang` accepts ONLY ONE language** - create separate queries for multiple languages
    - Use `--kind` ONLY for symbol definitions (not calls)
    - Use `--file` when you know the specific file
    - Use `--glob` for directory-specific searches
@@ -326,7 +343,7 @@ Command: query "fetchData(" --file api.js
    - Only generate multiple queries if it's absolutely impossible to satisfy the request with one query
    - Valid reasons for multiple queries:
      - User explicitly asks for multiple separate searches (e.g., "find X AND ALSO find Y")
-     - Request requires searching different languages that cannot be combined
+     - Request requires searching different languages that cannot be combined (since `--lang` accepts only ONE language)
      - Request needs both definitions AND usages shown separately
    - Invalid reasons (use single query instead):
      - Adding filters (use `--lang`, `--kind`, `--symbols` in one query)

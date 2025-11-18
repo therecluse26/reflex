@@ -13,7 +13,7 @@ use crate::cache::CacheManager;
 
 use super::providers::{LlmProvider, create_provider};
 use super::config;
-use super::schema::QueryResponse;
+use super::schema::{QueryResponse, AgenticQueryResponse};
 use super::schema_agentic::{AgenticResponse, Phase, ToolCall};
 use super::tools::{execute_tool, format_tool_results, ToolResult};
 use super::evaluator::{evaluate_results, format_evaluation_for_llm, EvaluationConfig};
@@ -68,7 +68,7 @@ pub async fn run_agentic_loop(
     cache: &CacheManager,
     config: AgenticConfig,
     reporter: &dyn AgenticReporter,
-) -> Result<QueryResponse> {
+) -> Result<AgenticQueryResponse> {
     log::info!("Starting agentic loop for question: {}", question);
 
     // Initialize provider
@@ -144,7 +144,12 @@ pub async fn run_agentic_loop(
         }
     }
 
-    Ok(query_response)
+    // Return enhanced response with both queries and results
+    Ok(AgenticQueryResponse {
+        queries: query_response.queries,
+        results,
+        total_count: if count_only { None } else { Some(total_count) },
+    })
 }
 
 /// Phase 1: Assess if more context is needed
@@ -301,7 +306,7 @@ async fn phase_6_refine(
     provider: &dyn LlmProvider,
     config: &AgenticConfig,
     reporter: &dyn AgenticReporter,
-) -> Result<QueryResponse> {
+) -> Result<AgenticQueryResponse> {
     log::info!("Phase 6: Refining queries based on evaluation");
 
     // Report refinement start
@@ -326,7 +331,7 @@ async fn phase_6_refine(
     log::info!("Refinement complete: {} refined queries", refined_response.queries.len());
 
     // Execute refined queries
-    let (results, total_count, _count_only) = super::executor::execute_queries(
+    let (results, total_count, count_only) = super::executor::execute_queries(
         refined_response.queries.clone(),
         cache,
     ).await?;
@@ -345,9 +350,12 @@ async fn phase_6_refine(
         refined_evaluation.score
     );
 
-    // Return refined response regardless of evaluation
-    // (we've already done one refinement iteration)
-    Ok(refined_response)
+    // Return enhanced response with both queries and results
+    Ok(AgenticQueryResponse {
+        queries: refined_response.queries,
+        results,
+        total_count: if count_only { None } else { Some(total_count) },
+    })
 }
 
 /// Initialize LLM provider based on configuration

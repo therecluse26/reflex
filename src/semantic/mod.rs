@@ -19,7 +19,7 @@ pub mod reporter;
 // Re-export main types for convenience
 pub use configure::run_configure_wizard;
 pub use executor::{execute_queries, parse_command, ParsedCommand};
-pub use schema::{QueryCommand, QueryResponse as SemanticQueryResponse};
+pub use schema::{QueryCommand, QueryResponse as SemanticQueryResponse, AgenticQueryResponse};
 pub use agentic::{run_agentic_loop, AgenticConfig};
 pub use reporter::{AgenticReporter, ConsoleReporter, QuietReporter};
 
