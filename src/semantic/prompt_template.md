@@ -31,6 +31,44 @@ Translate natural language questions about code into precise query commands for 
 
 **Possible `--lang` values:** `rust`, `python`, `typescript`, `javascript`, `go`, `java`, `c`, `cpp`, `csharp`, `php`, `ruby`, `kotlin`, `zig`, `vue`, `svelte`
 
+## Regex Pattern Syntax
+
+When using `--regex` flag, use standard regex syntax. **IMPORTANT: Special characters do NOT need backslash escaping in patterns.**
+
+**Common regex operators (NO backslash needed):**
+
+| Operator | Meaning | Example | Matches |
+|----------|---------|---------|---------|
+| `|` | Alternation (OR) | `belongsTo|hasMany` | "belongsTo" OR "hasMany" |
+| `.` | Any character | `get.value` | "getValue", "get_value", etc. |
+| `.*` | Zero or more chars | `import.*from` | "import foo from", "import { x } from", etc. |
+| `^` | Start of line | `^fn ` | Lines starting with "fn " |
+| `$` | End of line | `;$` | Lines ending with ";" |
+| `\w` | Word character | `test_\w+` | "test_foo", "test_bar", etc. |
+| `\d` | Digit | `version_\d` | "version_1", "version_2", etc. |
+
+**Examples:**
+
+✓ **CORRECT** - Alternation (OR):
+```
+query "belongsTo|hasMany|hasOne" --regex
+```
+
+❌ **WRONG** - Escaped pipes (matches literal backslash):
+```
+query "belongsTo\\|hasMany\\|hasOne" --regex
+```
+
+✓ **CORRECT** - Match function calls:
+```
+query "^import.*from" --regex
+```
+
+✓ **CORRECT** - Match test functions:
+```
+query "fn.*test|test.*fn" --regex --lang rust
+```
+
 ## Understanding --symbols: Definitions vs Usages
 
 **CRITICAL DISTINCTION:**
@@ -61,6 +99,75 @@ Translate natural language questions about code into precise query commands for 
 ✓ **CORRECT**: `query "fetchData(" --file api.js`
    - Finds all **calls** to `fetchData()` function
    - The `(` helps match function calls specifically
+
+## Flag Combinations
+
+### Mutually Exclusive Flags (NEVER combine - will error)
+
+**❌ `--regex` + `--contains`**
+```
+# WRONG - these are mutually exclusive pattern matching modes
+query "foo" --regex --contains
+```
+- `--regex`: Regex pattern matching
+- `--contains`: Substring matching (expansive)
+- **Use one or the other, never both**
+
+**❌ `--exact` + `--contains`**
+```
+# WRONG - these contradict each other
+query "User" --exact --contains
+```
+- `--exact`: Exact match only
+- `--contains`: Substring match (partial)
+- **These have opposite meanings**
+
+### Redundant Combinations (Avoid - one is sufficient)
+
+**⚠️ `--file` + `--glob`**
+```
+# REDUNDANT - both filter by file path
+query "belongsTo" --file User.php --glob "**/*User.php"
+```
+- **Prefer:** `--file User.php` (simpler for single file substring match)
+- **Or:** `--glob "app/Models/**/*.php"` (for directory patterns)
+- **Don't use both** unless you have a specific reason
+
+### Glob Pattern Best Practices
+
+**❌ Don't use shell quotes in glob patterns:**
+```
+# WRONG - quotes become part of the pattern
+query "foo" --glob '**/*.rs'
+
+# CORRECT - no quotes
+query "foo" --glob **/*.rs
+```
+
+**❌ Don't use `*` when you mean `**`:**
+```
+# WRONG - only matches one directory level
+query "foo" --glob src/*.rs
+
+# CORRECT - recursive match
+query "foo" --glob src/**/*.rs
+```
+
+**Pattern syntax:**
+- `**` = Recursive match (all subdirectories)
+- `*` = Single level match (one directory only)
+
+### Symbol Mode Auto-Enabling
+
+**Note:** `--kind` automatically enables `--symbols` mode:
+
+```
+# These are equivalent:
+query "User" --kind class
+query "User" --symbols --kind class
+```
+
+**Don't redundantly specify both** - just use `--kind`.
 
 ## Project-Specific Instructions (these should override any relevant instructions that come after)
 
@@ -178,7 +285,7 @@ query "database.*connect" --regex --lang typescript
 **15. Laravel/Django model relationships (method calls)**
 ```
 User: What relationships does the User model have?
-Command: query "belongsTo\|hasMany\|hasOne\|belongsToMany\|morphTo" --regex --file User.php
+Command: query "belongsTo|hasMany|hasOne|belongsToMany|morphTo" --regex --file User.php
 ```
 **Note:** ❌ DO NOT use `--kind method` here. Relationship methods are CALLS to framework methods, not definitions. Using `--kind method` would search for where these methods are DEFINED (in the framework), not where they're CALLED (in your model).
 

@@ -135,6 +135,20 @@ pub enum Command {
         ast: bool,
 
         /// Use regex pattern matching
+        ///
+        /// Enables standard regex syntax in the search pattern:
+        ///   |  for alternation (OR) - NO backslash needed
+        ///   .  matches any character
+        ///   .*  matches zero or more characters
+        ///   ^  anchors to start of line
+        ///   $  anchors to end of line
+        ///
+        /// Examples:
+        ///   --regex "belongsTo|hasMany"       Match belongsTo OR hasMany
+        ///   --regex "^import.*from"           Lines starting with import...from
+        ///   --regex "fn.*test"                Functions containing 'test'
+        ///
+        /// Note: Cannot be combined with --contains (mutually exclusive)
         #[arg(short = 'r', long)]
         regex: bool,
 
@@ -178,7 +192,19 @@ pub enum Command {
         exact: bool,
 
         /// Use substring matching for both text and symbols (expansive search)
-        /// Default behavior uses word-boundary and exact matching for precision
+        ///
+        /// Default behavior uses word-boundary matching for precision:
+        ///   "Error" matches "Error" but not "NetworkError"
+        ///
+        /// With --contains, enables substring matching (expansive):
+        ///   "Error" matches "Error", "NetworkError", "error_handler", etc.
+        ///
+        /// Use cases:
+        ///   - Finding partial matches: --contains "partial"
+        ///   - When you're unsure of exact names
+        ///   - Exploratory searches
+        ///
+        /// Note: Cannot be combined with --regex or --exact (mutually exclusive)
         #[arg(long)]
         contains: bool,
 
@@ -195,12 +221,29 @@ pub enum Command {
         plain: bool,
 
         /// Include files matching glob pattern (can be repeated)
-        /// Example: --glob "src/**/*.rs" --glob "tests/**/*.rs"
+        ///
+        /// Pattern syntax (NO shell quotes in the pattern itself):
+        ///   ** = recursive match (all subdirectories)
+        ///   *  = single level match (one directory)
+        ///
+        /// Examples:
+        ///   --glob src/**/*.rs          All .rs files under src/ (recursive)
+        ///   --glob app/Models/*.php     PHP files directly in Models/ (not subdirs)
+        ///   --glob tests/**/*_test.go   All test files under tests/
+        ///
+        /// Tip: Use --file for simple substring matching instead:
+        ///   --file User.php             Simpler than --glob **/User.php
         #[arg(short = 'g', long)]
         glob: Vec<String>,
 
         /// Exclude files matching glob pattern (can be repeated)
-        /// Example: --exclude "target/**" --exclude "*.gen.rs"
+        ///
+        /// Same syntax as --glob (** for recursive, * for single level)
+        ///
+        /// Examples:
+        ///   --exclude target/**         Exclude all files under target/
+        ///   --exclude **/*.gen.rs       Exclude generated Rust files
+        ///   --exclude node_modules/**   Exclude npm dependencies
         #[arg(short = 'x', long)]
         exclude: Vec<String>,
 
@@ -1132,6 +1175,70 @@ fn handle_query(
              • rfx query \"(function_definition) @fn\" --ast --lang python\n\
              • rfx query \"(class_declaration) @class\" --ast --lang typescript --glob \"src/**/*.ts\""
         );
+    }
+
+    // VALIDATION: Check for conflicting or problematic flag combinations
+    // Only show warnings/errors in non-JSON mode (avoid breaking parsers)
+    if !as_json {
+        let mut has_errors = false;
+
+        // ERROR: Mutually exclusive pattern matching modes
+        if use_regex && use_contains {
+            eprintln!("{}", "ERROR: Cannot use --regex and --contains together.".red().bold());
+            eprintln!("  {} --regex for pattern matching (alternation, wildcards, etc.)", "•".dimmed());
+            eprintln!("  {} --contains for substring matching (expansive search)", "•".dimmed());
+            eprintln!("\n  {} Choose one based on your needs:", "Tip:".cyan().bold());
+            eprintln!("    {} for OR logic: --regex", "pattern1|pattern2".yellow());
+            eprintln!("    {} for substring: --contains", "partial_text".yellow());
+            has_errors = true;
+        }
+
+        // ERROR: Contradictory matching requirements
+        if exact && use_contains {
+            eprintln!("{}", "ERROR: Cannot use --exact and --contains together (contradictory).".red().bold());
+            eprintln!("  {} --exact requires exact symbol name match", "•".dimmed());
+            eprintln!("  {} --contains allows substring matching", "•".dimmed());
+            has_errors = true;
+        }
+
+        // WARNING: Redundant file filtering
+        if file_pattern.is_some() && !glob_patterns.is_empty() {
+            eprintln!("{}", "WARNING: Both --file and --glob specified.".yellow().bold());
+            eprintln!("  {} --file does substring matching on file paths", "•".dimmed());
+            eprintln!("  {} --glob does pattern matching with wildcards", "•".dimmed());
+            eprintln!("  {} Both filters will apply (AND condition)", "Note:".dimmed());
+            eprintln!("\n  {} Usually you only need one:", "Tip:".cyan().bold());
+            eprintln!("    {} for simple matching", "--file User.php".yellow());
+            eprintln!("    {} for pattern matching", "--glob src/**/*.php".yellow());
+        }
+
+        // INFO: Detect potentially problematic glob patterns
+        for pattern in &glob_patterns {
+            // Check for literal quotes in pattern
+            if (pattern.starts_with('\'') && pattern.ends_with('\'')) ||
+               (pattern.starts_with('"') && pattern.ends_with('"')) {
+                eprintln!("{}",
+                    format!("WARNING: Glob pattern contains quotes: {}", pattern).yellow().bold()
+                );
+                eprintln!("  {} Shell quotes should not be part of the pattern", "Note:".dimmed());
+                eprintln!("  {} --glob src/**/*.rs", "Correct:".green());
+                eprintln!("  {} --glob 'src/**/*.rs'", "Wrong:".red().dimmed());
+            }
+
+            // Suggest using ** instead of * for recursive matching
+            if pattern.contains("*/") && !pattern.contains("**/") {
+                eprintln!("{}",
+                    format!("INFO: Glob '{}' uses * (matches one directory level)", pattern).cyan()
+                );
+                eprintln!("  {} Use ** for recursive matching across subdirectories", "Tip:".cyan().bold());
+                eprintln!("    {} → matches files in Models/ only", "app/Models/*.php".yellow());
+                eprintln!("    {} → matches files in Models/ and subdirs", "app/Models/**/*.php".green());
+            }
+        }
+
+        if has_errors {
+            anyhow::bail!("Invalid flag combination. Fix the errors above and try again.");
+        }
     }
 
     let filter = QueryFilter {
