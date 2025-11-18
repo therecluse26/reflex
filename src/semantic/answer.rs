@@ -89,7 +89,23 @@ fn build_answer_prompt(
                 break;
             }
 
-            // Truncate preview if too long
+            log::debug!("Formatting match at {}:{} - context_before: {}, context_after: {}",
+                file_group.path, match_result.span.start_line,
+                match_result.context_before.len(), match_result.context_after.len());
+
+            // Show context before the match
+            for (idx, line) in match_result.context_before.iter().enumerate() {
+                let line_num = match_result.span.start_line.saturating_sub(match_result.context_before.len() - idx);
+                // Truncate long lines
+                let truncated = if line.len() > MAX_PREVIEW_LENGTH {
+                    format!("{}...", &line[..MAX_PREVIEW_LENGTH])
+                } else {
+                    line.clone()
+                };
+                prompt.push_str(&format!("  Line {}: {}\n", line_num, truncated.trim()));
+            }
+
+            // Show the match line itself
             let preview = if match_result.preview.len() > MAX_PREVIEW_LENGTH {
                 format!("{}...", &match_result.preview[..MAX_PREVIEW_LENGTH])
             } else {
@@ -102,6 +118,18 @@ fn build_answer_prompt(
                 match_result.span.end_line,
                 preview.trim()
             ));
+
+            // Show context after the match
+            for (idx, line) in match_result.context_after.iter().enumerate() {
+                let line_num = match_result.span.start_line + idx + 1;
+                // Truncate long lines
+                let truncated = if line.len() > MAX_PREVIEW_LENGTH {
+                    format!("{}...", &line[..MAX_PREVIEW_LENGTH])
+                } else {
+                    line.clone()
+                };
+                prompt.push_str(&format!("  Line {}: {}\n", line_num, truncated.trim()));
+            }
 
             match_count += 1;
         }

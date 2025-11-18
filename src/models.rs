@@ -215,6 +215,12 @@ pub struct MatchResult {
     pub span: Span,
     /// Code preview (few lines around the match)
     pub preview: String,
+    /// Lines of code before the match (for context)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub context_before: Vec<String>,
+    /// Lines of code after the match (for context)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub context_after: Vec<String>,
 }
 
 /// File-level grouped results with dependencies at file level

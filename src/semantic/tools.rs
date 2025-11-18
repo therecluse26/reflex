@@ -243,11 +243,24 @@ fn format_exploration_results(
 
         // Show first 3 matches per file
         for match_result in file_group.matches.iter().take(3) {
+            // Show context before the match
+            for (idx, line) in match_result.context_before.iter().enumerate() {
+                let line_num = match_result.span.start_line.saturating_sub(match_result.context_before.len() - idx);
+                output.push(format!("   Line {}: {}", line_num, line.trim()));
+            }
+
+            // Show the match line itself
             output.push(format!(
                 "   Line {}: {}",
                 match_result.span.start_line,
                 match_result.preview.lines().next().unwrap_or("").trim()
             ));
+
+            // Show context after the match
+            for (idx, line) in match_result.context_after.iter().enumerate() {
+                let line_num = match_result.span.start_line + idx + 1;
+                output.push(format!("   Line {}: {}", line_num, line.trim()));
+            }
         }
 
         if file_group.matches.len() > 3 {

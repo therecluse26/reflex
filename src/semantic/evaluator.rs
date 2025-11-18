@@ -307,22 +307,22 @@ pub fn format_evaluation_for_llm(report: &EvaluationReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{MatchResult, Span, SymbolInfo};
+    use crate::models::{MatchResult, Span};
 
     fn create_test_result(path: &str, line: usize) -> FileGroupedResult {
         FileGroupedResult {
             path: path.to_string(),
+            dependencies: None,
             matches: vec![MatchResult {
+                kind: crate::models::SymbolKind::Unknown("test".to_string()),
+                symbol: None,
                 span: Span {
                     start_line: line,
                     end_line: line,
-                    start_col: 0,
-                    end_col: 10,
                 },
                 preview: "test preview".to_string(),
                 context_before: vec![],
                 context_after: vec![],
-                symbol: None,
             }],
         }
     }

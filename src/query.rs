@@ -178,6 +178,10 @@ impl QueryEngine {
             None
         };
 
+        // Load ContentReader for extracting context lines
+        let content_path = self.cache.path().join("content.bin");
+        let content_reader_opt = ContentReader::open(&content_path).ok();
+
         // Convert to FileGroupedResult and load dependencies
         let mut file_results: Vec<FileGroupedResult> = grouped
             .into_iter()
@@ -212,14 +216,50 @@ impl QueryEngine {
                     None
                 };
 
-                // Convert SearchResults to MatchResults (strip path and dependencies)
+                // Get file_id for context extraction
+                // Note: We use ContentReader's get_file_id_by_path() which returns array indices,
+                // not database file_ids (which are AUTO INCREMENT values)
+                let normalized_path = path.strip_prefix("./").unwrap_or(&path);
+                let file_id_for_context = if let Some(reader) = &content_reader_opt {
+                    reader.get_file_id_by_path(normalized_path)
+                } else {
+                    None
+                };
+                log::debug!("Context extraction: file={}, file_id={:?}, content_reader={}",
+                    path, file_id_for_context, content_reader_opt.is_some());
+
+                // Convert SearchResults to MatchResults (strip path and dependencies) and extract context
                 let matches: Vec<MatchResult> = file_matches
                     .into_iter()
-                    .map(|r| MatchResult {
-                        kind: r.kind,
-                        symbol: r.symbol,
-                        span: r.span,
-                        preview: r.preview,
+                    .map(|r| {
+                        // Extract context lines (default: 3 lines before and after)
+                        let (context_before, context_after) = if let (Some(reader), Some(fid)) = (&content_reader_opt, file_id_for_context) {
+                            let result = reader.get_context_by_line(fid as u32, r.span.start_line, 3)
+                                .unwrap_or_else(|e| {
+                                    log::warn!("Failed to extract context for {}:{}: {}", path, r.span.start_line, e);
+                                    (vec![], vec![])
+                                });
+                            log::debug!("Extracted context for {}:{} - before: {}, after: {}",
+                                path, r.span.start_line, result.0.len(), result.1.len());
+                            result
+                        } else {
+                            if content_reader_opt.is_none() {
+                                log::debug!("No ContentReader available for context extraction");
+                            }
+                            if file_id_for_context.is_none() {
+                                log::debug!("No file_id found for {}", path);
+                            }
+                            (vec![], vec![])
+                        };
+
+                        MatchResult {
+                            kind: r.kind,
+                            symbol: r.symbol,
+                            span: r.span,
+                            preview: r.preview,
+                            context_before,
+                            context_after,
+                        }
                     })
                     .collect();
 

@@ -1421,16 +1421,44 @@ fn handle_query(
                         .push(result.clone());
                 }
 
+                // Load ContentReader for extracting context lines
+                use crate::content_store::ContentReader;
+                let local_cache = CacheManager::new(".");
+                let content_path = local_cache.path().join("content.bin");
+                let content_reader_opt = ContentReader::open(&content_path).ok();
+
                 let mut file_results: Vec<FileGroupedResult> = grouped
                     .into_iter()
                     .map(|(path, file_matches)| {
+                        // Get file_id for context extraction
+                        // Note: We use ContentReader's get_file_id_by_path() which returns array indices,
+                        // not database file_ids (which are AUTO INCREMENT values)
+                        let normalized_path = path.strip_prefix("./").unwrap_or(&path);
+                        let file_id_for_context = if let Some(reader) = &content_reader_opt {
+                            reader.get_file_id_by_path(normalized_path)
+                        } else {
+                            None
+                        };
+
                         let matches: Vec<MatchResult> = file_matches
                             .into_iter()
-                            .map(|r| MatchResult {
-                                kind: r.kind,
-                                symbol: r.symbol,
-                                span: r.span,
-                                preview: r.preview,
+                            .map(|r| {
+                                // Extract context lines (default: 3 lines before and after)
+                                let (context_before, context_after) = if let (Some(reader), Some(fid)) = (&content_reader_opt, file_id_for_context) {
+                                    reader.get_context_by_line(fid as u32, r.span.start_line, 3)
+                                        .unwrap_or_else(|_| (vec![], vec![]))
+                                } else {
+                                    (vec![], vec![])
+                                };
+
+                                MatchResult {
+                                    kind: r.kind,
+                                    symbol: r.symbol,
+                                    span: r.span,
+                                    preview: r.preview,
+                                    context_before,
+                                    context_after,
+                                }
                             })
                             .collect();
                         FileGroupedResult {
