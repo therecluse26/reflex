@@ -82,6 +82,11 @@ fn mask_api_key(key: &str) -> String {
     format!("{}...{}", start, end)
 }
 
+/// Check if a model is an OpenAI GPT-OSS model (requires special handling)
+fn is_gpt_oss_model(model: &str) -> bool {
+    model.starts_with("openai/gpt-oss-")
+}
+
 /// Main configuration wizard state
 pub struct ConfigWizard {
     screen: WizardScreen,
@@ -451,7 +456,14 @@ impl ConfigWizard {
                     "  "
                 };
 
-                ListItem::new(format!("{}{}", prefix, model)).style(style)
+                // Add warning badge for GPT-OSS models
+                let model_display = if is_gpt_oss_model(model) {
+                    format!("{} (Experimental - known API issues)", model)
+                } else {
+                    model.to_string()
+                };
+
+                ListItem::new(format!("{}{}", prefix, model_display)).style(style)
             })
             .collect();
 

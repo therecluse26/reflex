@@ -12,6 +12,14 @@ pub struct GroqProvider {
     model: String,
 }
 
+/// Check if a model is an OpenAI GPT-OSS model
+///
+/// These models have known issues with Groq's JSON mode implementation
+/// and require extra-strong JSON enforcement via system messages.
+fn is_gpt_oss_model(model: &str) -> bool {
+    model.starts_with("openai/gpt-oss-")
+}
+
 impl GroqProvider {
     /// Create a new Groq provider
     pub fn new(api_key: String, model: Option<String>) -> Result<Self> {
@@ -26,6 +34,30 @@ impl GroqProvider {
 #[async_trait]
 impl LlmProvider for GroqProvider {
     async fn complete(&self, prompt: &str) -> Result<String> {
+        // Build messages array - add system message for GPT-OSS models
+        let mut messages = Vec::new();
+
+        // GPT-OSS models have a known bug where they ignore response_format
+        // Add explicit system message to enforce JSON-only output
+        if is_gpt_oss_model(&self.model) {
+            messages.push(json!({
+                "role": "system",
+                "content": "You are a JSON generation assistant. You MUST ALWAYS return valid JSON that matches the schema provided in the user prompt. Never return free-form text. If you cannot answer the question, return a minimal valid JSON object that conforms to the schema. This is critical - only valid JSON is acceptable."
+            }));
+        }
+
+        messages.push(json!({
+            "role": "user",
+            "content": prompt
+        }));
+
+        // GPT-OSS models need higher token limits for complex agentic JSON responses
+        let max_tokens = if is_gpt_oss_model(&self.model) {
+            2000  // Larger limit for complex reasoning + multiple queries
+        } else {
+            500   // Standard limit for other Groq models
+        };
+
         let response = self
             .client
             .post("https://api.groq.com/openai/v1/chat/completions")
@@ -33,14 +65,9 @@ impl LlmProvider for GroqProvider {
             .header("Content-Type", "application/json")
             .json(&json!({
                 "model": self.model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
+                "messages": messages,
                 "temperature": 0.1,
-                "max_tokens": 500,
+                "max_tokens": max_tokens,
                 "response_format": {
                     "type": "json_object"
                 }
