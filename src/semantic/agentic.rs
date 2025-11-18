@@ -149,6 +149,7 @@ pub async fn run_agentic_loop(
         queries: query_response.queries,
         results,
         total_count: if count_only { None } else { Some(total_count) },
+        answer: None,  // No answer generation in agentic mode (handled in CLI)
     })
 }
 
@@ -355,6 +356,7 @@ async fn phase_6_refine(
         queries: refined_response.queries,
         results,
         total_count: if count_only { None } else { Some(total_count) },
+        answer: None,  // No answer generation in agentic mode (handled in CLI)
     })
 }
 

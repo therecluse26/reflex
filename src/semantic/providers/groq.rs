@@ -33,13 +33,13 @@ impl GroqProvider {
 
 #[async_trait]
 impl LlmProvider for GroqProvider {
-    async fn complete(&self, prompt: &str) -> Result<String> {
-        // Build messages array - add system message for GPT-OSS models
+    async fn complete(&self, prompt: &str, json_mode: bool) -> Result<String> {
+        // Build messages array - add system message for GPT-OSS models in JSON mode
         let mut messages = Vec::new();
 
         // GPT-OSS models have a known bug where they ignore response_format
-        // Add explicit system message to enforce JSON-only output
-        if is_gpt_oss_model(&self.model) {
+        // Add explicit system message to enforce JSON-only output (only in JSON mode)
+        if json_mode && is_gpt_oss_model(&self.model) {
             messages.push(json!({
                 "role": "system",
                 "content": "You are a JSON generation assistant. You MUST ALWAYS return valid JSON that matches the schema provided in the user prompt. Never return free-form text. If you cannot answer the question, return a minimal valid JSON object that conforms to the schema. This is critical - only valid JSON is acceptable."
@@ -58,20 +58,26 @@ impl LlmProvider for GroqProvider {
             500   // Standard limit for other Groq models
         };
 
+        let mut request_body = json!({
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.1,
+            "max_tokens": max_tokens,
+        });
+
+        // Add JSON response format if requested
+        if json_mode {
+            request_body["response_format"] = json!({
+                "type": "json_object"
+            });
+        }
+
         let response = self
             .client
             .post("https://api.groq.com/openai/v1/chat/completions")
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
-            .json(&json!({
-                "model": self.model,
-                "messages": messages,
-                "temperature": 0.1,
-                "max_tokens": max_tokens,
-                "response_format": {
-                    "type": "json_object"
-                }
-            }))
+            .json(&request_body)
             .send()
             .await
             .context("Failed to send request to Groq API")?;

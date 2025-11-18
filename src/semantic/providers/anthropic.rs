@@ -25,7 +25,9 @@ impl AnthropicProvider {
 
 #[async_trait]
 impl LlmProvider for AnthropicProvider {
-    async fn complete(&self, prompt: &str) -> Result<String> {
+    async fn complete(&self, prompt: &str, _json_mode: bool) -> Result<String> {
+        // Anthropic doesn't have a JSON mode - it returns plain text by default
+        // The json_mode parameter is ignored
         let response = self
             .client
             .post("https://api.anthropic.com/v1/messages")

@@ -11,10 +11,16 @@ use async_trait::async_trait;
 /// Trait for LLM providers that generate structured query responses
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
-    /// Send a prompt and get JSON response
+    /// Send a prompt and get response
     ///
-    /// The response should be valid JSON matching the QueryResponse schema.
-    async fn complete(&self, prompt: &str) -> Result<String>;
+    /// # Arguments
+    ///
+    /// * `prompt` - The prompt to send to the LLM
+    /// * `json_mode` - Whether to request JSON structured output (true) or plain text (false)
+    ///
+    /// When `json_mode` is true, the response should be valid JSON matching the QueryResponse schema.
+    /// When `json_mode` is false, the response can be plain text (used for answer generation).
+    async fn complete(&self, prompt: &str, json_mode: bool) -> Result<String>;
 
     /// Get provider name (for logging and error messages)
     fn name(&self) -> &str;

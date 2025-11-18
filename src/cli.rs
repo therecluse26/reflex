@@ -564,6 +564,10 @@ pub enum Command {
         /// Quiet mode: suppress progress output (agentic mode only)
         #[arg(long)]
         quiet: bool,
+
+        /// Generate a conversational answer based on search results
+        #[arg(long)]
+        answer: bool,
     },
 
     /// Generate codebase context for AI prompts
@@ -779,8 +783,8 @@ impl Cli {
             Some(Command::Deps { file, reverse, depth, format, json, pretty }) => {
                 handle_deps(file, reverse, depth, format, json, pretty)
             }
-            Some(Command::Ask { question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet }) => {
-                handle_ask(question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet)
+            Some(Command::Ask { question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet, answer }) => {
+                handle_ask(question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet, answer)
             }
             Some(Command::Context { structure, path, file_types, project_type, framework, entry_points, test_layout, config_files, full, depth, json }) => {
                 handle_context(structure, path, file_types, project_type, framework, entry_points, test_layout, config_files, full, depth, json)
@@ -2418,6 +2422,7 @@ fn handle_ask(
     show_reasoning: bool,
     verbose: bool,
     quiet: bool,
+    answer: bool,
 ) -> Result<()> {
     // If --configure flag is set, launch the configuration wizard
     if configure {
@@ -2527,7 +2532,7 @@ fn handle_ask(
         }
 
         let semantic_response = runtime.block_on(async {
-            crate::semantic::ask_question(&question, &cache, provider_override, additional_context).await
+            crate::semantic::ask_question(&question, &cache, provider_override.clone(), additional_context).await
         }).context("Failed to generate semantic queries")?;
 
         if let Some(ref s) = spinner {
@@ -2543,6 +2548,60 @@ fn handle_ask(
         (semantic_response.queries, exec_results, exec_total, exec_count_only)
     };
 
+    // Generate conversational answer if --answer flag is set
+    let generated_answer = if answer {
+        // Show spinner while generating answer
+        let answer_spinner = if !as_json {
+            let s = ProgressBar::new_spinner();
+            s.set_style(
+                ProgressStyle::default_spinner()
+                    .template("{spinner:.cyan} {msg}")
+                    .unwrap()
+                    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
+            );
+            s.set_message("Generating answer...".to_string());
+            s.enable_steady_tick(std::time::Duration::from_millis(80));
+            Some(s)
+        } else {
+            None
+        };
+
+        // Initialize provider for answer generation
+        let mut config = crate::semantic::config::load_config(cache.path())?;
+        if let Some(provider) = &provider_override {
+            config.provider = provider.clone();
+        }
+        let api_key = crate::semantic::config::get_api_key(&config.provider)?;
+        let model = if config.model.is_some() {
+            config.model.clone()
+        } else {
+            crate::semantic::config::get_user_model(&config.provider)
+        };
+        let provider_instance = crate::semantic::providers::create_provider(
+            &config.provider,
+            api_key,
+            model,
+        )?;
+
+        // Generate answer
+        let answer_result = runtime.block_on(async {
+            crate::semantic::generate_answer(
+                &question,
+                &results,
+                total_count,
+                &*provider_instance,
+            ).await
+        }).context("Failed to generate answer")?;
+
+        if let Some(s) = answer_spinner {
+            s.finish_and_clear();
+        }
+
+        Some(answer_result)
+    } else {
+        None
+    };
+
     // Output in JSON format if requested
     if as_json {
         // Build AgenticQueryResponse for JSON output (includes both queries and results)
@@ -2550,6 +2609,7 @@ fn handle_ask(
             queries: queries.clone(),
             results: results.clone(),
             total_count: if count_only { None } else { Some(total_count) },
+            answer: generated_answer,
         };
 
         let json_str = if pretty_json {
@@ -2561,54 +2621,78 @@ fn handle_ask(
         return Ok(());
     }
 
-    // Display generated queries with color
-    println!("\n{}", "Generated Queries:".bold().cyan());
-    println!("{}", "==================".cyan());
-    for (idx, query_cmd) in queries.iter().enumerate() {
-        println!(
-            "{}. {} {} {}",
-            (idx + 1).to_string().bright_white().bold(),
-            format!("[order: {}, merge: {}]", query_cmd.order, query_cmd.merge).dimmed(),
-            "rfx".bright_green().bold(),
-            query_cmd.command.bright_white()
-        );
+    // Display generated queries with color (unless in answer mode)
+    if !answer {
+        println!("\n{}", "Generated Queries:".bold().cyan());
+        println!("{}", "==================".cyan());
+        for (idx, query_cmd) in queries.iter().enumerate() {
+            println!(
+                "{}. {} {} {}",
+                (idx + 1).to_string().bright_white().bold(),
+                format!("[order: {}, merge: {}]", query_cmd.order, query_cmd.merge).dimmed(),
+                "rfx".bright_green().bold(),
+                query_cmd.command.bright_white()
+            );
+        }
+        println!();
     }
-    println!();
 
     // Note: queries already executed in both modes above
     // Agentic mode: executed during run_agentic_loop
     // Standard mode: executed after ask_question
 
-    // Display results with color
+    // Display answer or results
     println!();
-    if count_only {
-        // Count-only mode: just show the total count (matching direct CLI behavior)
-        println!("{} {}", "Found".bright_green().bold(), format!("{} results", total_count).bright_white().bold());
-    } else if results.is_empty() {
-        println!("{}", "No results found.".yellow());
-    } else {
-        println!(
-            "{} {} {} {} {}",
-            "Found".bright_green().bold(),
-            total_count.to_string().bright_white().bold(),
-            "total results across".dimmed(),
-            results.len().to_string().bright_white().bold(),
-            "files:".dimmed()
-        );
+    if let Some(answer_text) = generated_answer {
+        // Answer mode: show the conversational answer
+        println!("{}", "Answer:".bold().green());
+        println!("{}", "=======".green());
+        println!();
+        println!("{}", answer_text);
         println!();
 
-        for file_group in &results {
-            println!("{}:", file_group.path.bright_cyan().bold());
-            for match_result in &file_group.matches {
-                println!(
-                    "  {} {}-{}: {}",
-                    "Line".dimmed(),
-                    match_result.span.start_line.to_string().bright_yellow(),
-                    match_result.span.end_line.to_string().bright_yellow(),
-                    match_result.preview.lines().next().unwrap_or("")
-                );
-            }
+        // Show summary of results used
+        if !results.is_empty() {
+            println!(
+                "{}",
+                format!(
+                    "(Based on {} matches across {} files)",
+                    total_count,
+                    results.len()
+                ).dimmed()
+            );
+        }
+    } else {
+        // Standard mode: show raw results
+        if count_only {
+            // Count-only mode: just show the total count (matching direct CLI behavior)
+            println!("{} {}", "Found".bright_green().bold(), format!("{} results", total_count).bright_white().bold());
+        } else if results.is_empty() {
+            println!("{}", "No results found.".yellow());
+        } else {
+            println!(
+                "{} {} {} {} {}",
+                "Found".bright_green().bold(),
+                total_count.to_string().bright_white().bold(),
+                "total results across".dimmed(),
+                results.len().to_string().bright_white().bold(),
+                "files:".dimmed()
+            );
             println!();
+
+            for file_group in &results {
+                println!("{}:", file_group.path.bright_cyan().bold());
+                for match_result in &file_group.matches {
+                    println!(
+                        "  {} {}-{}: {}",
+                        "Line".dimmed(),
+                        match_result.span.start_line.to_string().bright_yellow(),
+                        match_result.span.end_line.to_string().bright_yellow(),
+                        match_result.preview.lines().next().unwrap_or("")
+                    );
+                }
+                println!();
+            }
         }
     }
 

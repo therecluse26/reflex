@@ -7,6 +7,7 @@ pub mod executor;
 pub mod prompt;
 pub mod providers;
 pub mod schema;
+pub mod answer;
 
 // Agentic mode modules (experimental)
 pub mod schema_agentic;
@@ -22,6 +23,7 @@ pub use executor::{execute_queries, parse_command, ParsedCommand};
 pub use schema::{QueryCommand, QueryResponse as SemanticQueryResponse, AgenticQueryResponse};
 pub use agentic::{run_agentic_loop, AgenticConfig};
 pub use reporter::{AgenticReporter, ConsoleReporter, QuietReporter};
+pub use answer::generate_answer;
 
 use anyhow::{Context, Result};
 use crate::cache::CacheManager;
@@ -143,7 +145,7 @@ pub(crate) async fn call_with_retry(
             log::warn!("Retrying LLM call (attempt {}/{})", attempt + 1, max_retries + 1);
         }
 
-        match provider.complete(prompt).await {
+        match provider.complete(prompt, true).await {  // json_mode: true for query generation
             Ok(response) => {
                 // Strip markdown code fences (Claude often adds them despite instructions)
                 let cleaned_response = strip_markdown_fences(&response);

@@ -671,7 +671,7 @@ fn test_connectivity(provider_name: &str, api_key: &str) -> Result<()> {
         let test_prompt = "Please respond with valid JSON: {\"status\": \"ok\"}";
 
         // Call complete method
-        provider.complete(test_prompt).await?;
+        provider.complete(test_prompt, true).await?;  // json_mode: true for test
 
         Ok::<(), anyhow::Error>(())
     })?;

@@ -25,11 +25,18 @@ impl GeminiProvider {
 
 #[async_trait]
 impl LlmProvider for GeminiProvider {
-    async fn complete(&self, prompt: &str) -> Result<String> {
+    async fn complete(&self, prompt: &str, json_mode: bool) -> Result<String> {
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
             self.model, self.api_key
         );
+
+        // Use JSON MIME type if json_mode is true, otherwise plain text
+        let mime_type = if json_mode {
+            "application/json"
+        } else {
+            "text/plain"
+        };
 
         let response = self
             .client
@@ -48,7 +55,7 @@ impl LlmProvider for GeminiProvider {
                 "generationConfig": {
                     "temperature": 0.1,
                     "maxOutputTokens": 500,
-                    "responseMimeType": "application/json"
+                    "responseMimeType": mime_type
                 }
             }))
             .send()

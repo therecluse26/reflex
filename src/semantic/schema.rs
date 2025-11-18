@@ -23,6 +23,10 @@ pub struct AgenticQueryResponse {
     /// Total count of matches across all results
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_count: Option<usize>,
+
+    /// Conversational answer synthesized from results (only when --answer is used)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
 }
 
 /// A single rfx query command with execution metadata

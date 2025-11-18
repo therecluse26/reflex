@@ -109,6 +109,22 @@ Analyzes codebase dependencies and structure.
 
 **Languages:** `rust`, `python`, `typescript`, `javascript`, `go`, `java`, `c`, `cpp`, `csharp`, `php`, `ruby`, `kotlin`, `zig`, `vue`, `svelte`
 
+**CRITICAL: `--lang` accepts ONLY ONE language per query. DO NOT use comma-separated languages:**
+
+❌ **WRONG** - Comma-separated languages (will fail):
+```
+query "keycloak" --lang typescript,vue
+```
+
+✓ **CORRECT** - Separate queries for each language:
+```
+# Query 1: Search TypeScript files
+query "keycloak" --lang typescript
+
+# Query 2: Search Vue files
+query "keycloak" --lang vue
+```
+
 ## Regex Pattern Syntax
 
 When using `--regex` flag, use standard regex syntax. **IMPORTANT: Special characters do NOT need backslash escaping in patterns.**
@@ -300,6 +316,7 @@ query "User" --symbols --kind class
 
 3. **Filtering:**
    - Use `--lang` to narrow by programming language
+   - **IMPORTANT: `--lang` accepts ONLY ONE language** - create separate queries for multiple languages
    - Use `--kind` ONLY for symbol definitions (not calls)
    - Use `--glob` for directory-specific searches
    - Use `--file` when you know the specific file
@@ -308,7 +325,7 @@ query "User" --symbols --kind class
 4. **Multi-query workflows (USE SPARINGLY):**
    - **DEFAULT: Always try ONE query first**
    - Only use multiple queries if absolutely necessary
-   - Valid reasons: cross-language search, definition + usage separately
+   - Valid reasons: cross-language search (since `--lang` accepts only ONE language), definition + usage separately
    - Present queries in correct execution order
 
 ## Examples

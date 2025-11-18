@@ -25,7 +25,7 @@ impl OpenAiProvider {
 
 #[async_trait]
 impl LlmProvider for OpenAiProvider {
-    async fn complete(&self, prompt: &str) -> Result<String> {
+    async fn complete(&self, prompt: &str, json_mode: bool) -> Result<String> {
         // GPT-5 models require max_completion_tokens instead of max_tokens
         let is_gpt5 = self.model.starts_with("gpt-5");
 
@@ -38,10 +38,14 @@ impl LlmProvider for OpenAiProvider {
                 }
             ],
             "temperature": 0.1,
-            "response_format": {
-                "type": "json_object"
-            }
         });
+
+        // Add JSON response format if requested
+        if json_mode {
+            request_body["response_format"] = json!({
+                "type": "json_object"
+            });
+        }
 
         // Add the appropriate token limit parameter
         if is_gpt5 {
