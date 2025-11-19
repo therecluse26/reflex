@@ -93,7 +93,7 @@ globset = "0.4"
 walkdir = "2.5"
 
 # Date/time utilities
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
 
 # Lock and cleanup utilities

@@ -257,6 +257,54 @@ pub fn get_user_model(provider: &str) -> Option<String> {
     None
 }
 
+/// Save user's provider/model preference to ~/.reflex/config.toml
+///
+/// Updates the [credentials] section with the new model for the specified provider.
+/// Creates the config file and directory if they don't exist.
+pub fn save_user_provider(provider: &str, model: Option<&str>) -> Result<()> {
+    let home = dirs::home_dir().context("Cannot find home directory")?;
+    let config_dir = home.join(".reflex");
+    let config_path = config_dir.join("config.toml");
+
+    // Create directory if needed
+    std::fs::create_dir_all(&config_dir)
+        .context("Failed to create ~/.reflex directory")?;
+
+    // Read existing config or create empty
+    let mut config: toml::Value = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path)
+            .context("Failed to read ~/.reflex/config.toml")?;
+        toml::from_str(&content)
+            .context("Failed to parse ~/.reflex/config.toml")?
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+
+    // Ensure [credentials] section exists
+    let credentials = config
+        .as_table_mut()
+        .context("Config root is not a table")?
+        .entry("credentials")
+        .or_insert(toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .context("[credentials] is not a table")?;
+
+    // Set model for this provider (if provided)
+    if let Some(m) = model {
+        let key = format!("{}_model", provider.to_lowercase());
+        credentials.insert(key, toml::Value::String(m.to_string()));
+        log::info!("Saved {} model: {}", provider, m);
+    }
+
+    // Write back to file
+    let toml_str = toml::to_string_pretty(&config)
+        .context("Failed to serialize config to TOML")?;
+    std::fs::write(&config_path, toml_str)
+        .context("Failed to write ~/.reflex/config.toml")?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

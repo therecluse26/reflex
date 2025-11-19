@@ -569,6 +569,10 @@ pub enum Command {
         /// Generate a conversational answer based on search results
         #[arg(long)]
         answer: bool,
+
+        /// Launch interactive chat mode (TUI) with conversation history
+        #[arg(short = 'i', long)]
+        interactive: bool,
     },
 
     /// Generate codebase context for AI prompts
@@ -784,8 +788,8 @@ impl Cli {
             Some(Command::Deps { file, reverse, depth, format, json, pretty }) => {
                 handle_deps(file, reverse, depth, format, json, pretty)
             }
-            Some(Command::Ask { question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet, answer }) => {
-                handle_ask(question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet, answer)
+            Some(Command::Ask { question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet, answer, interactive }) => {
+                handle_ask(question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet, answer, interactive)
             }
             Some(Command::Context { structure, path, file_types, project_type, framework, entry_points, test_layout, config_files, full, depth, json }) => {
                 handle_context(structure, path, file_types, project_type, framework, entry_points, test_layout, config_files, full, depth, json)
@@ -2452,6 +2456,7 @@ fn handle_ask(
     verbose: bool,
     quiet: bool,
     answer: bool,
+    interactive: bool,
 ) -> Result<()> {
     // If --configure flag is set, launch the configuration wizard
     if configure {
@@ -2459,9 +2464,29 @@ fn handle_ask(
         return crate::semantic::run_configure_wizard();
     }
 
+    // If --interactive flag is set, launch interactive chat mode (TUI)
+    if interactive {
+        log::info!("Launching interactive chat mode");
+        let cache = CacheManager::new(".");
+
+        if !cache.exists() {
+            anyhow::bail!(
+                "No index found in current directory.\n\
+                 \n\
+                 Run 'rfx index' to build the code search index first.\n\
+                 \n\
+                 Example:\n\
+                 $ rfx index                          # Index current directory\n\
+                 $ rfx ask --interactive              # Launch interactive chat"
+            );
+        }
+
+        return crate::semantic::run_chat_mode(cache, provider_override, None);
+    }
+
     // Otherwise, require a question
     let question = question.ok_or_else(|| {
-        anyhow::anyhow!("Question is required unless --configure is used")
+        anyhow::anyhow!("Question is required unless --configure or --interactive is used")
     })?;
 
     log::info!("Starting ask command");
