@@ -6,7 +6,7 @@
 //! - Fixed input box (bottom)
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -212,8 +212,10 @@ impl ChatApp {
 
             // Handle events (with timeout for smooth rendering)
             if event::poll(Duration::from_millis(100))? {
-                if let Event::Key(key) = event::read()? {
-                    self.handle_key(key)?;
+                match event::read()? {
+                    Event::Key(key) => self.handle_key(key)?,
+                    Event::Mouse(mouse) => self.handle_mouse(mouse),
+                    _ => {}
                 }
             }
 
@@ -707,6 +709,21 @@ impl ChatApp {
         }
 
         Ok(())
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        // Handle mouse scroll events
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                // Scroll up (show older messages) - increase scroll_offset by 3
+                self.scroll_offset = self.scroll_offset.saturating_add(3);
+            }
+            MouseEventKind::ScrollDown => {
+                // Scroll down (show newer messages) - decrease scroll_offset by 3
+                self.scroll_offset = self.scroll_offset.saturating_sub(3);
+            }
+            _ => {}
+        }
     }
 
     fn handle_enter(&mut self) -> Result<()> {
