@@ -6,10 +6,9 @@
 //! - Running codebase analysis (hotspots, unused files, etc.)
 
 use anyhow::{Context as AnyhowContext, Result};
-use std::collections::HashSet;
 use crate::cache::CacheManager;
 use crate::dependency::DependencyIndex;
-use crate::query::{QueryEngine, QueryFilter};
+use crate::query::QueryEngine;
 
 use super::executor::parse_command;
 use super::schema_agentic::{ToolCall, ContextGatheringParams, AnalysisType};

@@ -228,8 +228,8 @@ fn check_location_patterns(
 /// Generate refinement suggestions based on issues
 fn generate_suggestions(
     issues: &[EvaluationIssue],
-    results: &[FileGroupedResult],
-    user_question: &str,
+    _results: &[FileGroupedResult],
+    _user_question: &str,
 ) -> Vec<String> {
     let mut suggestions = Vec::new();
 
@@ -372,7 +372,12 @@ mod tests {
 
     #[test]
     fn test_check_location_patterns() {
-        let results = vec![create_test_result("src/main.rs", 1)];
+        let results = vec![
+            create_test_result("src/main.rs", 1),
+            create_test_result("src/lib.rs", 2),
+            create_test_result("src/utils.rs", 3),
+            create_test_result("src/helper.rs", 4),
+        ];
         let issues = check_location_patterns(&results, "Find test functions");
 
         // Should suggest results should be in test directories

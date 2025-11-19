@@ -9,7 +9,7 @@ use std::path::Path;
 use crate::cache::CacheManager;
 
 /// Detect project type and return formatted string
-pub fn detect_project_type(cache: &CacheManager, root: &Path) -> Result<String> {
+pub fn detect_project_type(_cache: &CacheManager, root: &Path) -> Result<String> {
     let indicators = detect_project_type_indicators(root);
 
     if indicators.is_empty() {
@@ -32,7 +32,7 @@ pub fn detect_project_type(cache: &CacheManager, root: &Path) -> Result<String> 
 }
 
 /// Detect project type and return JSON
-pub fn detect_project_type_json(cache: &CacheManager, root: &Path) -> Result<Value> {
+pub fn detect_project_type_json(_cache: &CacheManager, root: &Path) -> Result<Value> {
     let indicators = detect_project_type_indicators(root);
 
     if indicators.is_empty() {
@@ -227,7 +227,7 @@ pub fn find_entry_points(root: &Path) -> Result<Vec<String>> {
     for (file, description) in &entry_files {
         let path = root.join(file);
         if path.exists() {
-            if let Ok(metadata) = fs::metadata(&path) {
+            if let Ok(_metadata) = fs::metadata(&path) {
                 let lines = count_lines_in_file(&path).unwrap_or(0);
                 entry_points.push(format!("- {} ({}, {} lines)", file, description, lines));
             }

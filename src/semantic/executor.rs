@@ -276,6 +276,7 @@ impl ParsedCommand {
             force: self.force,
             suppress_output: true, // Suppress output for programmatic use
             include_dependencies: self.dependencies,
+            ..Default::default()
         })
     }
 }

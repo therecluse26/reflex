@@ -22,8 +22,8 @@ use textwrap;
 
 use crate::cache::CacheManager;
 
-use super::chat_session::{ChatSession, MessageMetadata, MessageRole};
-use super::{AgenticConfig, AgenticReporter};
+use super::chat_session::{ChatSession, MessageRole};
+use super::AgenticConfig;
 
 /// Progress updates from async execution
 #[derive(Debug, Clone)]

@@ -1139,7 +1139,6 @@ mod tests {
 
 use crate::models::ImportType;
 use crate::parsers::{DependencyExtractor, ImportInfo};
-use std::collections::HashMap;
 
 /// PHP dependency extractor
 pub struct PhpDependencyExtractor;

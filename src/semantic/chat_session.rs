@@ -3,7 +3,6 @@
 //! This module manages conversation state, message history, token tracking,
 //! and context window management for the TUI chat interface.
 
-use anyhow::Result;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 

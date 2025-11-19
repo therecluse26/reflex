@@ -2,9 +2,8 @@
 
 use anyhow::Result;
 use serde_json::{json, Value};
-use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Common directories to exclude from structure
 const EXCLUDED_DIRS: &[&str] = &[

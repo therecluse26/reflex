@@ -322,7 +322,15 @@ mod tests {
     #[test]
     fn test_load_config_no_file() {
         let temp = TempDir::new().unwrap();
+
+        // Set HOME to temp directory to avoid loading user's config
+        unsafe {
+            env::set_var("HOME", temp.path());
+        }
         let config = load_config(temp.path()).unwrap();
+        unsafe {
+            env::remove_var("HOME");
+        }
 
         // Should return defaults
         assert_eq!(config.provider, "openai");
@@ -332,7 +340,9 @@ mod tests {
     #[test]
     fn test_load_config_with_semantic_section() {
         let temp = TempDir::new().unwrap();
-        let config_path = temp.path().join("config.toml");
+        let reflex_dir = temp.path().join(".reflex");
+        std::fs::create_dir_all(&reflex_dir).unwrap();
+        let config_path = reflex_dir.join("config.toml");
 
         std::fs::write(
             &config_path,
@@ -346,7 +356,15 @@ auto_execute = true
         )
         .unwrap();
 
+        // Set HOME to temp directory to load test config
+        unsafe {
+            env::set_var("HOME", temp.path());
+        }
         let config = load_config(temp.path()).unwrap();
+        unsafe {
+            env::remove_var("HOME");
+        }
+
         assert_eq!(config.enabled, true);
         assert_eq!(config.provider, "anthropic");
         assert_eq!(config.model, Some("claude-3-5-sonnet-20241022".to_string()));
@@ -356,7 +374,9 @@ auto_execute = true
     #[test]
     fn test_load_config_without_semantic_section() {
         let temp = TempDir::new().unwrap();
-        let config_path = temp.path().join("config.toml");
+        let reflex_dir = temp.path().join(".reflex");
+        std::fs::create_dir_all(&reflex_dir).unwrap();
+        let config_path = reflex_dir.join("config.toml");
 
         std::fs::write(
             &config_path,
@@ -367,31 +387,55 @@ languages = []
         )
         .unwrap();
 
+        // Set HOME to temp directory to load test config
+        unsafe {
+            env::set_var("HOME", temp.path());
+        }
         let config = load_config(temp.path()).unwrap();
+        unsafe {
+            env::remove_var("HOME");
+        }
+
         // Should return defaults
         assert_eq!(config.provider, "openai");
     }
 
     #[test]
     fn test_get_api_key_env_var() {
+        let temp = TempDir::new().unwrap();
+
+        // Set HOME to temp directory to avoid loading user's config
         unsafe {
+            env::set_var("HOME", temp.path());
             env::set_var("OPENAI_API_KEY", "test-key-123");
         }
+
         let key = get_api_key("openai").unwrap();
         assert_eq!(key, "test-key-123");
+
         unsafe {
             env::remove_var("OPENAI_API_KEY");
+            env::remove_var("HOME");
         }
     }
 
     #[test]
     fn test_get_api_key_missing() {
+        let temp = TempDir::new().unwrap();
+
+        // Set HOME to temp directory to avoid loading user's config
         unsafe {
+            env::set_var("HOME", temp.path());
             env::remove_var("GROQ_API_KEY");
         }
+
         let result = get_api_key("groq");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("GROQ_API_KEY"));
+
+        unsafe {
+            env::remove_var("HOME");
+        }
     }
 
     #[test]

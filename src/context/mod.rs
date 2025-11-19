@@ -193,7 +193,7 @@ fn generate_json_context(
     opts: &ContextOptions,
     target_path: &std::path::Path,
 ) -> Result<String> {
-    use serde_json::{json, Value};
+    use serde_json::json;
 
     let mut context = json!({});
 

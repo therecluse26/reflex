@@ -127,11 +127,12 @@ mod tests {
     fn test_prompt_injects_codebase_context() {
         let temp_dir = TempDir::new().unwrap();
         let cache = CacheManager::new(temp_dir.path());
+        cache.init().unwrap();
 
         let prompt = build_prompt("test", &cache, None).unwrap();
 
-        // Should handle empty codebase gracefully
-        assert!(prompt.contains("No files indexed") || prompt.contains("Languages:"));
+        // Should handle empty codebase gracefully (note: includes period)
+        assert!(prompt.contains("No files indexed yet (empty codebase).") || prompt.contains("Languages:"));
     }
 
     #[test]

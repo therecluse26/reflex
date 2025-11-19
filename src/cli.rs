@@ -1,7 +1,7 @@
 //! CLI argument parsing and command handlers
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -22,8 +22,7 @@ use crate::query::{QueryEngine, QueryFilter};
     about = "A fast, deterministic code search engine built for AI",
     long_about = "Reflex is a local-first, structure-aware code search engine that returns \
                   structured results (symbols, spans, scopes) with sub-100ms latency. \
-                  Designed for AI coding agents and automation.\n\n\
-                  Run 'rfx' with no arguments to launch interactive mode."
+                  Designed for AI coding agents and automation."
 )]
 pub struct Cli {
     /// Enable verbose logging (can be repeated for more verbosity)
@@ -497,6 +496,8 @@ pub enum Command {
     /// Uses an LLM to translate natural language questions into `rfx query` commands.
     /// Requires API key configuration for one of: OpenAI, Anthropic, Gemini, or Groq.
     ///
+    /// If no question is provided, launches interactive chat mode by default.
+    ///
     /// Configuration:
     ///   1. Run interactive setup wizard (recommended):
     ///      rfx ask --configure
@@ -511,6 +512,7 @@ pub enum Command {
     ///
     /// Examples:
     ///   rfx ask --configure                           # Interactive setup wizard
+    ///   rfx ask                                       # Launch interactive chat (default)
     ///   rfx ask "Find all TODOs in Rust files"
     ///   rfx ask "Where is the main function defined?" --execute
     ///   rfx ask "Show me error handling code" --provider groq
@@ -745,11 +747,13 @@ impl Cli {
             try_background_compact(&cache, command);
         }
 
-        // Execute the subcommand, or launch interactive mode if no command provided
+        // Execute the subcommand, or show help if no command provided
         match self.command {
             None => {
-                // No subcommand: launch interactive mode
-                handle_interactive()
+                // No subcommand: show help
+                Cli::command().print_help()?;
+                println!();  // Add newline after help
+                Ok(())
             }
             Some(Command::Index { path, force, languages, quiet, command }) => {
                 match command {
@@ -839,12 +843,12 @@ fn handle_index_status() -> Result<()> {
                     println!("\nProgress:        {:.1}%", progress);
                 }
 
-                return Ok(());
+                Ok(())
             }
             Ok(None) => {
                 println!("No background symbol indexing in progress.");
                 println!("\nRun 'rfx index' to start background symbol indexing.");
-                return Ok(());
+                Ok(())
             }
             Err(e) => {
                 anyhow::bail!("Failed to get indexing status: {}", e);
@@ -917,7 +921,7 @@ fn handle_index_build(path: &PathBuf, force: &bool, languages: &[String], quiet:
     let indexer = Indexer::new(cache, config);
     // Show progress by default, unless quiet mode is enabled
     let show_progress = !quiet;
-    let stats = indexer.index(&path, show_progress)?;
+    let stats = indexer.index(path, show_progress)?;
 
     // In quiet mode, suppress all output
     if !quiet {
@@ -969,7 +973,7 @@ fn handle_index_build(path: &PathBuf, force: &bool, languages: &[String], quiet:
         {
             std::process::Command::new(&current_exe)
                 .arg("index-symbols-internal")
-                .arg(&path)
+                .arg(path)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -1038,7 +1042,7 @@ pub fn truncate_preview(preview: &str, max_length: usize) -> String {
         .unwrap_or(max_length.min(preview.len()));
 
     let mut truncated = preview[..truncate_at].to_string();
-    truncated.push_str("…");
+    truncated.push('…');
     truncated
 }
 
@@ -1273,6 +1277,7 @@ fn handle_query(
         force,
         suppress_output: as_json,  // Suppress warnings in JSON mode
         include_dependencies,
+        ..Default::default()
     };
 
     // Measure query time
@@ -1743,6 +1748,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             force: params.force,
             suppress_output: true,  // HTTP API always returns JSON, suppress warnings
             include_dependencies: params.dependencies,
+            ..Default::default()
         };
 
         match engine.search_with_metadata(&params.q, filter) {
@@ -2447,7 +2453,7 @@ fn handle_deps(
 /// Handle the `ask` command
 fn handle_ask(
     question: Option<String>,
-    auto_execute: bool,
+    _auto_execute: bool,
     provider_override: Option<String>,
     as_json: bool,
     pretty_json: bool,
@@ -2469,8 +2475,9 @@ fn handle_ask(
         return crate::semantic::run_configure_wizard();
     }
 
+    // If no question provided and not in configure mode, default to interactive mode
     // If --interactive flag is set, launch interactive chat mode (TUI)
-    if interactive {
+    if interactive || question.is_none() {
         log::info!("Launching interactive chat mode");
         let cache = CacheManager::new(".");
 
@@ -2482,17 +2489,15 @@ fn handle_ask(
                  \n\
                  Example:\n\
                  $ rfx index                          # Index current directory\n\
-                 $ rfx ask --interactive              # Launch interactive chat"
+                 $ rfx ask                            # Launch interactive chat"
             );
         }
 
         return crate::semantic::run_chat_mode(cache, provider_override, None);
     }
 
-    // Otherwise, require a question
-    let question = question.ok_or_else(|| {
-        anyhow::anyhow!("Question is required unless --configure or --interactive is used")
-    })?;
+    // At this point, question must be Some
+    let question = question.unwrap();
 
     log::info!("Starting ask command");
 
@@ -3241,7 +3246,7 @@ fn handle_deps_islands(
     _plain: bool,
     sort: Option<String>,
 ) -> Result<()> {
-    let mut all_islands = deps_index.find_islands()?;
+    let all_islands = deps_index.find_islands()?;
     let total_components = all_islands.len();
 
     // Get total file count from the cache for percentage calculation

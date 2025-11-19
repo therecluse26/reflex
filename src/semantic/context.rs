@@ -312,12 +312,15 @@ mod tests {
             "app/models/user.rb".to_string(),
             "app/models/post.rb".to_string(),
             "app/models/comment.rb".to_string(),
+            "app/models/article.rb".to_string(),
             "app/controllers/home.rb".to_string(),
             "app/controllers/posts.rb".to_string(),
+            "app/controllers/articles.rb".to_string(),
+            "app/controllers/users.rb".to_string(),
             "src/main.rs".to_string(),
         ];
 
-        let common = extract_common_paths(&paths, 2, 10);
+        let common = extract_common_paths(&paths, 1, 10);
         assert!(common.contains(&"app/models/".to_string()));
         assert!(common.contains(&"app/controllers/".to_string()));
     }

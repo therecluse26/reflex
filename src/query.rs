@@ -56,6 +56,12 @@ pub struct QueryFilter {
     pub suppress_output: bool,
     /// Include dependency information in results
     pub include_dependencies: bool,
+    /// Test-only: Override large index threshold (None = use default of 20,000)
+    #[doc(hidden)]
+    pub test_large_index_threshold: Option<usize>,
+    /// Test-only: Override short pattern threshold (None = use default of 4)
+    #[doc(hidden)]
+    pub test_short_pattern_threshold: Option<usize>,
 }
 
 impl Default for QueryFilter {
@@ -79,6 +85,8 @@ impl Default for QueryFilter {
             force: false,  // Default: enable broad query detection
             suppress_output: false,  // Default: show warnings/info
             include_dependencies: false,  // Default: don't load dependencies for performance
+            test_large_index_threshold: None,  // Default: use production threshold (20,000)
+            test_short_pattern_threshold: None,  // Default: use production threshold (4)
         }
     }
 }
@@ -422,10 +430,11 @@ impl QueryEngine {
             // Thresholds for early blocking:
             // - Large index: 20,000+ files (approximately where performance degrades significantly)
             // - Short pattern: < 4 chars (3-char trigrams are borderline, < 4 catches edge cases)
-            const LARGE_INDEX_THRESHOLD: usize = 20_000;
-            const SHORT_PATTERN_THRESHOLD: usize = 4;
+            // Test overrides allow reducing thresholds for integration tests without creating 20K+ files
+            let large_index_threshold = filter.test_large_index_threshold.unwrap_or(20_000);
+            let short_pattern_threshold = filter.test_short_pattern_threshold.unwrap_or(4);
 
-            if total_files > LARGE_INDEX_THRESHOLD && pattern_len < SHORT_PATTERN_THRESHOLD {
+            if total_files > large_index_threshold && pattern_len < short_pattern_threshold {
                 anyhow::bail!(
                     "Query too broad - would be expensive to execute on this large index\n\
                      \n\

@@ -16,7 +16,7 @@ use super::config;
 use super::schema::{QueryResponse, AgenticQueryResponse};
 use super::schema_agentic::{AgenticResponse, Phase, ToolCall};
 use super::tools::{execute_tool, format_tool_results, ToolResult};
-use super::evaluator::{evaluate_results, format_evaluation_for_llm, EvaluationConfig};
+use super::evaluator::{evaluate_results, EvaluationConfig};
 use super::reporter::AgenticReporter;
 
 /// Configuration for agentic loop
@@ -210,10 +210,10 @@ async fn phase_1_assess(
 
 /// Phase 2: Gather context using tools
 async fn phase_2_gather(
-    question: &str,
+    _question: &str,
     initial_response: AgenticResponse,
     cache: &CacheManager,
-    provider: &dyn LlmProvider,
+    _provider: &dyn LlmProvider,
     config: &AgenticConfig,
     reporter: &dyn AgenticReporter,
 ) -> Result<String> {

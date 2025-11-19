@@ -1355,7 +1355,7 @@ provider = "groq"  # Options: openai, anthropic, gemini, groq
         }
 
         log::debug!("Batch loaded {} file IDs (out of {} requested, {} chunks)",
-                   results.len(), paths.len(), (paths.len() + BATCH_SIZE - 1) / BATCH_SIZE);
+                   results.len(), paths.len(), paths.len().div_ceil(BATCH_SIZE));
         Ok(results)
     }
 
