@@ -51,12 +51,8 @@ impl LlmProvider for GroqProvider {
             "content": prompt
         }));
 
-        // GPT-OSS models need higher token limits for complex agentic JSON responses
-        let max_tokens = if is_gpt_oss_model(&self.model) {
-            2000  // Larger limit for complex reasoning + multiple queries
-        } else {
-            500   // Standard limit for other Groq models
-        };
+        // All models use 4000 token limit for complex agentic JSON responses
+        let max_tokens = 4000;
 
         let mut request_body = json!({
             "model": self.model,

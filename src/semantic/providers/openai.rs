@@ -49,9 +49,9 @@ impl LlmProvider for OpenAiProvider {
 
         // Add the appropriate token limit parameter
         if is_gpt5 {
-            request_body["max_completion_tokens"] = json!(500);
+            request_body["max_completion_tokens"] = json!(4000);
         } else {
-            request_body["max_tokens"] = json!(500);
+            request_body["max_tokens"] = json!(4000);
         }
 
         let response = self

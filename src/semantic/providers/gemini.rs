@@ -54,7 +54,7 @@ impl LlmProvider for GeminiProvider {
                 ],
                 "generationConfig": {
                     "temperature": 0.1,
-                    "maxOutputTokens": 500,
+                    "maxOutputTokens": 4000,
                     "responseMimeType": mime_type
                 }
             }))

@@ -36,7 +36,7 @@ impl LlmProvider for AnthropicProvider {
             .header("Content-Type", "application/json")
             .json(&json!({
                 "model": self.model,
-                "max_tokens": 500,
+                "max_tokens": 4000,
                 "temperature": 0.1,
                 "messages": [
                     {
