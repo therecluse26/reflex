@@ -29,7 +29,7 @@ pub use agentic::{run_agentic_loop, AgenticConfig};
 pub use reporter::{AgenticReporter, ConsoleReporter, QuietReporter};
 pub use answer::generate_answer;
 pub use chat_tui::run_chat_mode;
-pub use config::save_user_provider;
+pub use config::{save_user_provider, is_any_api_key_configured};
 
 use anyhow::{Context, Result};
 use crate::cache::CacheManager;

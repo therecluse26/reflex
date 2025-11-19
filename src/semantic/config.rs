@@ -232,6 +232,51 @@ pub fn get_api_key(provider: &str) -> Result<String> {
     })
 }
 
+/// Check if any API key is configured for any supported provider
+///
+/// Checks in priority order:
+/// 1. ~/.reflex/config.toml (credentials section)
+/// 2. Environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, GROQ_API_KEY)
+///
+/// Returns true if at least one API key is found for any provider.
+pub fn is_any_api_key_configured() -> bool {
+    let providers = ["openai", "anthropic", "gemini", "groq"];
+
+    // Check user config file first
+    if let Ok(Some(user_config)) = load_user_config() {
+        if let Some(credentials) = &user_config.credentials {
+            // Check if any provider has an API key in the config file
+            if credentials.openai_api_key.is_some()
+                || credentials.anthropic_api_key.is_some()
+                || credentials.gemini_api_key.is_some()
+                || credentials.groq_api_key.is_some()
+            {
+                log::debug!("Found API key in ~/.reflex/config.toml");
+                return true;
+            }
+        }
+    }
+
+    // Check environment variables
+    for provider in &providers {
+        let env_var = match *provider {
+            "openai" => "OPENAI_API_KEY",
+            "anthropic" => "ANTHROPIC_API_KEY",
+            "gemini" => "GEMINI_API_KEY",
+            "groq" => "GROQ_API_KEY",
+            _ => continue,
+        };
+
+        if env::var(env_var).is_ok() {
+            log::debug!("Found {} environment variable", env_var);
+            return true;
+        }
+    }
+
+    log::debug!("No API keys found in config or environment variables");
+    false
+}
+
 /// Get the preferred model for a provider from user config
 ///
 /// Returns None if no model is configured for this provider.

@@ -81,6 +81,16 @@ pub enum ToolCall {
         /// Type of analysis to run
         analysis_type: AnalysisType,
     },
+
+    /// Search project documentation files
+    SearchDocumentation {
+        /// Search query/keywords
+        query: String,
+
+        /// Optional: specific files to search (defaults to ["CLAUDE.md", "README.md"])
+        #[serde(default)]
+        files: Option<Vec<String>>,
+    },
 }
 
 /// Parameters for context gathering tool
@@ -261,6 +271,18 @@ pub const AGENTIC_RESPONSE_SCHEMA: &str = r#"{
               "analysis_type": { "type": "string", "enum": ["hotspots", "unused", "circular"] }
             },
             "required": ["type", "analysis_type"]
+          },
+          {
+            "properties": {
+              "type": { "const": "search_documentation" },
+              "query": { "type": "string" },
+              "files": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Optional: specific files to search (defaults to [\"CLAUDE.md\", \"README.md\"])"
+              }
+            },
+            "required": ["type", "query"]
           }
         ]
       }

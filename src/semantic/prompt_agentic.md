@@ -32,10 +32,19 @@ Collects comprehensive codebase information.
 - `path` (string, optional): Focus on specific directory
 
 **When to use:**
-- You don't know the project structure
-- You need to understand directory organization
-- You want to know which frameworks are used
-- You need to find where specific types of code typically live
+- ✓ Understanding project structure and organization
+- ✓ Finding which frameworks/languages are used
+- ✓ Locating entry points and test layouts
+- ✓ Getting file statistics and distribution
+- ✓ Understanding language-specific conventions (debug logging, etc.)
+
+**When NOT to use:**
+- ❌ Finding conceptual/architectural information (use search_documentation)
+- ❌ Answering "what is" or "why" questions about design (use search_documentation)
+- ❌ Looking up performance statistics (use search_documentation)
+- ❌ Understanding high-level how things work (use search_documentation)
+
+**Note:** By default (no parameters), all context types are gathered (--full mode).
 
 **Example:**
 ```json
@@ -55,10 +64,16 @@ Runs exploratory queries to understand patterns in the codebase.
 - `command` (string): The rfx query command (without 'rfx' prefix)
 
 **When to use:**
-- You want to see examples of how something is used
-- You need to validate a pattern exists
-- You're unsure about naming conventions
-- You want to understand code organization
+- ✓ Seeing examples of how something is used
+- ✓ Validating a pattern exists before main query
+- ✓ Understanding naming conventions
+- ✓ Finding specific implementations or definitions
+
+**When NOT to use:**
+- ❌ Understanding high-level architecture (use search_documentation)
+- ❌ Finding design rationale or decisions (use search_documentation)
+- ❌ Getting performance benchmarks (use search_documentation)
+- ❌ Understanding project organization (use gather_context first)
 
 **Example:**
 ```json
@@ -87,6 +102,108 @@ Analyzes codebase dependencies and structure.
   "analysis_type": "hotspots"
 }
 ```
+
+### 4. search_documentation
+Searches project documentation files for concepts, architecture, and design decisions.
+
+**Parameters:**
+- `query` (string): Search keywords/phrases
+- `files` (array, optional): Specific files to search (defaults to ["CLAUDE.md", "README.md"])
+
+**When to use:**
+- ✓ Architecture and component overviews ("what are main components", "how does X work overall")
+- ✓ Performance statistics and benchmarks ("how fast", "performance improvement")
+- ✓ Design decisions and rationale ("why was X chosen")
+- ✓ Feature descriptions and capabilities ("is X supported", "what can reflex do")
+- ✓ Language support and coverage statistics ("how many languages")
+- ✓ Comparisons and differences ("difference between X and Y")
+
+**When NOT to use:**
+- ❌ Finding code implementations (use explore_codebase)
+- ❌ Locating specific functions/classes (use explore_codebase with --symbols)
+- ❌ Understanding file organization (use gather_context)
+- ❌ Finding usage examples in code (use explore_codebase)
+
+**Example:**
+```json
+{
+  "type": "search_documentation",
+  "query": "architecture components"
+}
+```
+
+**Also searches:**
+- CLAUDE.md (primary project documentation)
+- README.md (getting started guide)
+- .context/*.md files (planning and research notes)
+
+## Question Classification Guide
+
+Analyze the question type to choose the right approach:
+
+### CONCEPTUAL/ARCHITECTURE Questions → search_documentation FIRST
+
+**Patterns:** "what is", "what are", "main components", "architecture", "how does X work overall", "overview"
+
+**Examples:**
+- "What are the main components of Reflex?"
+- "How is Reflex different from Sourcegraph?"
+- "What is the core algorithm?"
+
+**Strategy:**
+1. Use `search_documentation` with key terms (e.g., "architecture", "components")
+2. If documentation insufficient, use `gather_context` for code structure
+3. Only use `explore_codebase` for specific implementation details
+
+### NUMERIC/COUNT Questions → documentation + verification
+
+**Patterns:** "how many", "count of", "number of", "total X"
+
+**Examples:**
+- "How many languages does Reflex support?"
+- "What's the file count?"
+
+**Strategy:**
+1. First try `search_documentation` for authoritative counts (e.g., "18 languages")
+2. If not in docs, use `gather_context` (shows file statistics)
+3. Cross-reference with code if needed
+
+### PERFORMANCE Questions → documentation FIRST
+
+**Patterns:** "how fast", "performance", "improvement", "benchmark", "speedup", "latency"
+
+**Examples:**
+- "What was the performance improvement?"
+- "How fast are queries?"
+
+**Strategy:**
+1. Use `search_documentation` to find benchmark numbers
+2. Performance stats are usually documented, not in code
+
+### IMPLEMENTATION Questions → code search
+
+**Patterns:** "where is X defined", "which function does Y", "find all X", "implementation of"
+
+**Examples:**
+- "Where is extract_symbols implemented?"
+- "Which function handles indexing?"
+
+**Strategy:**
+1. Use `explore_codebase` with `--symbols` for definitions
+2. Use full-text search for usages
+3. No need for documentation search
+
+### DEBUGGING/TOOLING Questions → gather_context + exploration
+
+**Patterns:** "how to debug", "enable logging", "run tests", "configure X"
+
+**Examples:**
+- "What environment variable enables debug logging?"
+- "How do I run tests?"
+
+**Strategy:**
+1. Use `gather_context` (now includes language-specific conventions)
+2. Then `explore_codebase` for specific commands/configs if needed
 
 ## Query Syntax Reference
 

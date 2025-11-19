@@ -2475,6 +2475,21 @@ fn handle_ask(
         return crate::semantic::run_configure_wizard();
     }
 
+    // Check if any API key is configured before allowing rfx ask to run
+    if !crate::semantic::is_any_api_key_configured() {
+        anyhow::bail!(
+            "No API key configured.\n\
+             \n\
+             Please run 'rfx ask --configure' to set up your API provider and key.\n\
+             \n\
+             Alternatively, you can set an environment variable:\n\
+             - OPENAI_API_KEY\n\
+             - ANTHROPIC_API_KEY\n\
+             - GEMINI_API_KEY\n\
+             - GROQ_API_KEY"
+        );
+    }
+
     // If no question provided and not in configure mode, default to interactive mode
     // If --interactive flag is set, launch interactive chat mode (TUI)
     if interactive || question.is_none() {

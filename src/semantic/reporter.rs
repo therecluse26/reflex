@@ -138,6 +138,13 @@ impl ConsoleReporter {
             ToolCall::AnalyzeStructure { analysis_type } => {
                 format!("analyze_structure: {:?}", analysis_type)
             }
+            ToolCall::SearchDocumentation { query, files } => {
+                if let Some(file_list) = files {
+                    format!("search_documentation: '{}' in files {:?}", query, file_list)
+                } else {
+                    format!("search_documentation: '{}'", query)
+                }
+            }
         }
     }
 

@@ -41,6 +41,9 @@ pub async fn execute_tool(
         ToolCall::AnalyzeStructure { analysis_type } => {
             execute_analyze_structure(*analysis_type, cache)
         }
+        ToolCall::SearchDocumentation { query, files } => {
+            execute_search_documentation(query, files.as_deref(), cache)
+        }
     }
 }
 
@@ -65,12 +68,9 @@ fn execute_gather_context(
         json: false, // Always use text format for LLM consumption
     };
 
-    // If no specific flags, default to structure + file_types
-    if !opts.structure && !opts.file_types && !opts.project_type
-       && !opts.framework && !opts.entry_points && !opts.test_layout
-       && !opts.config_files {
-        opts.structure = true;
-        opts.file_types = true;
+    // If no specific flags, default to --full (all context types)
+    if opts.is_empty() {
+        opts.enable_all();
     }
 
     // Generate context
@@ -217,6 +217,174 @@ fn execute_analyze_structure(
         output,
         success: true,
     })
+}
+
+/// Execute documentation search tool
+fn execute_search_documentation(
+    query: &str,
+    files: Option<&[String]>,
+    cache: &CacheManager,
+) -> Result<ToolResult> {
+    log::info!("Executing search_documentation tool: query='{}'", query);
+
+    let workspace_root = cache.workspace_root();
+
+    // Default documentation files to search
+    let default_files = vec!["CLAUDE.md".to_string(), "README.md".to_string()];
+    let search_files = files.unwrap_or(&default_files);
+
+    let mut found_sections = Vec::new();
+    let mut searched_files = Vec::new();
+
+    // Search specified documentation files
+    for file in search_files {
+        let file_path = workspace_root.join(file);
+
+        if !file_path.exists() {
+            log::debug!("Documentation file does not exist: {}", file);
+            continue;
+        }
+
+        searched_files.push(file.clone());
+
+        match std::fs::read_to_string(&file_path) {
+            Ok(content) => {
+                // Search for query keywords in the content
+                if let Some(sections) = search_documentation_content(&content, query, file) {
+                    found_sections.push(sections);
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to read documentation file {}: {}", file, e);
+            }
+        }
+    }
+
+    // Also search .context/ directory for markdown files
+    let context_dir = workspace_root.join(".context");
+    if context_dir.exists() && context_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&context_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("md") {
+                    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            if let Some(sections) = search_documentation_content(
+                                &content,
+                                query,
+                                &format!(".context/{}", file_name),
+                            ) {
+                                found_sections.push(sections);
+                                searched_files.push(format!(".context/{}", file_name));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Format output
+    let output = if found_sections.is_empty() {
+        format!(
+            "No relevant documentation found for query '{}' in files: {}\n\nTry:\n- Using different keywords\n- Searching the codebase directly with explore_codebase",
+            query,
+            searched_files.join(", ")
+        )
+    } else {
+        format!(
+            "Found documentation for '{}' in {} file(s):\n\n{}",
+            query,
+            found_sections.len(),
+            found_sections.join("\n\n---\n\n")
+        )
+    };
+
+    log::debug!("Documentation search found {} sections", found_sections.len());
+
+    Ok(ToolResult {
+        description: format!("Searched documentation for: {}", query),
+        output,
+        success: !found_sections.is_empty(),
+    })
+}
+
+/// Search documentation content for query and extract relevant sections
+fn search_documentation_content(content: &str, query: &str, file_name: &str) -> Option<String> {
+    let query_lower = query.to_lowercase();
+    let lines: Vec<&str> = content.lines().collect();
+
+    let mut relevant_sections = Vec::new();
+    let mut current_section = String::new();
+    let mut current_section_title = String::new();
+    let mut in_relevant_section = false;
+    let mut relevance_score = 0;
+
+    for line in lines.iter() {
+        let line_lower = line.to_lowercase();
+
+        // Check if this is a heading
+        if line.starts_with('#') {
+            // Save previous section if it was relevant
+            if in_relevant_section && relevance_score > 0 {
+                relevant_sections.push(format!(
+                    "## {} ({})\n\n{}",
+                    current_section_title,
+                    file_name,
+                    current_section.trim()
+                ));
+            }
+
+            // Start new section
+            current_section.clear();
+            current_section_title = line.trim_start_matches('#').trim().to_string();
+            relevance_score = 0;
+            in_relevant_section = false;
+
+            // Check if heading contains query keywords
+            if line_lower.contains(&query_lower) {
+                in_relevant_section = true;
+                relevance_score += 10;
+            }
+        }
+
+        // Check if content contains query keywords
+        if line_lower.contains(&query_lower) {
+            in_relevant_section = true;
+            relevance_score += 1;
+        }
+
+        // Add line to current section (with some context)
+        if in_relevant_section || relevance_score > 0 {
+            current_section.push_str(line);
+            current_section.push('\n');
+
+            // Add a few lines of context after matches
+            if relevance_score > 0 && !line_lower.contains(&query_lower) {
+                // Keep adding context lines
+                if current_section.lines().count() > 100 {
+                    // Limit section size
+                    break;
+                }
+            }
+        }
+    }
+
+    // Save last section if relevant
+    if in_relevant_section && relevance_score > 0 {
+        relevant_sections.push(format!(
+            "## {} ({})\n\n{}",
+            current_section_title,
+            file_name,
+            current_section.trim()
+        ));
+    }
+
+    if relevant_sections.is_empty() {
+        None
+    } else {
+        Some(relevant_sections.join("\n\n"))
+    }
 }
 
 /// Format exploration query results for LLM
