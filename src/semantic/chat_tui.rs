@@ -543,6 +543,14 @@ impl ChatApp {
             )));
         }
 
+        // Add bottom padding when showing latest messages to account for text wrapping
+        // (long lines that span multiple terminal rows)
+        if self.scroll_offset == 0 {
+            for _ in 0..8 {
+                lines.push(Line::from(""));
+            }
+        }
+
         // Calculate scroll position
         // scroll_offset = 0 means show bottom (latest messages)
         // scroll_offset > 0 means scroll up
@@ -554,7 +562,7 @@ impl ChatApp {
         } else {
             // Calculate scroll from bottom
             let max_scroll = total_lines.saturating_sub(visible_height);
-            max_scroll.saturating_sub(self.scroll_offset)
+            max_scroll.saturating_sub(self.scroll_offset) as u16
         };
 
         let paragraph = Paragraph::new(lines)
