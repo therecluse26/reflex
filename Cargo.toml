@@ -109,6 +109,7 @@ crossterm = "0.28"
 syntect = "5.2"
 unicode-width = "0.2"
 owo-colors = "4.1"
+termimad = "0.30"
 
 [build-dependencies]
 blake3 = "1.5"

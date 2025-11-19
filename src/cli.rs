@@ -2676,7 +2676,9 @@ fn handle_ask(
         println!("{}", "Answer:".bold().green());
         println!("{}", "=======".green());
         println!();
-        println!("{}", answer_text);
+
+        // Render markdown if it looks like markdown, otherwise print as-is
+        termimad::print_text(&answer_text);
         println!();
 
         // Show summary of results used

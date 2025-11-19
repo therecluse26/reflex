@@ -16,7 +16,7 @@ use ratatui::{
 use std::io::{self, Stdout};
 
 /// Available AI providers
-const PROVIDERS: &[&str] = &["openai", "anthropic", "gemini", "groq"];
+const PROVIDERS: &[&str] = &["groq", "openai", "anthropic", "gemini"];
 
 /// Available models per provider
 const OPENAI_MODELS: &[&str] = &[
@@ -326,7 +326,13 @@ impl ConfigWizard {
                     "  "
                 };
 
-                ListItem::new(format!("{}{}", prefix, provider)).style(style)
+                let provider_display = if *provider == "groq" {
+                    format!("{} (recommended)", provider)
+                } else {
+                    provider.to_string()
+                };
+
+                ListItem::new(format!("{}{}", prefix, provider_display)).style(style)
             })
             .collect();
 
@@ -456,9 +462,9 @@ impl ConfigWizard {
                     "  "
                 };
 
-                // Add warning badge for GPT-OSS models
-                let model_display = if is_gpt_oss_model(model) {
-                    format!("{} (Experimental - known API issues)", model)
+                // Add recommended badge for first model
+                let model_display = if idx == 0 {
+                    format!("{} (recommended)", model)
                 } else {
                     model.to_string()
                 };
