@@ -573,6 +573,10 @@ pub enum Command {
         /// Launch interactive chat mode (TUI) with conversation history
         #[arg(short = 'i', long)]
         interactive: bool,
+
+        /// Debug mode: output full LLM prompts and retain terminal history
+        #[arg(long)]
+        debug: bool,
     },
 
     /// Generate codebase context for AI prompts
@@ -788,8 +792,8 @@ impl Cli {
             Some(Command::Deps { file, reverse, depth, format, json, pretty }) => {
                 handle_deps(file, reverse, depth, format, json, pretty)
             }
-            Some(Command::Ask { question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet, answer, interactive }) => {
-                handle_ask(question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet, answer, interactive)
+            Some(Command::Ask { question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet, answer, interactive, debug }) => {
+                handle_ask(question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet, answer, interactive, debug)
             }
             Some(Command::Context { structure, path, file_types, project_type, framework, entry_points, test_layout, config_files, full, depth, json }) => {
                 handle_context(structure, path, file_types, project_type, framework, entry_points, test_layout, config_files, full, depth, json)
@@ -2457,6 +2461,7 @@ fn handle_ask(
     quiet: bool,
     answer: bool,
     interactive: bool,
+    debug: bool,
 ) -> Result<()> {
     // If --configure flag is set, launch the configuration wizard
     if configure {
@@ -2542,7 +2547,7 @@ fn handle_ask(
         let reporter: Box<dyn crate::semantic::AgenticReporter> = if quiet {
             Box::new(crate::semantic::QuietReporter)
         } else {
-            Box::new(crate::semantic::ConsoleReporter::new(show_reasoning, verbose, spinner_shared))
+            Box::new(crate::semantic::ConsoleReporter::new(show_reasoning, verbose, debug, spinner_shared))
         };
 
         // Set initial spinner message and enable ticking
@@ -2560,6 +2565,7 @@ fn handle_ask(
             model_override: None,
             show_reasoning,
             verbose,
+            debug,
         };
 
         let agentic_response = runtime.block_on(async {
@@ -2590,7 +2596,7 @@ fn handle_ask(
         }
 
         let semantic_response = runtime.block_on(async {
-            crate::semantic::ask_question(&question, &cache, provider_override.clone(), additional_context).await
+            crate::semantic::ask_question(&question, &cache, provider_override.clone(), additional_context, debug).await
         }).context("Failed to generate semantic queries")?;
 
         if let Some(ref s) = spinner {

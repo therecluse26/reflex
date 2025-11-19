@@ -1443,6 +1443,7 @@ async fn execute_query_async(
                         model_override: model_override.map(|s| s.to_string()),
                         show_reasoning: false,
                         verbose: false,
+                        debug: false,
                     };
 
                     let reporter = Box::new(super::QuietReporter);
@@ -1522,6 +1523,7 @@ async fn execute_query_async(
                 model_override: model_override.map(|s| s.to_string()),
                 show_reasoning: false,
                 verbose: false,
+                debug: false,
             };
 
             // Use quiet reporter to suppress console output

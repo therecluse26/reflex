@@ -42,6 +42,7 @@ pub async fn ask_question(
     cache: &CacheManager,
     provider_override: Option<String>,
     additional_context: Option<String>,
+    debug: bool,
 ) -> Result<schema::QueryResponse> {
     // Load config
     let mut config = config::load_config(cache.path())?;
@@ -77,6 +78,15 @@ pub async fn ask_question(
     let prompt = prompt::build_prompt(question, cache, additional_context.as_deref())?;
 
     log::debug!("Generated prompt ({} chars)", prompt.len());
+
+    // Debug mode: output full prompt
+    if debug {
+        eprintln!("\n{}", "=".repeat(80));
+        eprintln!("DEBUG: Full LLM Prompt (Standard Mode)");
+        eprintln!("{}", "=".repeat(80));
+        eprintln!("{}", prompt);
+        eprintln!("{}\n", "=".repeat(80));
+    }
 
     // Call LLM with retry logic
     let json_response = call_with_retry(&*provider, &prompt, 2).await?;

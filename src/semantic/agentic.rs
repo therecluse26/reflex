@@ -45,6 +45,9 @@ pub struct AgenticConfig {
 
     /// Verbose output (show tool results, etc.) (default: false)
     pub verbose: bool,
+
+    /// Debug mode: output full LLM prompts (default: false)
+    pub debug: bool,
 }
 
 impl Default for AgenticConfig {
@@ -58,6 +61,7 @@ impl Default for AgenticConfig {
             model_override: None,
             show_reasoning: false,
             verbose: false,
+            debug: false,
         }
     }
 }
@@ -80,6 +84,7 @@ pub async fn run_agentic_loop(
         cache,
         &*provider,
         reporter,
+        config.debug,
     ).await?;
 
     // Phase 2: Context gathering (if needed)
@@ -103,6 +108,7 @@ pub async fn run_agentic_loop(
         cache,
         &*provider,
         reporter,
+        config.debug,
     ).await?;
 
     // Phase 4: Execute queries
@@ -140,6 +146,7 @@ pub async fn run_agentic_loop(
                 &*provider,
                 &config,
                 reporter,
+                config.debug,
             ).await;
         }
     }
@@ -159,11 +166,21 @@ async fn phase_1_assess(
     cache: &CacheManager,
     provider: &dyn LlmProvider,
     reporter: &dyn AgenticReporter,
+    debug: bool,
 ) -> Result<(bool, AgenticResponse)> {
     log::info!("Phase 1: Assessing context needs");
 
     // Build assessment prompt
     let prompt = super::prompt_agentic::build_assessment_prompt(question, cache)?;
+
+    // Debug mode: output full prompt
+    if debug {
+        eprintln!("\n{}", "=".repeat(80));
+        eprintln!("DEBUG: Full LLM Prompt (Phase 1: Assessment)");
+        eprintln!("{}", "=".repeat(80));
+        eprintln!("{}", prompt);
+        eprintln!("{}\n", "=".repeat(80));
+    }
 
     // Call LLM
     let json_response = call_with_retry(provider, &prompt, 2).await?;
@@ -254,6 +271,7 @@ async fn phase_3_generate(
     cache: &CacheManager,
     provider: &dyn LlmProvider,
     reporter: &dyn AgenticReporter,
+    debug: bool,
 ) -> Result<QueryResponse> {
     log::info!("Phase 3: Generating final queries");
 
@@ -263,6 +281,15 @@ async fn phase_3_generate(
         gathered_context,
         cache,
     )?;
+
+    // Debug mode: output full prompt
+    if debug {
+        eprintln!("\n{}", "=".repeat(80));
+        eprintln!("DEBUG: Full LLM Prompt (Phase 3: Query Generation)");
+        eprintln!("{}", "=".repeat(80));
+        eprintln!("{}", prompt);
+        eprintln!("{}\n", "=".repeat(80));
+    }
 
     // Call LLM
     let json_response = call_with_retry(provider, &prompt, 2).await?;
@@ -307,6 +334,7 @@ async fn phase_6_refine(
     provider: &dyn LlmProvider,
     config: &AgenticConfig,
     reporter: &dyn AgenticReporter,
+    debug: bool,
 ) -> Result<AgenticQueryResponse> {
     log::info!("Phase 6: Refining queries based on evaluation");
 
@@ -321,6 +349,15 @@ async fn phase_6_refine(
         evaluation,
         cache,
     )?;
+
+    // Debug mode: output full prompt
+    if debug {
+        eprintln!("\n{}", "=".repeat(80));
+        eprintln!("DEBUG: Full LLM Prompt (Phase 6: Refinement)");
+        eprintln!("{}", "=".repeat(80));
+        eprintln!("{}", prompt);
+        eprintln!("{}\n", "=".repeat(80));
+    }
 
     // Call LLM for refinement
     let json_response = call_with_retry(provider, &prompt, 2).await?;

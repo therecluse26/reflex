@@ -45,6 +45,9 @@ pub struct ConsoleReporter {
     /// Verbose output (show tool results, etc.)
     verbose: bool,
 
+    /// Debug mode: disable ephemeral clearing to retain all output
+    debug: bool,
+
     /// Number of lines printed by the last phase (for ephemeral clearing)
     lines_printed: Mutex<usize>,
 
@@ -54,10 +57,11 @@ pub struct ConsoleReporter {
 
 impl ConsoleReporter {
     /// Create a new console reporter
-    pub fn new(show_reasoning: bool, verbose: bool, spinner: Option<Arc<Mutex<ProgressBar>>>) -> Self {
+    pub fn new(show_reasoning: bool, verbose: bool, debug: bool, spinner: Option<Arc<Mutex<ProgressBar>>>) -> Self {
         Self {
             show_reasoning,
             verbose,
+            debug,
             lines_printed: Mutex::new(0),
             spinner,
         }
@@ -65,6 +69,11 @@ impl ConsoleReporter {
 
     /// Clear the last N lines of output (for ephemeral display)
     fn clear_last_output(&self) {
+        // Skip clearing in debug mode to retain all output
+        if self.debug {
+            return;
+        }
+
         let lines = *self.lines_printed.lock().unwrap();
         if lines > 0 {
             for _ in 0..lines {
@@ -380,6 +389,7 @@ impl AgenticReporter for ConsoleReporter {
 
     fn clear_all(&self) {
         // Clear all ephemeral output before showing final results
+        // (skip in debug mode to retain terminal history)
         self.clear_last_output();
     }
 }
@@ -405,14 +415,15 @@ mod tests {
 
     #[test]
     fn test_console_reporter_creation() {
-        let reporter = ConsoleReporter::new(true, false, None);
+        let reporter = ConsoleReporter::new(true, false, false, None);
         assert!(reporter.show_reasoning);
         assert!(!reporter.verbose);
+        assert!(!reporter.debug);
     }
 
     #[test]
     fn test_truncate() {
-        let reporter = ConsoleReporter::new(false, false, None);
+        let reporter = ConsoleReporter::new(false, false, false, None);
         let text = "a".repeat(300);
         let truncated = reporter.truncate(&text, 100);
         assert!(truncated.len() <= 103); // 100 + "..."
@@ -420,7 +431,7 @@ mod tests {
 
     #[test]
     fn test_describe_gather_context_tool() {
-        let reporter = ConsoleReporter::new(false, false, None);
+        let reporter = ConsoleReporter::new(false, false, false, None);
         let tool = ToolCall::GatherContext {
             params: ContextGatheringParams {
                 structure: true,
