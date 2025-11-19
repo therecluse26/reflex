@@ -12,12 +12,13 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph},
     Frame, Terminal,
 };
 use std::io;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
+use textwrap;
 
 use crate::cache::CacheManager;
 
@@ -71,6 +72,48 @@ enum TriageDecision {
     DirectAnswer,
     /// Needs to search codebase
     NeedsSearch { reasoning: String },
+}
+
+/// Helper function to wrap text with consistent "│ " prefix on each line
+fn wrap_with_prefix(content: &str, area_width: u16, color: Color) -> Vec<Line> {
+    let mut lines = Vec::new();
+
+    // Calculate usable width: total width - borders (2) - prefix "│ " (2)
+    let usable_width = (area_width.saturating_sub(4)) as usize;
+
+    // Ensure we have at least some width to work with
+    if usable_width < 10 {
+        // Fallback for very narrow terminals - just add prefix without wrapping
+        for content_line in content.lines() {
+            lines.push(Line::from(Span::styled(
+                format!("│ {}", content_line),
+                Style::default().fg(color),
+            )));
+        }
+        return lines;
+    }
+
+    // Wrap each line of the content
+    for content_line in content.lines() {
+        if content_line.is_empty() {
+            // Preserve empty lines
+            lines.push(Line::from(Span::styled(
+                "│ ",
+                Style::default().fg(color),
+            )));
+        } else {
+            // Wrap the line to fit the usable width
+            let wrapped = textwrap::wrap(content_line, usable_width);
+            for wrapped_line in wrapped {
+                lines.push(Line::from(Span::styled(
+                    format!("│ {}", wrapped_line),
+                    Style::default().fg(color),
+                )));
+            }
+        }
+    }
+
+    lines
 }
 
 /// Main chat application state
@@ -312,7 +355,7 @@ impl ChatApp {
         f.render_widget(paragraph, area);
     }
 
-    fn render_messages(&self, f: &mut Frame, area: Rect) {
+    fn render_messages(&mut self, f: &mut Frame, area: Rect) {
         let mut lines: Vec<Line> = Vec::new();
 
         // Render all messages
@@ -326,13 +369,8 @@ impl ChatApp {
                         Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
                     )));
 
-                    // Message content
-                    for content_line in msg.content.lines() {
-                        lines.push(Line::from(Span::styled(
-                            format!("│ {}", content_line),
-                            Style::default().fg(Color::White),
-                        )));
-                    }
+                    // Message content (with proper wrapping)
+                    lines.extend(wrap_with_prefix(&msg.content, area.width, Color::White));
 
                     lines.push(Line::from(Span::styled(
                         "╰───────────────────────────────────────────",
@@ -357,12 +395,8 @@ impl ChatApp {
                         }
                     }
 
-                    for content_line in msg.content.lines() {
-                        lines.push(Line::from(Span::styled(
-                            format!("│ {}", content_line),
-                            Style::default().fg(Color::White),
-                        )));
-                    }
+                    // Message content (with proper wrapping)
+                    lines.extend(wrap_with_prefix(&msg.content, area.width, Color::White));
 
                     lines.push(Line::from(Span::styled(
                         "╰───────────────────────────────────────────",
@@ -387,12 +421,8 @@ impl ChatApp {
                         }
                     }
 
-                    for content_line in msg.content.lines() {
-                        lines.push(Line::from(Span::styled(
-                            format!("│ {}", content_line),
-                            Style::default().fg(Color::White),
-                        )));
-                    }
+                    // Message content (with proper wrapping)
+                    lines.extend(wrap_with_prefix(&msg.content, area.width, Color::White));
 
                     lines.push(Line::from(Span::styled(
                         "╰───────────────────────────────────────────",
@@ -404,7 +434,7 @@ impl ChatApp {
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
                         "╭─ Assistant (Queries) ─────────────────────",
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
                     )));
 
                     // Show query count
@@ -424,16 +454,12 @@ impl ChatApp {
                         }
                     }
 
-                    for content_line in msg.content.lines() {
-                        lines.push(Line::from(Span::styled(
-                            format!("│ {}", content_line),
-                            Style::default().fg(Color::White),
-                        )));
-                    }
+                    // Message content (with proper wrapping)
+                    lines.extend(wrap_with_prefix(&msg.content, area.width, Color::White));
 
                     lines.push(Line::from(Span::styled(
                         "╰───────────────────────────────────────────",
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(Color::Magenta),
                     )));
                 }
                 MessageRole::AssistantExecuting => {
@@ -457,12 +483,8 @@ impl ChatApp {
                         )));
                     }
 
-                    for content_line in msg.content.lines() {
-                        lines.push(Line::from(Span::styled(
-                            format!("│ {}", content_line),
-                            Style::default().fg(Color::White),
-                        )));
-                    }
+                    // Message content (with proper wrapping)
+                    lines.extend(wrap_with_prefix(&msg.content, area.width, Color::White));
 
                     lines.push(Line::from(Span::styled(
                         "╰───────────────────────────────────────────",
@@ -474,19 +496,15 @@ impl ChatApp {
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
                         "╭─ Assistant (Answer) ──────────────────────",
-                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                        Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
                     )));
 
-                    for content_line in msg.content.lines() {
-                        lines.push(Line::from(Span::styled(
-                            format!("│ {}", content_line),
-                            Style::default().fg(Color::White),
-                        )));
-                    }
+                    // Message content (with proper wrapping)
+                    lines.extend(wrap_with_prefix(&msg.content, area.width, Color::White));
 
                     lines.push(Line::from(Span::styled(
                         "╰───────────────────────────────────────────",
-                        Style::default().fg(Color::Green),
+                        Style::default().fg(Color::Blue),
                     )));
                 }
                 MessageRole::System => {
@@ -497,12 +515,8 @@ impl ChatApp {
                         Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
                     )));
 
-                    for content_line in msg.content.lines() {
-                        lines.push(Line::from(Span::styled(
-                            format!("│ {}", content_line),
-                            Style::default().fg(Color::Yellow),
-                        )));
-                    }
+                    // Message content (with proper wrapping)
+                    lines.extend(wrap_with_prefix(&msg.content, area.width, Color::Yellow));
 
                     lines.push(Line::from(Span::styled(
                         "╰───────────────────────────────────────────",
@@ -545,12 +559,10 @@ impl ChatApp {
             )));
         }
 
-        // Add bottom padding when showing latest messages to account for text wrapping
+        // Always add bottom padding to account for text wrapping
         // (long lines that span multiple terminal rows)
-        if self.scroll_offset == 0 {
-            for _ in 0..8 {
-                lines.push(Line::from(""));
-            }
+        for _ in 0..8 {
+            lines.push(Line::from(""));
         }
 
         // Calculate scroll position
@@ -564,6 +576,10 @@ impl ChatApp {
         } else {
             // Calculate scroll from bottom
             let max_scroll = total_lines.saturating_sub(visible_height);
+
+            // Clamp scroll_offset to valid range to prevent scrolling past top
+            self.scroll_offset = self.scroll_offset.min(max_scroll);
+
             max_scroll.saturating_sub(self.scroll_offset) as u16
         };
 
@@ -572,7 +588,6 @@ impl ChatApp {
                 .borders(Borders::ALL)
                 .title(" Messages ")
                 .border_style(Style::default().fg(Color::DarkGray)))
-            .wrap(Wrap { trim: false })
             .scroll((scroll as u16, 0));
 
         f.render_widget(paragraph, area);
@@ -607,8 +622,7 @@ impl ChatApp {
                     Style::default().fg(Color::DarkGray)
                 )))
                 .border_style(Style::default().fg(if self.waiting { Color::DarkGray } else { Color::Green })))
-            .style(input_style)
-            .wrap(Wrap { trim: false });
+            .style(input_style);
 
         f.render_widget(paragraph, area);
 
