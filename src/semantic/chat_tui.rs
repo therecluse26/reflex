@@ -75,7 +75,7 @@ enum TriageDecision {
 }
 
 /// Helper function to wrap text with consistent "│ " prefix on each line
-fn wrap_with_prefix(content: &str, area_width: u16, color: Color) -> Vec<Line> {
+fn wrap_with_prefix(content: &str, area_width: u16, color: Color) -> Vec<Line<'_>> {
     let mut lines = Vec::new();
 
     // Calculate usable width: total width - borders (2) - prefix "│ " (2)
@@ -114,6 +114,181 @@ fn wrap_with_prefix(content: &str, area_width: u16, color: Color) -> Vec<Line> {
     }
 
     lines
+}
+
+/// Helper function to render markdown with consistent "│ " prefix on each line
+fn render_markdown_with_prefix(content: &str, area_width: u16, border_color: Color) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+
+    // Calculate usable width: total width - borders (2) - prefix "│ " (2)
+    let usable_width = (area_width.saturating_sub(4)) as usize;
+
+    // Ensure we have at least some width to work with
+    if usable_width < 10 {
+        // Fallback for very narrow terminals
+        for content_line in content.lines() {
+            lines.push(Line::from(vec![
+                Span::styled("│ ", Style::default().fg(border_color)),
+                Span::styled(content_line.to_string(), Style::default().fg(Color::White)),
+            ]));
+        }
+        return lines;
+    }
+
+    let mut in_code_block = false;
+
+    for content_line in content.lines() {
+        // Check for code block markers
+        if content_line.trim().starts_with("```") {
+            in_code_block = !in_code_block;
+            continue; // Don't render the ``` markers
+        }
+
+        if in_code_block {
+            // Inside code block - preserve formatting, no markdown processing
+            // Separate border color from content color
+            lines.push(Line::from(vec![
+                Span::styled("│ ", Style::default().fg(border_color)),
+                Span::styled(content_line.to_string(), Style::default().fg(Color::Cyan).bg(Color::Black)),
+            ]));
+            continue;
+        }
+
+        if content_line.is_empty() {
+            lines.push(Line::from(Span::styled("│ ", Style::default().fg(border_color))));
+            continue;
+        }
+
+        // Check for headers
+        let (header_level, text_after_header) = if content_line.starts_with("### ") {
+            (3, &content_line[4..])
+        } else if content_line.starts_with("## ") {
+            (2, &content_line[3..])
+        } else if content_line.starts_with("# ") {
+            (1, &content_line[2..])
+        } else {
+            (0, content_line)
+        };
+
+        let wrapped = textwrap::wrap(text_after_header, usable_width);
+
+        for wrapped_line in wrapped {
+            let parsed_spans = parse_inline_markdown(&wrapped_line);
+
+            // Build the line with prefix (using border color)
+            let mut line_spans = vec![Span::styled("│ ", Style::default().fg(border_color))];
+
+            // Apply header styling if needed
+            if header_level > 0 {
+                for span in parsed_spans {
+                    let mut style = span.style;
+                    style = style.add_modifier(Modifier::BOLD);
+                    if header_level == 1 {
+                        style = style.fg(Color::Yellow);
+                    } else if header_level == 2 {
+                        style = style.fg(Color::Cyan);
+                    }
+                    line_spans.push(Span::styled(span.content.to_string(), style));
+                }
+            } else {
+                line_spans.extend(parsed_spans.into_iter().map(|s| Span::styled(s.content.to_string(), s.style)));
+            }
+
+            lines.push(Line::from(line_spans));
+        }
+    }
+
+    lines
+}
+
+/// Parse inline markdown elements (bold, italic, code)
+fn parse_inline_markdown(text: &str) -> Vec<Span<'static>> {
+    let mut result = Vec::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        // Check for **bold**
+        if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
+            if let Some(end) = find_closing_double_star(&chars, i + 2) {
+                let content: String = chars[i + 2..end].iter().collect();
+                result.push(Span::styled(
+                    content,
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                ));
+                i = end + 2;
+                continue;
+            }
+        }
+
+        // Check for *italic* or _italic_
+        if chars[i] == '*' || chars[i] == '_' {
+            let marker = chars[i];
+            if let Some(end) = find_closing_char(&chars, i + 1, marker) {
+                let content: String = chars[i + 1..end].iter().collect();
+                result.push(Span::styled(
+                    content,
+                    Style::default().fg(Color::White).add_modifier(Modifier::ITALIC),
+                ));
+                i = end + 1;
+                continue;
+            }
+        }
+
+        // Check for `code`
+        if chars[i] == '`' {
+            if let Some(end) = find_closing_char(&chars, i + 1, '`') {
+                let content: String = chars[i + 1..end].iter().collect();
+                result.push(Span::styled(
+                    content,
+                    Style::default().fg(Color::Cyan).bg(Color::Black),
+                ));
+                i = end + 1;
+                continue;
+            }
+        }
+
+        // Regular text - collect until next markdown character
+        let mut plain_text = String::new();
+        while i < chars.len() && chars[i] != '*' && chars[i] != '_' && chars[i] != '`' {
+            plain_text.push(chars[i]);
+            i += 1;
+        }
+
+        if !plain_text.is_empty() {
+            result.push(Span::styled(plain_text, Style::default().fg(Color::White)));
+        }
+    }
+
+    if result.is_empty() {
+        result.push(Span::raw(""));
+    }
+
+    result
+}
+
+/// Find closing ** for bold
+fn find_closing_double_star(chars: &[char], start: usize) -> Option<usize> {
+    for i in start..chars.len().saturating_sub(1) {
+        if chars[i] == '*' && chars[i + 1] == '*' {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Find closing character for italic or code
+fn find_closing_char(chars: &[char], start: usize, marker: char) -> Option<usize> {
+    for i in start..chars.len() {
+        if chars[i] == marker {
+            // For *, make sure it's not **
+            if marker == '*' && i + 1 < chars.len() && chars[i + 1] == '*' {
+                continue; // Skip **, we're looking for single *
+            }
+            return Some(i);
+        }
+    }
+    None
 }
 
 /// Main chat application state
@@ -499,8 +674,8 @@ impl ChatApp {
                         Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
                     )));
 
-                    // Message content (with proper wrapping)
-                    lines.extend(wrap_with_prefix(&msg.content, area.width, Color::White));
+                    // Message content (with markdown rendering and consistent blue border)
+                    lines.extend(render_markdown_with_prefix(&msg.content, area.width, Color::Blue));
 
                     lines.push(Line::from(Span::styled(
                         "╰───────────────────────────────────────────",
