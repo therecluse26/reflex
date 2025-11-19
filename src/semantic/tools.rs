@@ -311,9 +311,19 @@ fn execute_search_documentation(
 
 /// Search documentation content for query and extract relevant sections
 fn search_documentation_content(content: &str, query: &str, file_name: &str) -> Option<String> {
-    let query_lower = query.to_lowercase();
-    let lines: Vec<&str> = content.lines().collect();
+    // Tokenize query into keywords (filter out common stop words)
+    let stop_words = ["the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "from", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "should", "could", "may", "might", "can", "what", "how", "where", "when", "why", "which", "who"];
+    let keywords: Vec<String> = query.to_lowercase()
+        .split_whitespace()
+        .filter(|word| !stop_words.contains(word) && word.len() > 2)
+        .map(|s| s.to_string())
+        .collect();
 
+    if keywords.is_empty() {
+        return None;
+    }
+
+    let lines: Vec<&str> = content.lines().collect();
     let mut relevant_sections = Vec::new();
     let mut current_section = String::new();
     let mut current_section_title = String::new();
@@ -326,7 +336,7 @@ fn search_documentation_content(content: &str, query: &str, file_name: &str) -> 
         // Check if this is a heading
         if line.starts_with('#') {
             // Save previous section if it was relevant
-            if in_relevant_section && relevance_score > 0 {
+            if in_relevant_section && relevance_score >= 2 {  // Need at least 2 keyword matches
                 relevant_sections.push(format!(
                     "## {} ({})\n\n{}",
                     current_section_title,
@@ -341,37 +351,40 @@ fn search_documentation_content(content: &str, query: &str, file_name: &str) -> 
             relevance_score = 0;
             in_relevant_section = false;
 
-            // Check if heading contains query keywords
-            if line_lower.contains(&query_lower) {
-                in_relevant_section = true;
-                relevance_score += 10;
+            // Check if heading contains any query keywords
+            let heading_lower = line_lower.clone();
+            for keyword in &keywords {
+                if heading_lower.contains(keyword) {
+                    in_relevant_section = true;
+                    relevance_score += 10;
+                }
             }
         }
 
-        // Check if content contains query keywords
-        if line_lower.contains(&query_lower) {
-            in_relevant_section = true;
-            relevance_score += 1;
+        // Check if content contains any query keywords
+        let mut line_matches = 0;
+        for keyword in &keywords {
+            if line_lower.contains(keyword) {
+                in_relevant_section = true;
+                line_matches += 1;
+            }
         }
+        relevance_score += line_matches;
 
         // Add line to current section (with some context)
         if in_relevant_section || relevance_score > 0 {
             current_section.push_str(line);
             current_section.push('\n');
 
-            // Add a few lines of context after matches
-            if relevance_score > 0 && !line_lower.contains(&query_lower) {
-                // Keep adding context lines
-                if current_section.lines().count() > 100 {
-                    // Limit section size
-                    break;
-                }
+            // Limit section size to prevent massive outputs
+            if current_section.lines().count() > 150 {
+                break;
             }
         }
     }
 
     // Save last section if relevant
-    if in_relevant_section && relevance_score > 0 {
+    if in_relevant_section && relevance_score >= 2 {  // Need at least 2 keyword matches
         relevant_sections.push(format!(
             "## {} ({})\n\n{}",
             current_section_title,
@@ -383,7 +396,8 @@ fn search_documentation_content(content: &str, query: &str, file_name: &str) -> 
     if relevant_sections.is_empty() {
         None
     } else {
-        Some(relevant_sections.join("\n\n"))
+        // Sort sections by relevance (most matches first) and limit to top 3
+        Some(relevant_sections.iter().take(3).cloned().collect::<Vec<_>>().join("\n\n"))
     }
 }
 

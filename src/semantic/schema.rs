@@ -24,6 +24,11 @@ pub struct AgenticQueryResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_count: Option<usize>,
 
+    /// Context gathered from tools (documentation, codebase structure, etc.)
+    /// Used for answer generation when query results are insufficient
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gathered_context: Option<String>,
+
     /// Conversational answer synthesized from results (only when --answer is used)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,

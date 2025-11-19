@@ -2553,7 +2553,7 @@ fn handle_ask(
         None
     };
 
-    let (queries, results, total_count, count_only) = if agentic {
+    let (queries, results, total_count, count_only, gathered_context) = if agentic {
         // Agentic mode: multi-step reasoning with context gathering
 
         // Wrap spinner in Arc<Mutex<>> for sharing with reporter (non-quiet mode)
@@ -2604,10 +2604,10 @@ fn handle_ask(
 
         log::info!("Agentic loop completed: {} queries generated", agentic_response.queries.len());
 
-        // Destructure AgenticQueryResponse into tuple
+        // Destructure AgenticQueryResponse into tuple (preserve gathered_context)
         let count_only_mode = agentic_response.total_count.is_none();
         let count = agentic_response.total_count.unwrap_or(0);
-        (agentic_response.queries, agentic_response.results, count, count_only_mode)
+        (agentic_response.queries, agentic_response.results, count, count_only_mode, agentic_response.gathered_context)
     } else {
         // Standard mode: single LLM call + execution
         if let Some(ref s) = spinner {
@@ -2629,7 +2629,7 @@ fn handle_ask(
             crate::semantic::execute_queries(semantic_response.queries.clone(), &cache).await
         }).context("Failed to execute queries")?;
 
-        (semantic_response.queries, exec_results, exec_total, exec_count_only)
+        (semantic_response.queries, exec_results, exec_total, exec_count_only, None)
     };
 
     // Generate conversational answer if --answer flag is set
@@ -2667,12 +2667,13 @@ fn handle_ask(
             model,
         )?;
 
-        // Generate answer
+        // Generate answer (with optional gathered context from agentic mode)
         let answer_result = runtime.block_on(async {
             crate::semantic::generate_answer(
                 &question,
                 &results,
                 total_count,
+                gathered_context.as_deref(),
                 &*provider_instance,
             ).await
         }).context("Failed to generate answer")?;
@@ -2693,6 +2694,7 @@ fn handle_ask(
             queries: queries.clone(),
             results: results.clone(),
             total_count: if count_only { None } else { Some(total_count) },
+            gathered_context: gathered_context.clone(),
             answer: generated_answer,
         };
 

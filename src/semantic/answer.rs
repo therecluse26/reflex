@@ -24,6 +24,7 @@ const MAX_PREVIEW_LENGTH: usize = 200;
 /// * `question` - The original user question
 /// * `results` - Search results grouped by file
 /// * `total_count` - Total number of matches found
+/// * `gathered_context` - Optional context gathered from tools (documentation, codebase structure)
 /// * `provider` - LLM provider to use for answer generation
 ///
 /// # Returns
@@ -33,15 +34,26 @@ pub async fn generate_answer(
     question: &str,
     results: &[FileGroupedResult],
     total_count: usize,
+    gathered_context: Option<&str>,
     provider: &dyn LlmProvider,
 ) -> Result<String> {
-    // Handle empty results
+    // Handle empty results - use gathered context if available
     if results.is_empty() {
+        if let Some(context) = gathered_context {
+            if !context.is_empty() {
+                // Generate answer from documentation/context alone
+                let prompt = build_context_only_prompt(question, context);
+                log::debug!("Generating answer from gathered context ({} chars)", prompt.len());
+                let answer = provider.complete(&prompt, false).await?;
+                let cleaned = strip_markdown_fences(&answer);
+                return Ok(cleaned.to_string());
+            }
+        }
         return Ok(format!("No results found for: {}", question));
     }
 
-    // Build the prompt with search results
-    let prompt = build_answer_prompt(question, results, total_count);
+    // Build the prompt with search results (and optional gathered context)
+    let prompt = build_answer_prompt(question, results, total_count, gathered_context);
 
     log::debug!("Generating answer with prompt ({} chars)", prompt.len());
 
@@ -54,11 +66,12 @@ pub async fn generate_answer(
     Ok(cleaned.to_string())
 }
 
-/// Build the prompt for answer generation
+/// Build the prompt for answer generation (with optional gathered context)
 fn build_answer_prompt(
     question: &str,
     results: &[FileGroupedResult],
     total_count: usize,
+    gathered_context: Option<&str>,
 ) -> String {
     let mut prompt = String::new();
 
@@ -68,11 +81,21 @@ fn build_answer_prompt(
 
     prompt.push_str(&format!("Question: {}\n\n", question));
 
+    // Add gathered context if available (documentation, codebase structure)
+    if let Some(context) = gathered_context {
+        if !context.is_empty() {
+            prompt.push_str("Additional Context (from documentation and codebase analysis):\n");
+            prompt.push_str("====================================================================\n\n");
+            prompt.push_str(context);
+            prompt.push_str("\n\n");
+        }
+    }
+
     // Add search result summary
     prompt.push_str(&format!("Found {} total matches across {} files.\n\n", total_count, results.len()));
 
-    prompt.push_str("Search Results:\n");
-    prompt.push_str("==============\n\n");
+    prompt.push_str("Code Search Results:\n");
+    prompt.push_str("====================\n\n");
 
     // Format results for the prompt (limit to avoid token overflow)
     let mut match_count = 0;
@@ -150,6 +173,31 @@ fn build_answer_prompt(
     prompt
 }
 
+/// Build prompt for answering from context alone (no code search results)
+fn build_context_only_prompt(question: &str, gathered_context: &str) -> String {
+    let mut prompt = String::new();
+
+    prompt.push_str("You are answering a developer's question using documentation and codebase context.\n\n");
+    prompt.push_str("IMPORTANT: Provide ONLY the answer text, without any markdown formatting, code fences, or explanatory prefixes.\n\n");
+
+    prompt.push_str(&format!("Question: {}\n\n", question));
+
+    prompt.push_str("Available Context (from documentation and codebase analysis):\n");
+    prompt.push_str("================================================================\n\n");
+    prompt.push_str(gathered_context);
+    prompt.push_str("\n\n");
+
+    prompt.push_str("Provide a conversational answer that:\n");
+    prompt.push_str("1. Directly answers the question based on the context above\n");
+    prompt.push_str("2. References documentation sections or files where relevant\n");
+    prompt.push_str("3. Is concise but informative (typically 2-4 sentences)\n");
+    prompt.push_str("4. Only mentions information that appears in the context above\n\n");
+
+    prompt.push_str("Answer (plain text only, no markdown):\n");
+
+    prompt
+}
+
 /// Strip markdown code fences from LLM response
 ///
 /// Some LLMs add markdown formatting even when instructed not to.
@@ -204,7 +252,7 @@ mod tests {
     #[test]
     fn test_build_answer_prompt_empty_results() {
         let results: Vec<FileGroupedResult> = vec![];
-        let prompt = build_answer_prompt("Find TODOs", &results, 0);
+        let prompt = build_answer_prompt("Find TODOs", &results, 0, None);
 
         assert!(prompt.contains("Found 0 total matches"));
         assert!(prompt.contains("Question: Find TODOs"));

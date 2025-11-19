@@ -258,6 +258,13 @@ fn parse_inline_markdown(text: &str) -> Vec<Span<'static>> {
         if !plain_text.is_empty() {
             result.push(Span::styled(plain_text, Style::default().fg(Color::White)));
         }
+
+        // SAFETY: If we're still at a markdown character with no match, treat it as plain text
+        // This prevents infinite loops on unmatched *, _, or `
+        if i < chars.len() && (chars[i] == '*' || chars[i] == '_' || chars[i] == '`') {
+            result.push(Span::styled(chars[i].to_string(), Style::default().fg(Color::White)));
+            i += 1;  // CRITICAL: Always advance to prevent infinite loop
+        }
     }
 
     if result.is_empty() {
@@ -1483,6 +1490,7 @@ async fn execute_query_async(
                                 question,
                                 &agentic_response.results,
                                 results_count,
+                                agentic_response.gathered_context.as_deref(),
                                 &*provider_instance,
                             ).await {
                                 Ok(answer) => {
@@ -1586,6 +1594,7 @@ async fn execute_query_async(
                 question,
                 &agentic_response.results,
                 results_count,
+                agentic_response.gathered_context.as_deref(),
                 &*provider_instance,
             ).await {
                 Ok(answer) => answer,

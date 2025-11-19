@@ -156,6 +156,11 @@ pub async fn run_agentic_loop(
         queries: query_response.queries,
         results,
         total_count: if count_only { None } else { Some(total_count) },
+        gathered_context: if !gathered_context.is_empty() {
+            Some(gathered_context)
+        } else {
+            None
+        },
         answer: None,  // No answer generation in agentic mode (handled in CLI)
     })
 }
@@ -393,6 +398,11 @@ async fn phase_6_refine(
         queries: refined_response.queries,
         results,
         total_count: if count_only { None } else { Some(total_count) },
+        gathered_context: if !gathered_context.is_empty() {
+            Some(gathered_context.to_string())
+        } else {
+            None
+        },
         answer: None,  // No answer generation in agentic mode (handled in CLI)
     })
 }
