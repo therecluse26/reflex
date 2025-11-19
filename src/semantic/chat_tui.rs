@@ -27,26 +27,32 @@ use super::{AgenticConfig, AgenticReporter};
 /// Progress updates from async execution
 #[derive(Debug, Clone)]
 enum PhaseUpdate {
-    /// Phase 1: Thinking/Assessment
+    /// Phase 0: Triage - deciding whether to search or answer directly
+    Triaging,
+
+    /// Fast path: Answering from conversation context
+    AnsweringFromContext,
+
+    /// Phase 1: Thinking/Assessment (agentic path)
     Thinking {
         reasoning: String,
         needs_context: bool,
     },
-    /// Phase 2: Tool gathering
+    /// Phase 2: Tool gathering (agentic path)
     Tools {
         content: String,
         tool_calls: Vec<String>,
     },
-    /// Phase 3: Query generation
+    /// Phase 3: Query generation (agentic path)
     Queries {
         queries: Vec<String>,
     },
-    /// Phase 4: Execution status
+    /// Phase 4: Execution status (agentic path)
     Executing {
         results_count: usize,
         execution_time_ms: u64,
     },
-    /// Phase 5: Final answer
+    /// Phase 5: Final answer (both paths)
     Answer {
         answer: String,
     },
@@ -56,6 +62,15 @@ enum PhaseUpdate {
     },
     /// Processing complete
     Done,
+}
+
+/// Triage decision for question handling
+#[derive(Debug, Clone)]
+enum TriageDecision {
+    /// Can answer directly from conversation context
+    DirectAnswer,
+    /// Needs to search codebase
+    NeedsSearch { reasoning: String },
 }
 
 /// Main chat application state
@@ -92,6 +107,9 @@ pub struct ChatApp {
 
     /// Progress updates from async execution
     progress_rx: Option<Receiver<PhaseUpdate>>,
+
+    /// Spinner animation frame counter for loading indicator
+    spinner_frame: usize,
 }
 
 impl ChatApp {
@@ -131,6 +149,7 @@ impl ChatApp {
             status_message: None,
             waiting: false,
             progress_rx: None,
+            spinner_frame: 0,
         })
     }
 
@@ -181,6 +200,11 @@ impl ChatApp {
             // Process updates
             for update in updates {
                 self.handle_progress_update(update);
+            }
+
+            // Update spinner animation frame
+            if self.waiting {
+                self.spinner_frame = (self.spinner_frame + 1) % 10;
             }
 
             // Render UI
@@ -486,6 +510,39 @@ impl ChatApp {
             }
         }
 
+        // Show loading indicator if waiting for response
+        if self.waiting {
+            // Spinner animation characters (braille patterns)
+            const SPINNER_CHARS: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let spinner_char = SPINNER_CHARS[self.spinner_frame % SPINNER_CHARS.len()];
+
+            // Get current status message or default
+            let status_text = self.status_message.as_ref()
+                .map(|s| s.clone())
+                .unwrap_or_else(|| "Working...".to_string());
+
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "╭─ Processing ──────────────────────────────",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("│ ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    spinner_char,
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" {}", status_text),
+                    Style::default().fg(Color::White),
+                ),
+            ]));
+            lines.push(Line::from(Span::styled(
+                "╰───────────────────────────────────────────",
+                Style::default().fg(Color::Cyan),
+            )));
+        }
+
         // Calculate scroll position
         // scroll_offset = 0 means show bottom (latest messages)
         // scroll_offset > 0 means scroll up
@@ -676,7 +733,7 @@ impl ChatApp {
 
     fn execute_query(&mut self, question: &str) -> Result<()> {
         self.waiting = true;
-        self.status_message = Some("Thinking...".to_string());
+        self.status_message = Some("Analyzing question...".to_string());
 
         // Create progress channel
         let (tx, rx) = mpsc::channel();
@@ -687,6 +744,9 @@ impl ChatApp {
         let cache_path = self.cache.path().to_path_buf();
         let provider_name = self.provider_name.clone();
         let model_override = self.model_override.clone();
+
+        // Build conversation history for triage
+        let conversation_history = self.session.build_context();
 
         // Spawn background thread for async work
         std::thread::spawn(move || {
@@ -704,6 +764,7 @@ impl ChatApp {
             runtime.block_on(async {
                 execute_query_async(
                     &question,
+                    &conversation_history,
                     cache_path,
                     &provider_name,
                     model_override.as_deref(),
@@ -717,6 +778,12 @@ impl ChatApp {
 
     fn handle_progress_update(&mut self, update: PhaseUpdate) {
         match update {
+            PhaseUpdate::Triaging => {
+                self.status_message = Some("Analyzing question...".to_string());
+            }
+            PhaseUpdate::AnsweringFromContext => {
+                self.status_message = Some("Answering from conversation...".to_string());
+            }
             PhaseUpdate::Thinking { reasoning, needs_context } => {
                 self.status_message = Some("Thinking...".to_string());
                 self.session.add_thinking_message(reasoning, needs_context);
@@ -944,9 +1011,118 @@ impl ChatApp {
     }
 }
 
+/// Retry an async operation with exponential backoff
+async fn retry_with_backoff<F, Fut, T>(
+    mut operation: F,
+    max_retries: usize,
+    operation_name: &str,
+) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut last_error = None;
+
+    for attempt in 0..=max_retries {
+        match operation().await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                let err_msg = e.to_string();
+
+                // Determine wait time based on error type
+                let wait_ms = if err_msg.contains("Rate limit exceeded") || err_msg.contains("429") {
+                    // Rate limit: longer wait
+                    5000 * (attempt as u64 + 1)
+                } else if err_msg.contains("timeout") || err_msg.contains("Timeout") {
+                    // Timeout: moderate wait
+                    2000 * (attempt as u64 + 1)
+                } else {
+                    // Other errors: standard exponential backoff
+                    1000 * (attempt as u64 + 1)
+                };
+
+                if attempt < max_retries {
+                    log::warn!(
+                        "{} failed (attempt {}/{}): {}. Retrying in {}ms...",
+                        operation_name,
+                        attempt + 1,
+                        max_retries + 1,
+                        err_msg,
+                        wait_ms
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_millis(wait_ms)).await;
+                }
+
+                last_error = Some(e);
+            }
+        }
+    }
+
+    Err(last_error.unwrap())
+}
+
+/// Triage a question to determine if it needs codebase search
+async fn triage_question(
+    question: &str,
+    conversation_history: &str,
+    provider_name: &str,
+    model_override: Option<&str>,
+    cache_path: &std::path::Path,
+) -> Result<TriageDecision> {
+    // Create provider for triage
+    let provider_instance = {
+        let mut config = super::config::load_config(cache_path)?;
+        config.provider = provider_name.to_string();
+        let api_key = super::config::get_api_key(&config.provider)?;
+        let model = model_override.map(|s| s.to_string()).or(config.model);
+        super::providers::create_provider(&config.provider, api_key, model)?
+    };
+
+    // Build triage prompt
+    let triage_prompt = format!(
+        "You are a helpful coding assistant with access to a codebase search engine.\n\
+         \n\
+         {}\n\
+         \n\
+         USER'S NEW QUESTION: {}\n\
+         \n\
+         TASK: Determine if you can answer this question using ONLY the conversation history above, \
+         or if you need to search the codebase.\n\
+         \n\
+         Answer \"direct\" if:\n\
+         - It's a follow-up question about something already discussed\n\
+         - It's asking for clarification or explanation of prior context\n\
+         - It's a general programming question not specific to this codebase\n\
+         - Examples: \"What does that mean?\", \"Can you explain X?\", \"Why?\"\n\
+         \n\
+         Answer \"search\" if:\n\
+         - It's asking about code not yet discussed\n\
+         - It requires finding specific files, functions, or patterns\n\
+         - It's a new topic requiring codebase investigation\n\
+         - Examples: \"How is auth implemented?\", \"Find all uses of X\", \"Where is Y defined?\"\n\
+         \n\
+         Respond with ONLY a single word: either \"direct\" or \"search\"",
+        conversation_history,
+        question
+    );
+
+    // Call LLM for triage
+    let response = provider_instance.complete(&triage_prompt, false).await?;
+    let decision = response.trim().to_lowercase();
+
+    if decision.contains("direct") {
+        Ok(TriageDecision::DirectAnswer)
+    } else {
+        Ok(TriageDecision::NeedsSearch {
+            reasoning: "Question requires codebase search".to_string(),
+        })
+    }
+}
+
 /// Execute query asynchronously and send progress updates
 async fn execute_query_async(
     question: &str,
+    conversation_history: &str,
     cache_path: std::path::PathBuf,
     provider_name: &str,
     model_override: Option<&str>,
@@ -957,100 +1133,249 @@ async fn execute_query_async(
     let root_dir = cache_path.parent().unwrap_or(&cache_path);
     let cache = CacheManager::new(root_dir);
 
-    // Send thinking phase update
-    let _ = tx.send(PhaseUpdate::Thinking {
-        reasoning: "Analyzing your question...".to_string(),
-        needs_context: false,
-    });
+    // TRIAGE PHASE: Decide if we need to search or can answer directly
+    let _ = tx.send(PhaseUpdate::Triaging);
 
-    // Configure agentic mode
-    let agentic_config = AgenticConfig {
-        max_iterations: 2,
-        max_tools_per_phase: 5,
-        enable_evaluation: true,
-        eval_config: Default::default(),
-        provider_override: Some(provider_name.to_string()),
-        model_override: model_override.map(|s| s.to_string()),
-        show_reasoning: false,
-        verbose: false,
-    };
-
-    // Use quiet reporter to suppress console output
-    let reporter = Box::new(super::QuietReporter);
-
-    // Run agentic loop
-    let agentic_response = match super::run_agentic_loop(
+    let decision = match triage_question(
         question,
-        &cache,
-        agentic_config,
-        &*reporter,
+        conversation_history,
+        provider_name,
+        model_override,
+        &cache_path,
     ).await {
-        Ok(response) => response,
+        Ok(decision) => decision,
         Err(e) => {
-            let _ = tx.send(PhaseUpdate::Error {
-                error: format!("Agentic loop failed: {}", e),
-            });
-            return;
+            log::warn!("Triage failed, defaulting to search: {}", e);
+            TriageDecision::NeedsSearch {
+                reasoning: "Triage failed, using search as fallback".to_string(),
+            }
         }
     };
 
-    // Send queries phase update (convert Vec<QueryCommand> to Vec<String>)
-    let query_strings: Vec<String> = agentic_response.queries
-        .iter()
-        .map(|q| q.command.clone())
-        .collect();
+    match decision {
+        TriageDecision::DirectAnswer => {
+            // FAST PATH: Answer from conversation context
+            let _ = tx.send(PhaseUpdate::AnsweringFromContext);
 
-    let _ = tx.send(PhaseUpdate::Queries {
-        queries: query_strings,
-    });
+            // Generate answer using conversation history
+            let provider_instance = match (|| -> Result<_> {
+                let mut config = super::config::load_config(&cache_path)?;
+                config.provider = provider_name.to_string();
+                let api_key = super::config::get_api_key(&config.provider)?;
+                let model = model_override.map(|s| s.to_string()).or(config.model);
+                super::providers::create_provider(&config.provider, api_key, model)
+            })() {
+                Ok(provider) => provider,
+                Err(e) => {
+                    let _ = tx.send(PhaseUpdate::Error {
+                        error: format!("Failed to create provider: {}", e),
+                    });
+                    return;
+                }
+            };
 
-    // Send execution phase update
-    let start_time = std::time::Instant::now();
-    let results_count = agentic_response.total_count.unwrap_or(0);
-    let execution_time_ms = start_time.elapsed().as_millis() as u64;
+            let answer_prompt = format!(
+                "{}\n\nUSER'S QUESTION: {}\n\n\
+                 Answer the question based on the conversation history above. \
+                 Be concise and helpful.",
+                conversation_history,
+                question
+            );
 
-    let _ = tx.send(PhaseUpdate::Executing {
-        results_count,
-        execution_time_ms,
-    });
+            // Retry answer generation with exponential backoff
+            let answer_result = retry_with_backoff(
+                || async {
+                    provider_instance.complete(&answer_prompt, false).await
+                },
+                2, // max 2 retries
+                "Answer generation"
+            ).await;
 
-    // Generate answer
-    let provider_instance = match (|| -> Result<_> {
-        let mut config = super::config::load_config(&cache_path)?;
-        config.provider = provider_name.to_string();
-        let api_key = super::config::get_api_key(&config.provider)?;
-        let model = model_override.map(|s| s.to_string()).or(config.model);
-        super::providers::create_provider(&config.provider, api_key, model)
-    })() {
-        Ok(provider) => provider,
-        Err(e) => {
-            let _ = tx.send(PhaseUpdate::Error {
-                error: format!("Failed to create provider: {}", e),
-            });
-            return;
+            match answer_result {
+                Ok(answer) => {
+                    let _ = tx.send(PhaseUpdate::Answer { answer });
+                    let _ = tx.send(PhaseUpdate::Done);
+                }
+                Err(e) => {
+                    // Fallback: If direct answer fails after retries, try search instead
+                    log::warn!("Direct answer failed after retries, falling back to search: {}", e);
+                    let _ = tx.send(PhaseUpdate::Thinking {
+                        reasoning: format!(
+                            "Direct answer failed ({}), searching codebase as fallback",
+                            e
+                        ),
+                        needs_context: true,
+                    });
+
+                    // Run search path (copy of agentic path below)
+                    let agentic_config = AgenticConfig {
+                        max_iterations: 2,
+                        max_tools_per_phase: 5,
+                        enable_evaluation: true,
+                        eval_config: Default::default(),
+                        provider_override: Some(provider_name.to_string()),
+                        model_override: model_override.map(|s| s.to_string()),
+                        show_reasoning: false,
+                        verbose: false,
+                    };
+
+                    let reporter = Box::new(super::QuietReporter);
+
+                    match super::run_agentic_loop(question, &cache, agentic_config, &*reporter).await {
+                        Ok(agentic_response) => {
+                            let query_strings: Vec<String> = agentic_response.queries
+                                .iter()
+                                .map(|q| q.command.clone())
+                                .collect();
+
+                            let _ = tx.send(PhaseUpdate::Queries { queries: query_strings });
+
+                            let results_count = agentic_response.total_count.unwrap_or(0);
+                            let _ = tx.send(PhaseUpdate::Executing {
+                                results_count,
+                                execution_time_ms: 0,
+                            });
+
+                            let provider_instance = match (|| -> Result<_> {
+                                let mut config = super::config::load_config(&cache_path)?;
+                                config.provider = provider_name.to_string();
+                                let api_key = super::config::get_api_key(&config.provider)?;
+                                let model = model_override.map(|s| s.to_string()).or(config.model);
+                                super::providers::create_provider(&config.provider, api_key, model)
+                            })() {
+                                Ok(provider) => provider,
+                                Err(e) => {
+                                    let _ = tx.send(PhaseUpdate::Error {
+                                        error: format!("Failed to create provider for fallback: {}", e),
+                                    });
+                                    return;
+                                }
+                            };
+
+                            match super::generate_answer(
+                                question,
+                                &agentic_response.results,
+                                results_count,
+                                &*provider_instance,
+                            ).await {
+                                Ok(answer) => {
+                                    let _ = tx.send(PhaseUpdate::Answer { answer });
+                                    let _ = tx.send(PhaseUpdate::Done);
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(PhaseUpdate::Error {
+                                        error: format!("Fallback search failed: {}", e),
+                                    });
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(PhaseUpdate::Error {
+                                error: format!("Both direct answer and search failed: {}", e),
+                            });
+                        }
+                    }
+                }
+            }
         }
-    };
 
-    let answer = match super::generate_answer(
-        question,
-        &agentic_response.results,
-        results_count,
-        &*provider_instance,
-    ).await {
-        Ok(answer) => answer,
-        Err(e) => {
-            let _ = tx.send(PhaseUpdate::Error {
-                error: format!("Failed to generate answer: {}", e),
+        TriageDecision::NeedsSearch { reasoning } => {
+            // AGENTIC PATH: Full search pipeline
+            let _ = tx.send(PhaseUpdate::Thinking {
+                reasoning,
+                needs_context: true,
             });
-            return;
+
+            // Configure agentic mode
+            let agentic_config = AgenticConfig {
+                max_iterations: 2,
+                max_tools_per_phase: 5,
+                enable_evaluation: true,
+                eval_config: Default::default(),
+                provider_override: Some(provider_name.to_string()),
+                model_override: model_override.map(|s| s.to_string()),
+                show_reasoning: false,
+                verbose: false,
+            };
+
+            // Use quiet reporter to suppress console output
+            let reporter = Box::new(super::QuietReporter);
+
+            // Run agentic loop
+            let agentic_response = match super::run_agentic_loop(
+                question,
+                &cache,
+                agentic_config,
+                &*reporter,
+            ).await {
+                Ok(response) => response,
+                Err(e) => {
+                    let _ = tx.send(PhaseUpdate::Error {
+                        error: format!("Agentic loop failed: {}", e),
+                    });
+                    return;
+                }
+            };
+
+            // Send queries phase update (convert Vec<QueryCommand> to Vec<String>)
+            let query_strings: Vec<String> = agentic_response.queries
+                .iter()
+                .map(|q| q.command.clone())
+                .collect();
+
+            let _ = tx.send(PhaseUpdate::Queries {
+                queries: query_strings,
+            });
+
+            // Send execution phase update
+            let start_time = std::time::Instant::now();
+            let results_count = agentic_response.total_count.unwrap_or(0);
+            let execution_time_ms = start_time.elapsed().as_millis() as u64;
+
+            let _ = tx.send(PhaseUpdate::Executing {
+                results_count,
+                execution_time_ms,
+            });
+
+            // Generate answer
+            let provider_instance = match (|| -> Result<_> {
+                let mut config = super::config::load_config(&cache_path)?;
+                config.provider = provider_name.to_string();
+                let api_key = super::config::get_api_key(&config.provider)?;
+                let model = model_override.map(|s| s.to_string()).or(config.model);
+                super::providers::create_provider(&config.provider, api_key, model)
+            })() {
+                Ok(provider) => provider,
+                Err(e) => {
+                    let _ = tx.send(PhaseUpdate::Error {
+                        error: format!("Failed to create provider: {}", e),
+                    });
+                    return;
+                }
+            };
+
+            let answer = match super::generate_answer(
+                question,
+                &agentic_response.results,
+                results_count,
+                &*provider_instance,
+            ).await {
+                Ok(answer) => answer,
+                Err(e) => {
+                    let _ = tx.send(PhaseUpdate::Error {
+                        error: format!("Failed to generate answer: {}", e),
+                    });
+                    return;
+                }
+            };
+
+            // Send answer phase update
+            let _ = tx.send(PhaseUpdate::Answer { answer });
+
+            // Send done signal
+            let _ = tx.send(PhaseUpdate::Done);
         }
-    };
-
-    // Send answer phase update
-    let _ = tx.send(PhaseUpdate::Answer { answer });
-
-    // Send done signal
-    let _ = tx.send(PhaseUpdate::Done);
+    }
 }
 
 /// Setup terminal for TUI mode

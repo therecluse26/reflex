@@ -74,15 +74,48 @@ impl LlmProvider for GroqProvider {
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .json(&request_body)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
-            .context("Failed to send request to Groq API")?;
+            .map_err(|e| {
+                // Log detailed error information
+                log::error!("Groq API request failed: {}", e);
+                if e.is_timeout() {
+                    log::error!("  Reason: Request timeout (>30s)");
+                } else if e.is_connect() {
+                    log::error!("  Reason: Connection failed");
+                } else if e.is_request() {
+                    log::error!("  Reason: Invalid request");
+                }
+                anyhow::anyhow!("Failed to send request to Groq API: {}", e)
+            })?;
 
         // Check for HTTP errors
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-            anyhow::bail!("Groq API error ({}): {}", status, error_text);
+
+            // Provide more specific error messages for common issues
+            let error_msg = match status.as_u16() {
+                429 => {
+                    log::warn!("Groq rate limit exceeded: {}", error_text);
+                    format!("Rate limit exceeded (try again in a few seconds)")
+                }
+                503 | 502 | 504 => {
+                    log::warn!("Groq service unavailable ({}): {}", status, error_text);
+                    format!("Groq service temporarily unavailable ({})", status)
+                }
+                401 => {
+                    log::error!("Groq authentication failed: {}", error_text);
+                    format!("Authentication failed - check API key")
+                }
+                _ => {
+                    log::error!("Groq API error ({}): {}", status, error_text);
+                    format!("API error ({}): {}", status, error_text)
+                }
+            };
+
+            anyhow::bail!("{}", error_msg);
         }
 
         let data: serde_json::Value = response
