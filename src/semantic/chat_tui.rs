@@ -75,7 +75,7 @@ enum TriageDecision {
 }
 
 /// Helper function to wrap text with consistent "│ " prefix on each line
-fn wrap_with_prefix(content: &str, area_width: u16, color: Color) -> Vec<Line<'_>> {
+fn wrap_with_prefix(content: &str, area_width: u16, border_color: Color) -> Vec<Line<'_>> {
     let mut lines = Vec::new();
 
     // Calculate usable width: total width - borders (2) - prefix "│ " (2)
@@ -85,10 +85,10 @@ fn wrap_with_prefix(content: &str, area_width: u16, color: Color) -> Vec<Line<'_
     if usable_width < 10 {
         // Fallback for very narrow terminals - just add prefix without wrapping
         for content_line in content.lines() {
-            lines.push(Line::from(Span::styled(
-                format!("│ {}", content_line),
-                Style::default().fg(color),
-            )));
+            lines.push(Line::from(vec![
+                Span::styled("│ ", Style::default().fg(border_color)),
+                Span::styled(content_line, Style::default().fg(Color::White)),
+            ]));
         }
         return lines;
     }
@@ -99,16 +99,16 @@ fn wrap_with_prefix(content: &str, area_width: u16, color: Color) -> Vec<Line<'_
             // Preserve empty lines
             lines.push(Line::from(Span::styled(
                 "│ ",
-                Style::default().fg(color),
+                Style::default().fg(border_color),
             )));
         } else {
             // Wrap the line to fit the usable width
             let wrapped = textwrap::wrap(content_line, usable_width);
             for wrapped_line in wrapped {
-                lines.push(Line::from(Span::styled(
-                    format!("│ {}", wrapped_line),
-                    Style::default().fg(color),
-                )));
+                lines.push(Line::from(vec![
+                    Span::styled("│ ", Style::default().fg(border_color)),
+                    Span::styled(wrapped_line.to_string(), Style::default().fg(Color::White)),
+                ]));
             }
         }
     }
@@ -544,8 +544,8 @@ impl ChatApp {
                         Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
                     )));
 
-                    // Message content (with proper wrapping)
-                    lines.extend(wrap_with_prefix(&msg.content, area.width, Color::White));
+                    // Message content (with proper wrapping and consistent green border)
+                    lines.extend(wrap_with_prefix(&msg.content, area.width, Color::Green));
 
                     lines.push(Line::from(Span::styled(
                         "╰───────────────────────────────────────────",
@@ -563,15 +563,15 @@ impl ChatApp {
                     // Show needs_context indicator
                     if let Some(ref meta) = msg.metadata {
                         if meta.needs_context {
-                            lines.push(Line::from(Span::styled(
-                                "│ 🔍 Needs context gathering",
-                                Style::default().fg(Color::Yellow),
-                            )));
+                            lines.push(Line::from(vec![
+                                Span::styled("│ ", Style::default().fg(Color::Magenta)),
+                                Span::styled("🔍 Needs context gathering", Style::default().fg(Color::Yellow)),
+                            ]));
                         }
                     }
 
-                    // Message content (with proper wrapping)
-                    lines.extend(wrap_with_prefix(&msg.content, area.width, Color::White));
+                    // Message content (with proper wrapping and consistent magenta border)
+                    lines.extend(wrap_with_prefix(&msg.content, area.width, Color::Magenta));
 
                     lines.push(Line::from(Span::styled(
                         "╰───────────────────────────────────────────",
@@ -589,15 +589,18 @@ impl ChatApp {
                     // Show tool calls
                     if let Some(ref meta) = msg.metadata {
                         if !meta.tool_calls.is_empty() {
-                            lines.push(Line::from(Span::styled(
-                                format!("│ 🔧 {} tool calls made", meta.tool_calls.len()),
-                                Style::default().fg(Color::DarkGray),
-                            )));
+                            lines.push(Line::from(vec![
+                                Span::styled("│ ", Style::default().fg(Color::Blue)),
+                                Span::styled(
+                                    format!("🔧 {} tool calls made", meta.tool_calls.len()),
+                                    Style::default().fg(Color::DarkGray)
+                                ),
+                            ]));
                         }
                     }
 
-                    // Message content (with proper wrapping)
-                    lines.extend(wrap_with_prefix(&msg.content, area.width, Color::White));
+                    // Message content (with proper wrapping and consistent blue border)
+                    lines.extend(wrap_with_prefix(&msg.content, area.width, Color::Blue));
 
                     lines.push(Line::from(Span::styled(
                         "╰───────────────────────────────────────────",
@@ -615,22 +618,28 @@ impl ChatApp {
                     // Show query count
                     if let Some(ref meta) = msg.metadata {
                         if !meta.queries.is_empty() {
-                            lines.push(Line::from(Span::styled(
-                                format!("│ 📝 Generated {} queries", meta.queries.len()),
-                                Style::default().fg(Color::DarkGray),
-                            )));
+                            lines.push(Line::from(vec![
+                                Span::styled("│ ", Style::default().fg(Color::Magenta)),
+                                Span::styled(
+                                    format!("📝 Generated {} queries", meta.queries.len()),
+                                    Style::default().fg(Color::DarkGray)
+                                ),
+                            ]));
                             // Optionally show the queries
                             for (i, query) in meta.queries.iter().enumerate() {
-                                lines.push(Line::from(Span::styled(
-                                    format!("│   {}. {}", i + 1, query),
-                                    Style::default().fg(Color::DarkGray),
-                                )));
+                                lines.push(Line::from(vec![
+                                    Span::styled("│ ", Style::default().fg(Color::Magenta)),
+                                    Span::styled(
+                                        format!("  {}. {}", i + 1, query),
+                                        Style::default().fg(Color::DarkGray)
+                                    ),
+                                ]));
                             }
                         }
                     }
 
-                    // Message content (with proper wrapping)
-                    lines.extend(wrap_with_prefix(&msg.content, area.width, Color::White));
+                    // Message content (with proper wrapping and consistent magenta border)
+                    lines.extend(wrap_with_prefix(&msg.content, area.width, Color::Magenta));
 
                     lines.push(Line::from(Span::styled(
                         "╰───────────────────────────────────────────",
@@ -652,14 +661,17 @@ impl ChatApp {
                         } else {
                             String::new()
                         };
-                        lines.push(Line::from(Span::styled(
-                            format!("│ ⚡ Found {} results{}", meta.results_count, time_str),
-                            Style::default().fg(Color::DarkGray),
-                        )));
+                        lines.push(Line::from(vec![
+                            Span::styled("│ ", Style::default().fg(Color::Yellow)),
+                            Span::styled(
+                                format!("⚡ Found {} results{}", meta.results_count, time_str),
+                                Style::default().fg(Color::DarkGray)
+                            ),
+                        ]));
                     }
 
-                    // Message content (with proper wrapping)
-                    lines.extend(wrap_with_prefix(&msg.content, area.width, Color::White));
+                    // Message content (with proper wrapping and consistent yellow border)
+                    lines.extend(wrap_with_prefix(&msg.content, area.width, Color::Yellow));
 
                     lines.push(Line::from(Span::styled(
                         "╰───────────────────────────────────────────",
