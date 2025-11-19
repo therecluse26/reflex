@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
@@ -2505,19 +2506,24 @@ fn handle_ask(
     let (queries, results, total_count, count_only) = if agentic {
         // Agentic mode: multi-step reasoning with context gathering
 
+        // Wrap spinner in Arc<Mutex<>> for sharing with reporter (non-quiet mode)
+        let spinner_shared = if !quiet {
+            spinner.as_ref().map(|s| Arc::new(Mutex::new(s.clone())))
+        } else {
+            None
+        };
+
         // Create reporter based on flags
         let reporter: Box<dyn crate::semantic::AgenticReporter> = if quiet {
             Box::new(crate::semantic::QuietReporter)
         } else {
-            Box::new(crate::semantic::ConsoleReporter::new(show_reasoning, verbose))
+            Box::new(crate::semantic::ConsoleReporter::new(show_reasoning, verbose, spinner_shared))
         };
 
-        // Only show spinner in quiet mode (reporter handles its own output otherwise)
+        // Set initial spinner message and enable ticking
         if let Some(ref s) = spinner {
-            if quiet {
-                s.set_message("Agentic mode: Assessing context needs...".to_string());
-                s.enable_steady_tick(std::time::Duration::from_millis(80));
-            }
+            s.set_message("Starting agentic mode...".to_string());
+            s.enable_steady_tick(std::time::Duration::from_millis(80));
         }
 
         let agentic_config = crate::semantic::AgenticConfig {
@@ -2535,10 +2541,9 @@ fn handle_ask(
             crate::semantic::run_agentic_loop(&question, &cache, agentic_config, &*reporter).await
         }).context("Failed to run agentic loop")?;
 
+        // Clear spinner after agentic loop completes
         if let Some(ref s) = spinner {
-            if quiet {
-                s.finish_and_clear();
-            }
+            s.finish_and_clear();
         }
 
         // Clear ephemeral output (Phase 5 evaluation) before showing final results

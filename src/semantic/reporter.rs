@@ -4,7 +4,8 @@
 //! displaying the LLM's reasoning at each phase similar to Claude Code's thinking blocks.
 
 use owo_colors::OwoColorize;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use indicatif::ProgressBar;
 
 use super::schema_agentic::{ToolCall, EvaluationReport};
 use super::tools::ToolResult;
@@ -47,28 +48,18 @@ pub struct ConsoleReporter {
     /// Number of lines printed by the last phase (for ephemeral clearing)
     lines_printed: Mutex<usize>,
 
-    /// Whether spinner has been cleared
-    spinner_cleared: Mutex<bool>,
+    /// Optional progress spinner to update with phase information
+    spinner: Option<Arc<Mutex<ProgressBar>>>,
 }
 
 impl ConsoleReporter {
     /// Create a new console reporter
-    pub fn new(show_reasoning: bool, verbose: bool) -> Self {
+    pub fn new(show_reasoning: bool, verbose: bool, spinner: Option<Arc<Mutex<ProgressBar>>>) -> Self {
         Self {
             show_reasoning,
             verbose,
             lines_printed: Mutex::new(0),
-            spinner_cleared: Mutex::new(false),
-        }
-    }
-
-    /// Clear the spinner if it hasn't been cleared yet
-    /// This is called by the first report method to ensure spinner is cleared before output
-    fn clear_spinner_once(&self) {
-        if !*self.spinner_cleared.lock().unwrap() {
-            // The spinner will be cleared by the CLI handle_ask function
-            // We just mark it as cleared so we don't try to clear it again
-            *self.spinner_cleared.lock().unwrap() = true;
+            spinner,
         }
     }
 
@@ -150,89 +141,125 @@ impl ConsoleReporter {
         let truncated = &text[..max_len];
         format!("{}...", truncated)
     }
+
+    /// Execute a closure with the spinner suspended
+    /// This prevents visual conflicts between spinner and printed output
+    fn with_suspended_spinner<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        if let Some(ref spinner) = self.spinner {
+            if let Ok(spinner_guard) = spinner.lock() {
+                return spinner_guard.suspend(f);
+            }
+        }
+        // If no spinner or lock failed, just execute the closure
+        f()
+    }
 }
 
 impl AgenticReporter for ConsoleReporter {
     fn report_phase(&self, phase_num: usize, phase_name: &str) {
-        let line = format!("\n━━━ Phase {}: {} ━━━", phase_num, phase_name);
-        println!("{}", line.bold().cyan());
-        self.add_lines(2); // Newline + phase line
+        if let Some(ref spinner) = self.spinner {
+            // Lock spinner once for suspend, print, and finish
+            if let Ok(spinner_guard) = spinner.lock() {
+                // Suspend spinner, print output
+                spinner_guard.suspend(|| {
+                    let line = format!("\n━━━ Phase {}: {} ━━━", phase_num, phase_name);
+                    println!("{}", line.bold().cyan());
+                    self.add_lines(2); // Newline + phase line
+                });
+                // Finish and clear the spinner completely to hide it
+                // It will automatically reappear when set_message() is called with a non-empty message
+                spinner_guard.finish_and_clear();
+            }
+        } else {
+            // No spinner, just print
+            let line = format!("\n━━━ Phase {}: {} ━━━", phase_num, phase_name);
+            println!("{}", line.bold().cyan());
+            self.add_lines(2); // Newline + phase line
+        }
     }
 
     fn report_assessment(&self, reasoning: &str, needs_context: bool, tools: &[ToolCall]) {
-        // Clear spinner on first output
-        self.clear_spinner_once();
-
         self.report_phase(1, "Assessment");
 
-        if self.show_reasoning && !reasoning.is_empty() {
-            println!("\n{}", "💭 Reasoning:".dimmed());
-            self.add_lines(2); // Newline + header
-            self.display_reasoning_block(reasoning);
-        }
-
-        println!();
-        self.add_lines(1);
-
-        if needs_context && !tools.is_empty() {
-            println!("{} {}", "→".bright_green(), "Needs additional context".bold());
-            println!("  {} tool(s) to execute:", tools.len());
-            self.add_lines(2);
-            for (i, tool) in tools.iter().enumerate() {
-                println!("  {}. {}", (i + 1).to_string().bright_white(), self.describe_tool(tool).dimmed());
-                self.add_lines(1);
+        self.with_suspended_spinner(|| {
+            if self.show_reasoning && !reasoning.is_empty() {
+                println!("\n{}", "💭 Reasoning:".dimmed());
+                self.add_lines(2); // Newline + header
+                self.display_reasoning_block(reasoning);
             }
-        } else {
-            println!("{} {}", "→".bright_green(), "Has sufficient context".bold());
-            println!("  Proceeding directly to query generation");
-            self.add_lines(2);
-        }
+
+            println!();
+            self.add_lines(1);
+
+            if needs_context && !tools.is_empty() {
+                println!("{} {}", "→".bright_green(), "Needs additional context".bold());
+                println!("  {} tool(s) to execute:", tools.len());
+                self.add_lines(2);
+                for (i, tool) in tools.iter().enumerate() {
+                    println!("  {}. {}", (i + 1).to_string().bright_white(), self.describe_tool(tool).dimmed());
+                    self.add_lines(1);
+                }
+            } else {
+                println!("{} {}", "→".bright_green(), "Has sufficient context".bold());
+                println!("  Proceeding directly to query generation");
+                self.add_lines(2);
+            }
+        });
     }
 
     fn report_tool_start(&self, idx: usize, tool: &ToolCall) {
         if idx == 1 {
             self.report_phase(2, "Context Gathering");
-            println!();
-            self.add_lines(1);
+            self.with_suspended_spinner(|| {
+                println!();
+                self.add_lines(1);
+            });
         }
 
         if self.verbose {
-            println!("  {} Executing: {}", "⋯".dimmed(), self.describe_tool(tool).dimmed());
-            self.add_lines(1);
+            self.with_suspended_spinner(|| {
+                println!("  {} Executing: {}", "⋯".dimmed(), self.describe_tool(tool).dimmed());
+                self.add_lines(1);
+            });
         }
     }
 
     fn report_tool_complete(&self, idx: usize, result: &ToolResult) {
-        if result.success {
-            println!("  {} {} {}",
-                "✓".bright_green(),
-                format!("[{}]", idx).dimmed(),
-                result.description
-            );
-            self.add_lines(1);
+        self.with_suspended_spinner(|| {
+            if result.success {
+                println!("  {} {} {}",
+                    "✓".bright_green(),
+                    format!("[{}]", idx).dimmed(),
+                    result.description
+                );
+                self.add_lines(1);
 
-            if self.verbose && !result.output.is_empty() {
-                // Show truncated output
-                let preview = self.truncate(&result.output, 150);
-                let lines_shown = preview.lines().take(3);
-                for line in lines_shown {
-                    println!("    {}", line.dimmed());
-                    self.add_lines(1);
+                if self.verbose && !result.output.is_empty() {
+                    // Show truncated output
+                    let preview = self.truncate(&result.output, 150);
+                    let lines_shown = preview.lines().take(3);
+                    for line in lines_shown {
+                        println!("    {}", line.dimmed());
+                        self.add_lines(1);
+                    }
+                    if result.output.lines().count() > 3 {
+                        println!("    {}", "...".dimmed());
+                        self.add_lines(1);
+                    }
                 }
-                if result.output.lines().count() > 3 {
-                    println!("    {}", "...".dimmed());
-                    self.add_lines(1);
-                }
+            } else {
+                println!("  {} {} {} - {}",
+                    "✗".bright_red(),
+                    format!("[{}]", idx).dimmed(),
+                    result.description,
+                    "failed".red()
+                );
+                self.add_lines(1);
             }
-        } else {
-            println!("  {} {} {} - {}",
-                "✗".bright_red(),
-                format!("[{}]", idx).dimmed(),
-                result.description,
-                "failed".red()
-            );
-            self.add_lines(1);
-        }
+        });
     }
 
     fn report_generation(&self, reasoning: Option<&str>, query_count: usize, confidence: f32) {
@@ -241,35 +268,37 @@ impl AgenticReporter for ConsoleReporter {
 
         self.report_phase(3, "Query Generation");
 
-        if self.show_reasoning {
-            if let Some(reasoning_text) = reasoning {
-                if !reasoning_text.is_empty() {
-                    println!("\n{}", "💭 Reasoning:".dimmed());
-                    self.add_lines(2);
-                    self.display_reasoning_block(reasoning_text);
+        self.with_suspended_spinner(|| {
+            if self.show_reasoning {
+                if let Some(reasoning_text) = reasoning {
+                    if !reasoning_text.is_empty() {
+                        println!("\n{}", "💭 Reasoning:".dimmed());
+                        self.add_lines(2);
+                        self.display_reasoning_block(reasoning_text);
+                    }
                 }
             }
-        }
 
-        println!();
-        self.add_lines(1);
+            println!();
+            self.add_lines(1);
 
-        let confidence_pct = (confidence * 100.0) as u8;
+            let confidence_pct = (confidence * 100.0) as u8;
 
-        print!("{} Generated {} {} (confidence: ",
-            "→".bright_green(),
-            query_count,
-            if query_count == 1 { "query" } else { "queries" }
-        );
+            print!("{} Generated {} {} (confidence: ",
+                "→".bright_green(),
+                query_count,
+                if query_count == 1 { "query" } else { "queries" }
+            );
 
-        if confidence >= 0.8 {
-            println!("{}%)", confidence_pct.to_string().bright_green());
-        } else if confidence >= 0.6 {
-            println!("{}%)", confidence_pct.to_string().yellow());
-        } else {
-            println!("{}%)", confidence_pct.to_string().bright_red());
-        }
-        self.add_lines(1);
+            if confidence >= 0.8 {
+                println!("{}%)", confidence_pct.to_string().bright_green());
+            } else if confidence >= 0.6 {
+                println!("{}%)", confidence_pct.to_string().yellow());
+            } else {
+                println!("{}%)", confidence_pct.to_string().bright_red());
+            }
+            self.add_lines(1);
+        });
     }
 
     fn report_evaluation(&self, evaluation: &EvaluationReport) {
@@ -277,60 +306,63 @@ impl AgenticReporter for ConsoleReporter {
         self.clear_last_output();
 
         self.report_phase(5, "Evaluation");
-        println!();
-        self.add_lines(1);
 
-        if evaluation.success {
-            println!("{} {} (score: {}/1.0)",
-                "✓".bright_green(),
-                "Success".bold().bright_green(),
-                format!("{:.2}", evaluation.score).bright_white()
-            );
+        self.with_suspended_spinner(|| {
+            println!();
             self.add_lines(1);
 
-            if self.verbose && !evaluation.issues.is_empty() {
-                println!("\n  Minor issues noted:");
-                self.add_lines(2);
-                for issue in &evaluation.issues {
-                    println!("  - {} (severity: {:.2})",
-                        issue.description.dimmed(),
-                        issue.severity
-                    );
-                    self.add_lines(1);
-                }
-            }
-        } else {
-            println!("{} {} (score: {}/1.0)",
-                "⚠".yellow(),
-                "Results need refinement".bold().yellow(),
-                format!("{:.2}", evaluation.score).bright_white()
-            );
-            self.add_lines(1);
+            if evaluation.success {
+                println!("{} {} (score: {}/1.0)",
+                    "✓".bright_green(),
+                    "Success".bold().bright_green(),
+                    format!("{:.2}", evaluation.score).bright_white()
+                );
+                self.add_lines(1);
 
-            if !evaluation.issues.is_empty() {
-                println!("\n  Issues found:");
-                self.add_lines(2);
-                for (idx, issue) in evaluation.issues.iter().enumerate().take(3) {
-                    println!("  {}. {}",
-                        (idx + 1).to_string().dimmed(),
-                        issue.description
-                    );
-                    self.add_lines(1);
+                if self.verbose && !evaluation.issues.is_empty() {
+                    println!("\n  Minor issues noted:");
+                    self.add_lines(2);
+                    for issue in &evaluation.issues {
+                        println!("  - {} (severity: {:.2})",
+                            issue.description.dimmed(),
+                            issue.severity
+                        );
+                        self.add_lines(1);
+                    }
                 }
-            }
+            } else {
+                println!("{} {} (score: {}/1.0)",
+                    "⚠".yellow(),
+                    "Results need refinement".bold().yellow(),
+                    format!("{:.2}", evaluation.score).bright_white()
+                );
+                self.add_lines(1);
 
-            if !evaluation.suggestions.is_empty() {
-                println!("\n  Suggestions:");
-                self.add_lines(2);
-                for (idx, suggestion) in evaluation.suggestions.iter().enumerate().take(3) {
-                    println!("  {}. {}",
-                        (idx + 1).to_string().dimmed(),
-                        suggestion.dimmed()
-                    );
-                    self.add_lines(1);
+                if !evaluation.issues.is_empty() {
+                    println!("\n  Issues found:");
+                    self.add_lines(2);
+                    for (idx, issue) in evaluation.issues.iter().enumerate().take(3) {
+                        println!("  {}. {}",
+                            (idx + 1).to_string().dimmed(),
+                            issue.description
+                        );
+                        self.add_lines(1);
+                    }
+                }
+
+                if !evaluation.suggestions.is_empty() {
+                    println!("\n  Suggestions:");
+                    self.add_lines(2);
+                    for (idx, suggestion) in evaluation.suggestions.iter().enumerate().take(3) {
+                        println!("  {}. {}",
+                            (idx + 1).to_string().dimmed(),
+                            suggestion.dimmed()
+                        );
+                        self.add_lines(1);
+                    }
                 }
             }
-        }
+        });
     }
 
     fn report_refinement_start(&self) {
@@ -338,9 +370,12 @@ impl AgenticReporter for ConsoleReporter {
         self.clear_last_output();
 
         self.report_phase(6, "Refinement");
-        println!();
-        println!("{} Refining queries based on evaluation feedback...", "→".yellow());
-        self.add_lines(2);
+
+        self.with_suspended_spinner(|| {
+            println!();
+            println!("{} Refining queries based on evaluation feedback...", "→".yellow());
+            self.add_lines(2);
+        });
     }
 
     fn clear_all(&self) {
@@ -370,14 +405,14 @@ mod tests {
 
     #[test]
     fn test_console_reporter_creation() {
-        let reporter = ConsoleReporter::new(true, false);
+        let reporter = ConsoleReporter::new(true, false, None);
         assert!(reporter.show_reasoning);
         assert!(!reporter.verbose);
     }
 
     #[test]
     fn test_truncate() {
-        let reporter = ConsoleReporter::new(false, false);
+        let reporter = ConsoleReporter::new(false, false, None);
         let text = "a".repeat(300);
         let truncated = reporter.truncate(&text, 100);
         assert!(truncated.len() <= 103); // 100 + "..."
@@ -385,7 +420,7 @@ mod tests {
 
     #[test]
     fn test_describe_gather_context_tool() {
-        let reporter = ConsoleReporter::new(false, false);
+        let reporter = ConsoleReporter::new(false, false, None);
         let tool = ToolCall::GatherContext {
             params: ContextGatheringParams {
                 structure: true,
