@@ -1300,8 +1300,6 @@ pub fn resolve_php_import(
     _current_file: &str,
     project_root: &std::path::Path,
 ) -> Option<String> {
-    use std::path::Path;
-
     // External vendor namespaces (Laravel, Symfony, etc.) - don't resolve
     const VENDOR_NAMESPACES: &[&str] = &[
         "Illuminate\\", "Symfony\\", "Laravel\\", "Psr\\",

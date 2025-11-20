@@ -1,6 +1,6 @@
 [package]
 name = "reflex-search"
-version = "0.8.2"
+version = "0.9.1"
 edition = "2024"
 authors = ["Reflex Contributors"]
 description = "A local-first, structure-aware code search engine for AI agents"
@@ -51,10 +51,20 @@ rkyv = "0.8"
 memmap2 = "0.9"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
-# HTTP server
+# HTTP server and client
 axum = "0.7"
 tokio = { version = "1.40", features = ["full"] }
 tower-http = { version = "0.6", features = ["cors"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Async traits
+async-trait = "0.1"
+
+# Config parsing
+toml = "0.8"
+
+# Shell command parsing
+shell-words = "1.1"
 
 # Logging
 log = "0.4"
@@ -83,7 +93,7 @@ globset = "0.4"
 walkdir = "2.5"
 
 # Date/time utilities
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
 
 # Lock and cleanup utilities
@@ -99,6 +109,8 @@ crossterm = "0.28"
 syntect = "5.2"
 unicode-width = "0.2"
 owo-colors = "4.1"
+termimad = "0.30"
+textwrap = "0.16"
 
 [build-dependencies]
 blake3 = "1.5"

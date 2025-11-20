@@ -1118,7 +1118,7 @@ impl TypeScriptDependencyExtractor {
     /// and the source path. The indexer will resolve these to file IDs.
     pub fn extract_export_declarations(
         source: &str,
-        alias_map: Option<&crate::parsers::tsconfig::PathAliasMap>,
+        _alias_map: Option<&crate::parsers::tsconfig::PathAliasMap>,
     ) -> Result<Vec<ExportInfo>> {
         let mut parser = Parser::new();
         let language = tree_sitter_typescript::LANGUAGE_TSX;

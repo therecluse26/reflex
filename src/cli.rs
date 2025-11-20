@@ -1,9 +1,12 @@
 //! CLI argument parsing and command handlers
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use indicatif::{ProgressBar, ProgressStyle};
+use owo_colors::OwoColorize;
 
 use crate::cache::CacheManager;
 use crate::indexer::Indexer;
@@ -19,8 +22,7 @@ use crate::query::{QueryEngine, QueryFilter};
     about = "A fast, deterministic code search engine built for AI",
     long_about = "Reflex is a local-first, structure-aware code search engine that returns \
                   structured results (symbols, spans, scopes) with sub-100ms latency. \
-                  Designed for AI coding agents and automation.\n\n\
-                  Run 'rfx' with no arguments to launch interactive mode."
+                  Designed for AI coding agents and automation."
 )]
 pub struct Cli {
     /// Enable verbose logging (can be repeated for more verbosity)
@@ -133,6 +135,20 @@ pub enum Command {
         ast: bool,
 
         /// Use regex pattern matching
+        ///
+        /// Enables standard regex syntax in the search pattern:
+        ///   |  for alternation (OR) - NO backslash needed
+        ///   .  matches any character
+        ///   .*  matches zero or more characters
+        ///   ^  anchors to start of line
+        ///   $  anchors to end of line
+        ///
+        /// Examples:
+        ///   --regex "belongsTo|hasMany"       Match belongsTo OR hasMany
+        ///   --regex "^import.*from"           Lines starting with import...from
+        ///   --regex "fn.*test"                Functions containing 'test'
+        ///
+        /// Note: Cannot be combined with --contains (mutually exclusive)
         #[arg(short = 'r', long)]
         regex: bool,
 
@@ -176,7 +192,19 @@ pub enum Command {
         exact: bool,
 
         /// Use substring matching for both text and symbols (expansive search)
-        /// Default behavior uses word-boundary and exact matching for precision
+        ///
+        /// Default behavior uses word-boundary matching for precision:
+        ///   "Error" matches "Error" but not "NetworkError"
+        ///
+        /// With --contains, enables substring matching (expansive):
+        ///   "Error" matches "Error", "NetworkError", "error_handler", etc.
+        ///
+        /// Use cases:
+        ///   - Finding partial matches: --contains "partial"
+        ///   - When you're unsure of exact names
+        ///   - Exploratory searches
+        ///
+        /// Note: Cannot be combined with --regex or --exact (mutually exclusive)
         #[arg(long)]
         contains: bool,
 
@@ -193,12 +221,29 @@ pub enum Command {
         plain: bool,
 
         /// Include files matching glob pattern (can be repeated)
-        /// Example: --glob "src/**/*.rs" --glob "tests/**/*.rs"
+        ///
+        /// Pattern syntax (NO shell quotes in the pattern itself):
+        ///   ** = recursive match (all subdirectories)
+        ///   *  = single level match (one directory)
+        ///
+        /// Examples:
+        ///   --glob src/**/*.rs          All .rs files under src/ (recursive)
+        ///   --glob app/Models/*.php     PHP files directly in Models/ (not subdirs)
+        ///   --glob tests/**/*_test.go   All test files under tests/
+        ///
+        /// Tip: Use --file for simple substring matching instead:
+        ///   --file User.php             Simpler than --glob **/User.php
         #[arg(short = 'g', long)]
         glob: Vec<String>,
 
         /// Exclude files matching glob pattern (can be repeated)
-        /// Example: --exclude "target/**" --exclude "*.gen.rs"
+        ///
+        /// Same syntax as --glob (** for recursive, * for single level)
+        ///
+        /// Examples:
+        ///   --exclude target/**         Exclude all files under target/
+        ///   --exclude **/*.gen.rs       Exclude generated Rust files
+        ///   --exclude node_modules/**   Exclude npm dependencies
         #[arg(short = 'x', long)]
         exclude: Vec<String>,
 
@@ -446,6 +491,157 @@ pub enum Command {
         pretty: bool,
     },
 
+    /// Ask a natural language question and generate search queries
+    ///
+    /// Uses an LLM to translate natural language questions into `rfx query` commands.
+    /// Requires API key configuration for one of: OpenAI, Anthropic, or Groq.
+    ///
+    /// If no question is provided, launches interactive chat mode by default.
+    ///
+    /// Configuration:
+    ///   1. Run interactive setup wizard (recommended):
+    ///      rfx ask --configure
+    ///
+    ///   2. OR set API key via environment variable:
+    ///      - OPENAI_API_KEY, ANTHROPIC_API_KEY, or GROQ_API_KEY
+    ///
+    ///   3. Optional: Configure provider in .reflex/config.toml:
+    ///      [semantic]
+    ///      provider = "groq"  # or openai, anthropic
+    ///      model = "llama-3.3-70b-versatile"  # optional, defaults to provider default
+    ///
+    /// Examples:
+    ///   rfx ask --configure                           # Interactive setup wizard
+    ///   rfx ask                                       # Launch interactive chat (default)
+    ///   rfx ask "Find all TODOs in Rust files"
+    ///   rfx ask "Where is the main function defined?" --execute
+    ///   rfx ask "Show me error handling code" --provider groq
+    Ask {
+        /// Natural language question
+        question: Option<String>,
+
+        /// Execute queries immediately without confirmation
+        #[arg(short, long)]
+        execute: bool,
+
+        /// Override configured LLM provider (openai, anthropic, groq)
+        #[arg(short, long)]
+        provider: Option<String>,
+
+        /// Output format as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Pretty-print JSON output (only with --json)
+        #[arg(long)]
+        pretty: bool,
+
+        /// Additional context to inject into prompt (e.g., from `rfx context`)
+        #[arg(long)]
+        additional_context: Option<String>,
+
+        /// Launch interactive configuration wizard to set up AI provider and API key
+        #[arg(long)]
+        configure: bool,
+
+        /// Enable agentic mode (multi-step reasoning with context gathering)
+        #[arg(long)]
+        agentic: bool,
+
+        /// Maximum iterations for query refinement in agentic mode (default: 2)
+        #[arg(long, default_value = "2")]
+        max_iterations: usize,
+
+        /// Skip result evaluation in agentic mode
+        #[arg(long)]
+        no_eval: bool,
+
+        /// Show LLM reasoning blocks at each phase (agentic mode only)
+        #[arg(long)]
+        show_reasoning: bool,
+
+        /// Verbose output: show tool results and details (agentic mode only)
+        #[arg(long)]
+        verbose: bool,
+
+        /// Quiet mode: suppress progress output (agentic mode only)
+        #[arg(long)]
+        quiet: bool,
+
+        /// Generate a conversational answer based on search results
+        #[arg(long)]
+        answer: bool,
+
+        /// Launch interactive chat mode (TUI) with conversation history
+        #[arg(short = 'i', long)]
+        interactive: bool,
+
+        /// Debug mode: output full LLM prompts and retain terminal history
+        #[arg(long)]
+        debug: bool,
+    },
+
+    /// Generate codebase context for AI prompts
+    ///
+    /// Provides structural and organizational context about the project to help
+    /// LLMs understand project layout. Use with `rfx ask --additional-context`.
+    ///
+    /// By default (no flags), shows --structure and --file-types.
+    ///
+    /// Examples:
+    ///   rfx context                                    # Basic overview
+    ///   rfx context --path services/backend --full     # Full context for monorepo
+    ///   rfx context --framework --entry-points         # Specific context types
+    ///   rfx context --structure --depth 5              # Deep directory tree
+    ///
+    ///   # Use with semantic queries
+    ///   rfx ask "find auth" --additional-context "$(rfx context --framework)"
+    Context {
+        /// Show directory structure (enabled by default)
+        #[arg(long)]
+        structure: bool,
+
+        /// Focus on specific directory path
+        #[arg(short, long)]
+        path: Option<String>,
+
+        /// Show file type distribution (enabled by default)
+        #[arg(long)]
+        file_types: bool,
+
+        /// Detect project type (CLI/library/webapp/monorepo)
+        #[arg(long)]
+        project_type: bool,
+
+        /// Detect frameworks and conventions
+        #[arg(long)]
+        framework: bool,
+
+        /// Show entry point files
+        #[arg(long)]
+        entry_points: bool,
+
+        /// Show test organization pattern
+        #[arg(long)]
+        test_layout: bool,
+
+        /// List important configuration files
+        #[arg(long)]
+        config_files: bool,
+
+        /// Enable all context types
+        #[arg(long)]
+        full: bool,
+
+        /// Tree depth for --structure (default: 1)
+        #[arg(long, default_value = "1")]
+        depth: usize,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Internal command: Run background symbol indexing (hidden from help)
     #[command(hide = true)]
     IndexSymbolsInternal {
@@ -551,11 +747,13 @@ impl Cli {
             try_background_compact(&cache, command);
         }
 
-        // Execute the subcommand, or launch interactive mode if no command provided
+        // Execute the subcommand, or show help if no command provided
         match self.command {
             None => {
-                // No subcommand: launch interactive mode
-                handle_interactive()
+                // No subcommand: show help
+                Cli::command().print_help()?;
+                println!();  // Add newline after help
+                Ok(())
             }
             Some(Command::Index { path, force, languages, quiet, command }) => {
                 match command {
@@ -598,6 +796,12 @@ impl Cli {
             Some(Command::Deps { file, reverse, depth, format, json, pretty }) => {
                 handle_deps(file, reverse, depth, format, json, pretty)
             }
+            Some(Command::Ask { question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet, answer, interactive, debug }) => {
+                handle_ask(question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet, answer, interactive, debug)
+            }
+            Some(Command::Context { structure, path, file_types, project_type, framework, entry_points, test_layout, config_files, full, depth, json }) => {
+                handle_context(structure, path, file_types, project_type, framework, entry_points, test_layout, config_files, full, depth, json)
+            }
             Some(Command::IndexSymbolsInternal { cache_dir }) => {
                 handle_index_symbols_internal(cache_dir)
             }
@@ -639,12 +843,12 @@ fn handle_index_status() -> Result<()> {
                     println!("\nProgress:        {:.1}%", progress);
                 }
 
-                return Ok(());
+                Ok(())
             }
             Ok(None) => {
                 println!("No background symbol indexing in progress.");
                 println!("\nRun 'rfx index' to start background symbol indexing.");
-                return Ok(());
+                Ok(())
             }
             Err(e) => {
                 anyhow::bail!("Failed to get indexing status: {}", e);
@@ -717,7 +921,7 @@ fn handle_index_build(path: &PathBuf, force: &bool, languages: &[String], quiet:
     let indexer = Indexer::new(cache, config);
     // Show progress by default, unless quiet mode is enabled
     let show_progress = !quiet;
-    let stats = indexer.index(&path, show_progress)?;
+    let stats = indexer.index(path, show_progress)?;
 
     // In quiet mode, suppress all output
     if !quiet {
@@ -769,7 +973,7 @@ fn handle_index_build(path: &PathBuf, force: &bool, languages: &[String], quiet:
         {
             std::process::Command::new(&current_exe)
                 .arg("index-symbols-internal")
-                .arg(&path)
+                .arg(path)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -838,7 +1042,7 @@ pub fn truncate_preview(preview: &str, max_length: usize) -> String {
         .unwrap_or(max_length.min(preview.len()));
 
     let mut truncated = preview[..truncate_at].to_string();
-    truncated.push_str("…");
+    truncated.push('…');
     truncated
 }
 
@@ -990,6 +1194,70 @@ fn handle_query(
         );
     }
 
+    // VALIDATION: Check for conflicting or problematic flag combinations
+    // Only show warnings/errors in non-JSON mode (avoid breaking parsers)
+    if !as_json {
+        let mut has_errors = false;
+
+        // ERROR: Mutually exclusive pattern matching modes
+        if use_regex && use_contains {
+            eprintln!("{}", "ERROR: Cannot use --regex and --contains together.".red().bold());
+            eprintln!("  {} --regex for pattern matching (alternation, wildcards, etc.)", "•".dimmed());
+            eprintln!("  {} --contains for substring matching (expansive search)", "•".dimmed());
+            eprintln!("\n  {} Choose one based on your needs:", "Tip:".cyan().bold());
+            eprintln!("    {} for OR logic: --regex", "pattern1|pattern2".yellow());
+            eprintln!("    {} for substring: --contains", "partial_text".yellow());
+            has_errors = true;
+        }
+
+        // ERROR: Contradictory matching requirements
+        if exact && use_contains {
+            eprintln!("{}", "ERROR: Cannot use --exact and --contains together (contradictory).".red().bold());
+            eprintln!("  {} --exact requires exact symbol name match", "•".dimmed());
+            eprintln!("  {} --contains allows substring matching", "•".dimmed());
+            has_errors = true;
+        }
+
+        // WARNING: Redundant file filtering
+        if file_pattern.is_some() && !glob_patterns.is_empty() {
+            eprintln!("{}", "WARNING: Both --file and --glob specified.".yellow().bold());
+            eprintln!("  {} --file does substring matching on file paths", "•".dimmed());
+            eprintln!("  {} --glob does pattern matching with wildcards", "•".dimmed());
+            eprintln!("  {} Both filters will apply (AND condition)", "Note:".dimmed());
+            eprintln!("\n  {} Usually you only need one:", "Tip:".cyan().bold());
+            eprintln!("    {} for simple matching", "--file User.php".yellow());
+            eprintln!("    {} for pattern matching", "--glob src/**/*.php".yellow());
+        }
+
+        // INFO: Detect potentially problematic glob patterns
+        for pattern in &glob_patterns {
+            // Check for literal quotes in pattern
+            if (pattern.starts_with('\'') && pattern.ends_with('\'')) ||
+               (pattern.starts_with('"') && pattern.ends_with('"')) {
+                eprintln!("{}",
+                    format!("WARNING: Glob pattern contains quotes: {}", pattern).yellow().bold()
+                );
+                eprintln!("  {} Shell quotes should not be part of the pattern", "Note:".dimmed());
+                eprintln!("  {} --glob src/**/*.rs", "Correct:".green());
+                eprintln!("  {} --glob 'src/**/*.rs'", "Wrong:".red().dimmed());
+            }
+
+            // Suggest using ** instead of * for recursive matching
+            if pattern.contains("*/") && !pattern.contains("**/") {
+                eprintln!("{}",
+                    format!("INFO: Glob '{}' uses * (matches one directory level)", pattern).cyan()
+                );
+                eprintln!("  {} Use ** for recursive matching across subdirectories", "Tip:".cyan().bold());
+                eprintln!("    {} → matches files in Models/ only", "app/Models/*.php".yellow());
+                eprintln!("    {} → matches files in Models/ and subdirs", "app/Models/**/*.php".green());
+            }
+        }
+
+        if has_errors {
+            anyhow::bail!("Invalid flag combination. Fix the errors above and try again.");
+        }
+    }
+
     let filter = QueryFilter {
         language,
         kind,
@@ -1009,6 +1277,7 @@ fn handle_query(
         force,
         suppress_output: as_json,  // Suppress warnings in JSON mode
         include_dependencies,
+        ..Default::default()
     };
 
     // Measure query time
@@ -1166,16 +1435,44 @@ fn handle_query(
                         .push(result.clone());
                 }
 
+                // Load ContentReader for extracting context lines
+                use crate::content_store::ContentReader;
+                let local_cache = CacheManager::new(".");
+                let content_path = local_cache.path().join("content.bin");
+                let content_reader_opt = ContentReader::open(&content_path).ok();
+
                 let mut file_results: Vec<FileGroupedResult> = grouped
                     .into_iter()
                     .map(|(path, file_matches)| {
+                        // Get file_id for context extraction
+                        // Note: We use ContentReader's get_file_id_by_path() which returns array indices,
+                        // not database file_ids (which are AUTO INCREMENT values)
+                        let normalized_path = path.strip_prefix("./").unwrap_or(&path);
+                        let file_id_for_context = if let Some(reader) = &content_reader_opt {
+                            reader.get_file_id_by_path(normalized_path)
+                        } else {
+                            None
+                        };
+
                         let matches: Vec<MatchResult> = file_matches
                             .into_iter()
-                            .map(|r| MatchResult {
-                                kind: r.kind,
-                                symbol: r.symbol,
-                                span: r.span,
-                                preview: r.preview,
+                            .map(|r| {
+                                // Extract context lines (default: 3 lines before and after)
+                                let (context_before, context_after) = if let (Some(reader), Some(fid)) = (&content_reader_opt, file_id_for_context) {
+                                    reader.get_context_by_line(fid as u32, r.span.start_line, 3)
+                                        .unwrap_or_else(|_| (vec![], vec![]))
+                                } else {
+                                    (vec![], vec![])
+                                };
+
+                                MatchResult {
+                                    kind: r.kind,
+                                    symbol: r.symbol,
+                                    span: r.span,
+                                    preview: r.preview,
+                                    context_before,
+                                    context_after,
+                                }
                             })
                             .collect();
                         FileGroupedResult {
@@ -1451,6 +1748,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             force: params.force,
             suppress_output: true,  // HTTP API always returns JSON, suppress warnings
             include_dependencies: params.dependencies,
+            ..Default::default()
         };
 
         match engine.search_with_metadata(&params.q, filter) {
@@ -1649,6 +1947,31 @@ fn handle_stats(as_json: bool, pretty_json: bool) -> Result<()> {
         println!("Files indexed:  {}", stats.total_files);
         println!("Index size:     {} bytes", stats.index_size_bytes);
         println!("Last updated:   {}", stats.last_updated);
+
+        // Display language breakdown if we have indexed files
+        if !stats.files_by_language.is_empty() {
+            println!("\nFiles by language:");
+
+            // Sort languages by count (descending) for consistent output
+            let mut lang_vec: Vec<_> = stats.files_by_language.iter().collect();
+            lang_vec.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+
+            // Calculate column widths
+            let max_lang_len = lang_vec.iter().map(|(lang, _)| lang.len()).max().unwrap_or(8);
+            let lang_width = max_lang_len.max(8); // At least "Language" header width
+
+            // Print table header
+            println!("  {:<width$}  Files  Lines", "Language", width = lang_width);
+            println!("  {}  -----  -------", "-".repeat(lang_width));
+
+            // Print rows
+            for (language, file_count) in lang_vec {
+                let line_count = stats.lines_by_language.get(language).copied().unwrap_or(0);
+                println!("  {:<width$}  {:5}  {:7}",
+                    language, file_count, line_count,
+                    width = lang_width);
+            }
+        }
     }
 
     Ok(())
@@ -2152,6 +2475,406 @@ fn handle_deps(
     Ok(())
 }
 
+/// Handle the `ask` command
+fn handle_ask(
+    question: Option<String>,
+    _auto_execute: bool,
+    provider_override: Option<String>,
+    as_json: bool,
+    pretty_json: bool,
+    additional_context: Option<String>,
+    configure: bool,
+    agentic: bool,
+    max_iterations: usize,
+    no_eval: bool,
+    show_reasoning: bool,
+    verbose: bool,
+    quiet: bool,
+    answer: bool,
+    interactive: bool,
+    debug: bool,
+) -> Result<()> {
+    // If --configure flag is set, launch the configuration wizard
+    if configure {
+        log::info!("Launching configuration wizard");
+        return crate::semantic::run_configure_wizard();
+    }
+
+    // Check if any API key is configured before allowing rfx ask to run
+    if !crate::semantic::is_any_api_key_configured() {
+        anyhow::bail!(
+            "No API key configured.\n\
+             \n\
+             Please run 'rfx ask --configure' to set up your API provider and key.\n\
+             \n\
+             Alternatively, you can set an environment variable:\n\
+             - OPENAI_API_KEY\n\
+             - ANTHROPIC_API_KEY\n\
+             - GROQ_API_KEY"
+        );
+    }
+
+    // If no question provided and not in configure mode, default to interactive mode
+    // If --interactive flag is set, launch interactive chat mode (TUI)
+    if interactive || question.is_none() {
+        log::info!("Launching interactive chat mode");
+        let cache = CacheManager::new(".");
+
+        if !cache.exists() {
+            anyhow::bail!(
+                "No index found in current directory.\n\
+                 \n\
+                 Run 'rfx index' to build the code search index first.\n\
+                 \n\
+                 Example:\n\
+                 $ rfx index                          # Index current directory\n\
+                 $ rfx ask                            # Launch interactive chat"
+            );
+        }
+
+        return crate::semantic::run_chat_mode(cache, provider_override, None);
+    }
+
+    // At this point, question must be Some
+    let question = question.unwrap();
+
+    log::info!("Starting ask command");
+
+    let cache = CacheManager::new(".");
+
+    if !cache.exists() {
+        anyhow::bail!(
+            "No index found in current directory.\n\
+             \n\
+             Run 'rfx index' to build the code search index first.\n\
+             \n\
+             Example:\n\
+             $ rfx index                          # Index current directory\n\
+             $ rfx ask \"Find all TODOs\"          # Ask questions"
+        );
+    }
+
+    // Create a tokio runtime for async operations
+    let runtime = tokio::runtime::Runtime::new()
+        .context("Failed to create async runtime")?;
+
+    // Force quiet mode for JSON output (machine-readable, no UI output)
+    let quiet = quiet || as_json;
+
+    // Create optional spinner (skip entirely in JSON mode for clean machine-readable output)
+    let spinner = if !as_json {
+        let s = ProgressBar::new_spinner();
+        s.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} {msg}")
+                .unwrap()
+                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
+        );
+        s.set_message("Generating queries...".to_string());
+        s.enable_steady_tick(std::time::Duration::from_millis(80));
+        Some(s)
+    } else {
+        None
+    };
+
+    let (queries, results, total_count, count_only, gathered_context) = if agentic {
+        // Agentic mode: multi-step reasoning with context gathering
+
+        // Wrap spinner in Arc<Mutex<>> for sharing with reporter (non-quiet mode)
+        let spinner_shared = if !quiet {
+            spinner.as_ref().map(|s| Arc::new(Mutex::new(s.clone())))
+        } else {
+            None
+        };
+
+        // Create reporter based on flags
+        let reporter: Box<dyn crate::semantic::AgenticReporter> = if quiet {
+            Box::new(crate::semantic::QuietReporter)
+        } else {
+            Box::new(crate::semantic::ConsoleReporter::new(show_reasoning, verbose, debug, spinner_shared))
+        };
+
+        // Set initial spinner message and enable ticking
+        if let Some(ref s) = spinner {
+            s.set_message("Starting agentic mode...".to_string());
+            s.enable_steady_tick(std::time::Duration::from_millis(80));
+        }
+
+        let agentic_config = crate::semantic::AgenticConfig {
+            max_iterations,
+            max_tools_per_phase: 5,
+            enable_evaluation: !no_eval,
+            eval_config: Default::default(),
+            provider_override: provider_override.clone(),
+            model_override: None,
+            show_reasoning,
+            verbose,
+            debug,
+        };
+
+        let agentic_response = runtime.block_on(async {
+            crate::semantic::run_agentic_loop(&question, &cache, agentic_config, &*reporter).await
+        }).context("Failed to run agentic loop")?;
+
+        // Clear spinner after agentic loop completes
+        if let Some(ref s) = spinner {
+            s.finish_and_clear();
+        }
+
+        // Clear ephemeral output (Phase 5 evaluation) before showing final results
+        if !as_json {
+            reporter.clear_all();
+        }
+
+        log::info!("Agentic loop completed: {} queries generated", agentic_response.queries.len());
+
+        // Destructure AgenticQueryResponse into tuple (preserve gathered_context)
+        let count_only_mode = agentic_response.total_count.is_none();
+        let count = agentic_response.total_count.unwrap_or(0);
+        (agentic_response.queries, agentic_response.results, count, count_only_mode, agentic_response.gathered_context)
+    } else {
+        // Standard mode: single LLM call + execution
+        if let Some(ref s) = spinner {
+            s.set_message("Generating queries...".to_string());
+            s.enable_steady_tick(std::time::Duration::from_millis(80));
+        }
+
+        let semantic_response = runtime.block_on(async {
+            crate::semantic::ask_question(&question, &cache, provider_override.clone(), additional_context, debug).await
+        }).context("Failed to generate semantic queries")?;
+
+        if let Some(ref s) = spinner {
+            s.finish_and_clear();
+        }
+        log::info!("LLM generated {} queries", semantic_response.queries.len());
+
+        // Execute queries for standard mode
+        let (exec_results, exec_total, exec_count_only) = runtime.block_on(async {
+            crate::semantic::execute_queries(semantic_response.queries.clone(), &cache).await
+        }).context("Failed to execute queries")?;
+
+        (semantic_response.queries, exec_results, exec_total, exec_count_only, None)
+    };
+
+    // Generate conversational answer if --answer flag is set
+    let generated_answer = if answer {
+        // Show spinner while generating answer
+        let answer_spinner = if !as_json {
+            let s = ProgressBar::new_spinner();
+            s.set_style(
+                ProgressStyle::default_spinner()
+                    .template("{spinner:.cyan} {msg}")
+                    .unwrap()
+                    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
+            );
+            s.set_message("Generating answer...".to_string());
+            s.enable_steady_tick(std::time::Duration::from_millis(80));
+            Some(s)
+        } else {
+            None
+        };
+
+        // Initialize provider for answer generation
+        let mut config = crate::semantic::config::load_config(cache.path())?;
+        if let Some(provider) = &provider_override {
+            config.provider = provider.clone();
+        }
+        let api_key = crate::semantic::config::get_api_key(&config.provider)?;
+        let model = if config.model.is_some() {
+            config.model.clone()
+        } else {
+            crate::semantic::config::get_user_model(&config.provider)
+        };
+        let provider_instance = crate::semantic::providers::create_provider(
+            &config.provider,
+            api_key,
+            model,
+        )?;
+
+        // Extract codebase context (always available metadata: languages, file counts, directories)
+        let codebase_context_str = crate::semantic::context::CodebaseContext::extract(&cache)
+            .ok()
+            .map(|ctx| ctx.to_prompt_string());
+
+        // Generate answer (with optional gathered context from agentic mode + codebase context)
+        let answer_result = runtime.block_on(async {
+            crate::semantic::generate_answer(
+                &question,
+                &results,
+                total_count,
+                gathered_context.as_deref(),
+                codebase_context_str.as_deref(),
+                &*provider_instance,
+            ).await
+        }).context("Failed to generate answer")?;
+
+        if let Some(s) = answer_spinner {
+            s.finish_and_clear();
+        }
+
+        Some(answer_result)
+    } else {
+        None
+    };
+
+    // Output in JSON format if requested
+    if as_json {
+        // Build AgenticQueryResponse for JSON output (includes both queries and results)
+        let json_response = crate::semantic::AgenticQueryResponse {
+            queries: queries.clone(),
+            results: results.clone(),
+            total_count: if count_only { None } else { Some(total_count) },
+            gathered_context: gathered_context.clone(),
+            tools_executed: None, // No tools in non-agentic mode
+            answer: generated_answer,
+        };
+
+        let json_str = if pretty_json {
+            serde_json::to_string_pretty(&json_response)?
+        } else {
+            serde_json::to_string(&json_response)?
+        };
+        println!("{}", json_str);
+        return Ok(());
+    }
+
+    // Display generated queries with color (unless in answer mode)
+    if !answer {
+        println!("\n{}", "Generated Queries:".bold().cyan());
+        println!("{}", "==================".cyan());
+        for (idx, query_cmd) in queries.iter().enumerate() {
+            println!(
+                "{}. {} {} {}",
+                (idx + 1).to_string().bright_white().bold(),
+                format!("[order: {}, merge: {}]", query_cmd.order, query_cmd.merge).dimmed(),
+                "rfx".bright_green().bold(),
+                query_cmd.command.bright_white()
+            );
+        }
+        println!();
+    }
+
+    // Note: queries already executed in both modes above
+    // Agentic mode: executed during run_agentic_loop
+    // Standard mode: executed after ask_question
+
+    // Display answer or results
+    println!();
+    if let Some(answer_text) = generated_answer {
+        // Answer mode: show the conversational answer
+        println!("{}", "Answer:".bold().green());
+        println!("{}", "=======".green());
+        println!();
+
+        // Render markdown if it looks like markdown, otherwise print as-is
+        termimad::print_text(&answer_text);
+        println!();
+
+        // Show summary of results used
+        if !results.is_empty() {
+            println!(
+                "{}",
+                format!(
+                    "(Based on {} matches across {} files)",
+                    total_count,
+                    results.len()
+                ).dimmed()
+            );
+        }
+    } else {
+        // Standard mode: show raw results
+        if count_only {
+            // Count-only mode: just show the total count (matching direct CLI behavior)
+            println!("{} {}", "Found".bright_green().bold(), format!("{} results", total_count).bright_white().bold());
+        } else if results.is_empty() {
+            println!("{}", "No results found.".yellow());
+        } else {
+            println!(
+                "{} {} {} {} {}",
+                "Found".bright_green().bold(),
+                total_count.to_string().bright_white().bold(),
+                "total results across".dimmed(),
+                results.len().to_string().bright_white().bold(),
+                "files:".dimmed()
+            );
+            println!();
+
+            for file_group in &results {
+                println!("{}:", file_group.path.bright_cyan().bold());
+                for match_result in &file_group.matches {
+                    println!(
+                        "  {} {}-{}: {}",
+                        "Line".dimmed(),
+                        match_result.span.start_line.to_string().bright_yellow(),
+                        match_result.span.end_line.to_string().bright_yellow(),
+                        match_result.preview.lines().next().unwrap_or("")
+                    );
+                }
+                println!();
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle the `context` command
+fn handle_context(
+    structure: bool,
+    path: Option<String>,
+    file_types: bool,
+    project_type: bool,
+    framework: bool,
+    entry_points: bool,
+    test_layout: bool,
+    config_files: bool,
+    full: bool,
+    depth: usize,
+    json: bool,
+) -> Result<()> {
+    let cache = CacheManager::new(".");
+
+    if !cache.exists() {
+        anyhow::bail!(
+            "No index found in current directory.\n\
+             \n\
+             Run 'rfx index' to build the code search index first.\n\
+             \n\
+             Example:\n\
+             $ rfx index                  # Index current directory\n\
+             $ rfx context                # Generate context"
+        );
+    }
+
+    // Build context options
+    let mut opts = crate::context::ContextOptions {
+        structure,
+        path,
+        file_types,
+        project_type,
+        framework,
+        entry_points,
+        test_layout,
+        config_files,
+        depth,
+        json,
+    };
+
+    // Apply --full flag
+    if full {
+        opts.enable_all();
+    }
+
+    // Generate context
+    let context_output = crate::context::generate_context(&cache, &opts)
+        .context("Failed to generate codebase context")?;
+
+    // Print output
+    println!("{}", context_output);
+
+    Ok(())
+}
+
 /// Handle --circular flag (detect cycles)
 fn handle_deps_circular(
     deps_index: &crate::dependency::DependencyIndex,
@@ -2571,7 +3294,7 @@ fn handle_deps_islands(
     _plain: bool,
     sort: Option<String>,
 ) -> Result<()> {
-    let mut all_islands = deps_index.find_islands()?;
+    let all_islands = deps_index.find_islands()?;
     let total_components = all_islands.len();
 
     // Get total file count from the cache for percentage calculation

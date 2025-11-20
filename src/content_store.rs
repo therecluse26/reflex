@@ -425,6 +425,24 @@ impl ContentReader {
         self.files.len()
     }
 
+    /// Get file_id (array index) by path
+    ///
+    /// This looks up a file by its path and returns the array index, which is the
+    /// correct file_id to use with get_file_content() and other methods.
+    ///
+    /// Note: This is different from database file_ids, which are AUTO INCREMENT values.
+    pub fn get_file_id_by_path(&self, path: &str) -> Option<u32> {
+        // Normalize the input path (strip ./ prefix if present)
+        let normalized_input = path.strip_prefix("./").unwrap_or(path);
+
+        self.files.iter().position(|entry| {
+            // Normalize the stored path (strip ./ prefix if present)
+            let stored_path = entry.path.to_string_lossy();
+            let normalized_stored = stored_path.strip_prefix("./").unwrap_or(&stored_path);
+            normalized_stored == normalized_input
+        }).map(|idx| idx as u32)
+    }
+
     /// Get content at a specific byte offset
     pub fn get_content_at_offset(&self, file_id: u32, byte_offset: u32, length: usize) -> Result<&str> {
         let entry = self.files
@@ -481,6 +499,33 @@ impl ContentReader {
             .collect();
 
         Ok((before, matching, after))
+    }
+
+    /// Get context around a specific line number (1-indexed)
+    ///
+    /// Returns (lines_before, lines_after)
+    pub fn get_context_by_line(&self, file_id: u32, line_number: usize, context_lines: usize) -> Result<(Vec<String>, Vec<String>)> {
+        let content = self.get_file_content(file_id)?;
+        let lines: Vec<&str> = content.lines().collect();
+
+        // Convert from 1-indexed to 0-indexed
+        let line_idx = line_number.saturating_sub(1);
+
+        // Extract context
+        let start = line_idx.saturating_sub(context_lines);
+        let end = (line_idx + context_lines + 1).min(lines.len());
+
+        let before: Vec<String> = lines[start..line_idx]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let after: Vec<String> = lines[line_idx + 1..end]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        Ok((before, after))
     }
 }
 

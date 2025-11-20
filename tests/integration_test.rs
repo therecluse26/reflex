@@ -2324,8 +2324,9 @@ fn test_broad_query_large_index_short_pattern_early_check() {
     let temp = TempDir::new().unwrap();
     let project = temp.path();
 
-    // Create 20,001+ files to trigger the LARGE_INDEX_THRESHOLD (20,000)
-    for i in 0..20_050 {
+    // Create 150 files to trigger the test threshold (100)
+    // Using test override instead of creating 20K+ files for faster tests
+    for i in 0..150 {
         fs::write(project.join(format!("file{}.rs", i)), "fn get_data() {}").unwrap();
     }
 
@@ -2340,6 +2341,7 @@ fn test_broad_query_large_index_short_pattern_early_check() {
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
         force: false,  // Not forcing
+        test_large_index_threshold: Some(100),  // Override for testing (150 > 100)
         ..Default::default()
     };
     let result = engine.search("get", filter);
@@ -2349,7 +2351,7 @@ fn test_broad_query_large_index_short_pattern_early_check() {
     let error_msg = result.unwrap_err().to_string();
     assert!(error_msg.contains("Query too broad"));
     assert!(error_msg.contains("large index"));
-    assert!(error_msg.contains("20050 files"));  // Should mention the file count
+    assert!(error_msg.contains("150 files"));  // Should mention the file count
     assert!(error_msg.contains("3 characters"));  // Should mention pattern length
     assert!(error_msg.contains("--force"));
 }
@@ -2359,8 +2361,9 @@ fn test_broad_query_large_index_force_bypass() {
     let temp = TempDir::new().unwrap();
     let project = temp.path();
 
-    // Create 20,001+ files
-    for i in 0..20_050 {
+    // Create 150 files to trigger the test threshold (100)
+    // Using test override instead of creating 20K+ files for faster tests
+    for i in 0..150 {
         if i == 0 {
             // First file contains the pattern
             fs::write(project.join(format!("file{}.rs", i)), "fn get_data() {}").unwrap();
@@ -2381,6 +2384,7 @@ fn test_broad_query_large_index_force_bypass() {
     let filter = QueryFilter {
         force: true,  // Force bypass
         use_contains: true,  // Enable substring matching (default is word-boundary)
+        test_large_index_threshold: Some(100),  // Override for testing (150 > 100)
         ..Default::default()
     };
     let result = engine.search("get", filter);
@@ -2434,17 +2438,17 @@ fn test_broad_query_language_filter_applied_before_check() {
     let project = temp.path();
 
     // Create many C files containing "index" (simulate Linux kernel scenario)
-    // 60,000+ files would trigger broad query check (threshold is 50,000)
-    for i in 0..60_100 {
+    // Using test override: 120 C files (above threshold of 100)
+    for i in 0..120 {
         fs::write(
             project.join(format!("kernel{}.c", i)),
             "int index_lookup(void) { return 0; }"
         ).unwrap();
     }
 
-    // Create a small number of Rust files containing "index"
-    // This should be well below the threshold (< 50,000)
-    for i in 0..300 {
+    // Create a smaller number of Rust files containing "index"
+    // 80 Rust files (below threshold of 100 when filtered)
+    for i in 0..80 {
         fs::write(
             project.join(format!("rust{}.rs", i)),
             "fn index_lookup() -> usize { 0 }"
@@ -2457,8 +2461,8 @@ fn test_broad_query_language_filter_applied_before_check() {
     indexer.index(project, false).unwrap();
 
     // Query with --lang rust --symbols
-    // The language filter should reduce 60,400 candidates to 300 Rust files
-    // BEFORE the broad query check, so this should succeed
+    // The language filter should reduce 200 total files to 80 Rust files
+    // BEFORE the broad query check (80 < 100 threshold), so this should succeed
     let cache = CacheManager::new(project);
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
@@ -2466,6 +2470,7 @@ fn test_broad_query_language_filter_applied_before_check() {
         language: Some(reflex::Language::Rust),
         use_contains: true,  // Match "index" within "index_lookup"
         force: false,  // Should succeed WITHOUT force
+        test_large_index_threshold: Some(100),  // Override for testing (200 total > 100, but 80 Rust < 100)
         ..Default::default()
     };
     let result = engine.search("index", filter);
@@ -2476,7 +2481,7 @@ fn test_broad_query_language_filter_applied_before_check() {
 
     // The key assertion is that the query SUCCEEDED without --force
     // This proves language filter was applied BEFORE broad query check
-    // (Without the fix, this would error with "Query too broad - 60,400 files")
+    // (Without the fix, this would error with "Query too broad - 200 files")
     assert!(results.len() > 0, "Should find at least one symbol matching 'index' in Rust files");
 }
 
@@ -2491,20 +2496,21 @@ fn test_broad_query_glob_filter_applied_before_check() {
     let project = temp.path();
 
     // Create many files in different directories containing "index"
-    // 60,000+ files would trigger broad query check (threshold is 50,000)
+    // Using test override: 120 files in build/ (above threshold of 100)
 
     // Create files in build/ directory (should be excluded by glob)
     fs::create_dir(project.join("build")).unwrap();
-    for i in 0..60_000 {
+    for i in 0..120 {
         fs::write(
             project.join(format!("build/file{}.rs", i)),
             "fn index_lookup() -> usize { 0 }"
         ).unwrap();
     }
 
-    // Create a small number of files in src/ directory (should be included by glob)
+    // Create a smaller number of files in src/ directory (should be included by glob)
+    // 80 files (below threshold of 100 when filtered)
     fs::create_dir(project.join("src")).unwrap();
-    for i in 0..200 {
+    for i in 0..80 {
         fs::write(
             project.join(format!("src/file{}.rs", i)),
             "fn index_lookup() -> usize { 0 }"
@@ -2517,8 +2523,8 @@ fn test_broad_query_glob_filter_applied_before_check() {
     indexer.index(project, false).unwrap();
 
     // Query with --glob "src/**/*.rs" --symbols
-    // The glob filter should reduce 60,200 candidates to 200 src files
-    // BEFORE the broad query check, so this should succeed
+    // The glob filter should reduce 200 total files to 80 src files
+    // BEFORE the broad query check (80 < 100 threshold), so this should succeed
     let cache = CacheManager::new(project);
     let engine = QueryEngine::new(cache);
     let filter = QueryFilter {
@@ -2526,13 +2532,14 @@ fn test_broad_query_glob_filter_applied_before_check() {
         glob_patterns: vec!["src/**/*.rs".to_string()],
         use_contains: true,  // Match "index" within "index_lookup"
         force: false,  // Should succeed WITHOUT force
+        test_large_index_threshold: Some(100),  // Override for testing (200 total > 100, but 80 in src/ < 100)
         ..Default::default()
     };
     let result = engine.search("index", filter);
 
     // The key assertion is that the query SUCCEEDED without --force
     // This proves glob filter was applied BEFORE broad query check
-    // (Without the fix, this would error with "Query too broad - 60,200 files")
+    // (Without the fix, this would error with "Query too broad - 200 files")
     assert!(result.is_ok(), "Query should succeed when glob filter reduces candidate set below threshold. \
                              Without the fix, this would error: 'Query too broad - would be expensive to execute'");
 }

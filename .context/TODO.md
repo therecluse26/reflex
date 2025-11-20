@@ -1190,12 +1190,11 @@ Located in tests/performance_test.rs:
   - **Supported providers:**
     - OpenAI (GPT-4o, GPT-4o-mini) - OPENAI_API_KEY
     - Anthropic Claude (Claude 3.5 Sonnet) - ANTHROPIC_API_KEY
-    - Google Gemini (Gemini 1.5 Pro) - GOOGLE_API_KEY
     - Groq (llama-3.3-70b-versatile) - GROQ_API_KEY
   - **Configuration example** (~/.reflex/config.toml):
     ```toml
     [semantic_query]
-    provider = "openai"  # or "anthropic", "google", "groq"
+    provider = "openai"  # or "anthropic", "groq"
     model = "gpt-4o-mini"
     api_key_env = "OPENAI_API_KEY"  # optional, defaults to standard env var
     ```
@@ -1205,7 +1204,7 @@ Located in tests/performance_test.rs:
     - Executes query automatically and returns results
     - Option: `--explain` to show generated command without executing
   - **Implementation:**
-    - Few-shot prompting with 8-10 examples (see .context/SEMANTIC_QUERY_PROMPT.md)
+    - Few-shot prompting with 8-10 examples (see src/semantic/prompt_template.md)
     - HTTP client for API requests (reqwest)
     - Prompt template system for provider-specific formats
     - Multi-query support: generate multiple queries, merge results, deduplicate

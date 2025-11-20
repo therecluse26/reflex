@@ -1256,7 +1256,7 @@ public class LegacyClass
             }
         "#;
 
-        use crate::parsers::{DependencyExtractor, ImportInfo};
+        use crate::parsers::DependencyExtractor;
 
         let deps = CSharpDependencyExtractor::extract_dependencies(source).unwrap();
 

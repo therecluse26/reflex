@@ -570,6 +570,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 force,
                 suppress_output: true,  // MCP always returns JSON
                 include_dependencies: false,  // TODO: Add MCP parameter to enable dependencies
+                ..Default::default()
             };
 
             let cache = CacheManager::new(".");
@@ -646,6 +647,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 force,
                 suppress_output: true,  // MCP always returns JSON
                 include_dependencies: false,  // TODO: Add MCP parameter to enable dependencies
+                ..Default::default()
             };
 
             let cache = CacheManager::new(".");
@@ -733,6 +735,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 force,
                 suppress_output: true,  // MCP always returns JSON
                 include_dependencies: dependencies,
+                ..Default::default()
             };
 
             let cache = CacheManager::new(".");
@@ -822,6 +825,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 force,
                 suppress_output: true,  // MCP always returns JSON
                 include_dependencies: false,  // TODO: Add MCP parameter to enable dependencies
+                ..Default::default()
             };
 
             let cache = CacheManager::new(".");
@@ -924,6 +928,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 force,
                 suppress_output: true,  // MCP always returns JSON
                 include_dependencies: false,  // TODO: Add MCP parameter to enable dependencies
+                ..Default::default()
             };
 
             let cache = CacheManager::new(".");
@@ -1321,7 +1326,7 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 }
             }
 
-            let filtered_count = total_components - islands.len();
+            let _filtered_count = total_components - islands.len();
             let total_after_filter = islands.len();
 
             // Apply offset pagination

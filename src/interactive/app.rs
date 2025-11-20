@@ -1054,6 +1054,7 @@ impl InteractiveApp {
             force: false,
             suppress_output: false,
             include_dependencies: false,  // Interactive mode doesn't support dependencies yet
+            ..Default::default()
         };
 
         // Spawn background thread for search
@@ -1093,7 +1094,7 @@ impl InteractiveApp {
         let (result_tx, result_rx) = mpsc::channel();
         let (progress_tx, progress_rx) = mpsc::channel();
         let cwd = self.cwd.clone();
-        let cache_path = self.cache.path().to_path_buf();
+        let _cache_path = self.cache.path().to_path_buf();
 
         // Spawn background thread for indexing with progress callback
         std::thread::spawn(move || {

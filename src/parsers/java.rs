@@ -1000,7 +1000,7 @@ public class MyClass {
             }
         "#;
 
-        use crate::parsers::{DependencyExtractor, ImportInfo};
+        use crate::parsers::DependencyExtractor;
 
         let deps = JavaDependencyExtractor::extract_dependencies(source).unwrap();
 

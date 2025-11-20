@@ -2,7 +2,7 @@
 
 **Local-first, full-text code search engine for AI coding workflows**
 
-Reflex is a blazingly fast, trigram-based code search engine designed for developers and AI coding assistants. Unlike symbol-only tools, Reflex finds **every occurrence** of patterns—function calls, variable usage, comments, and more—with sub-100ms query times on large codebases.
+Reflex is a blazingly fast, trigram-based code search engine designed for developers and AI coding assistants. Unlike symbol-only tools, Reflex finds **every occurrence** of patterns—function calls, variable usage, comments, and more.
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
 [![Tests](https://img.shields.io/badge/tests-347%20passing-brightgreen)]()
@@ -11,17 +11,16 @@ Reflex is a blazingly fast, trigram-based code search engine designed for develo
 ## ✨ Features
 
 - **🔍 Complete Coverage**: Find every occurrence, not just symbol definitions
-- **⚡ Blazing Fast**: Sub-100ms queries on 10k+ files via trigram indexing
+- **⚡ Blazing Fast**: Lightning-fast queries via trigram indexing
 - **🎯 Symbol-Aware**: Runtime tree-sitter parsing for precise symbol filtering
 - **🔄 Incremental**: Only reindexes changed files (blake3 hashing)
 - **🌍 Multi-Language**: Rust, TypeScript/JavaScript, Vue, Svelte, PHP, Python, Go, Java, C, C++, C#, Ruby, Kotlin, Zig
-- **🤖 AI-Ready**: Clean JSON output built for LLM tools and automation
+- **🤖 AI Query Assistant**: Natural language search with `rfx ask` (OpenAI, Anthropic, Groq)
 - **🌐 HTTP API**: REST API for editor plugins and external tools
 - **📡 MCP Support**: Model Context Protocol server for AI assistants
 - **📦 Local-First**: Fully offline, all data stays on your machine
 - **🎨 Regex Support**: Trigram-optimized regex search
 - **🌳 AST Queries**: Structure-aware search with Tree-sitter
-- **📊 Interactive TUI**: Full-featured terminal interface (run `rfx` with no args)
 - **🔒 Deterministic**: Same query → same results (no probabilistic ranking)
 
 ## 🚀 Quick Start
@@ -42,9 +41,6 @@ cargo build --release
 ```bash
 # Index your codebase
 rfx index
-
-# Launch interactive mode (TUI)
-rfx
 
 # Full-text search (finds all occurrences)
 rfx query "extract_symbols"
@@ -68,15 +64,81 @@ vim $(rfx query "TODO" --paths)
 rfx query "unwrap" --json --limit 10
 ```
 
+## 🤖 AI Query Assistant
+
+Don't want to remember search syntax? Use `rfx ask` to translate natural language questions into `rfx query` commands.
+
+### Setup
+
+First-time setup requires configuring an AI provider (OpenAI, Anthropic, or Groq):
+
+```bash
+# Interactive configuration wizard (recommended)
+rfx ask --configure
+```
+
+This will guide you through:
+- Selecting an AI provider
+- Entering your API key
+- Choosing a model (optional)
+
+Configuration is saved to `~/.reflex/config.toml`:
+
+```toml
+[semantic]
+provider = "openai"  # or anthropic, groq
+
+[credentials]
+openai_api_key = "sk-..."
+openai_model = "gpt-4o-mini"  # optional
+```
+
+Alternatively, set environment variables:
+```bash
+export OPENAI_API_KEY="sk-..."
+export ANTHROPIC_API_KEY="sk-ant-..."
+export GROQ_API_KEY="gsk_..."
+```
+
+### Usage
+
+```bash
+# Ask a question (generates and optionally executes rfx query commands)
+rfx ask "Find all TODOs in Rust files"
+
+# Auto-execute without confirmation
+rfx ask "Where is the main function defined?" --execute
+
+# Use a specific provider
+rfx ask "Show me error handling code" --provider groq
+
+# Interactive chat mode with conversation history
+rfx ask --interactive
+
+# Agentic mode (multi-step reasoning with automatic context gathering)
+rfx ask "How does authentication work?" --agentic --answer
+
+# Get a conversational answer based on search results
+rfx ask "What does the indexer module do?" --answer
+```
+
+**How it works:**
+1. Your natural language question is sent to an LLM
+2. The LLM generates one or more `rfx query` commands
+3. You review and confirm (or use `--execute` to auto-run)
+4. Results are displayed as normal search output
+
+**Agentic mode** (`--agentic`) enables multi-step reasoning where the LLM can:
+- Gather context by running multiple searches
+- Refine queries based on initial results
+- Iteratively explore the codebase
+- Generate comprehensive answers with `--answer`
+
 ## 📋 Command Reference
-
-### `rfx` (no arguments)
-
-Launch **interactive mode** - a full-featured TUI for exploring your codebase with real-time search, syntax highlighting, and keyboard navigation.
 
 ### `rfx index`
 
-Build or update the local search index.
+Build or update the search index.
 
 ```bash
 rfx index [OPTIONS]
@@ -89,10 +151,6 @@ Subcommands:
   status               Show background symbol indexing status
   compact              Compact cache (remove deleted files, reclaim space)
 ```
-
-**Background Symbol Indexing:** After indexing, Reflex automatically starts a background process to cache symbols for faster queries. Check status with `rfx index status`.
-
-**Cache Compaction:** Reflex automatically compacts the cache every 24 hours to remove deleted files and reclaim space. You can also manually compact with `rfx index compact`.
 
 ### `rfx query`
 
@@ -281,6 +339,80 @@ rfx deps src/main.rs --format table
 
 **Note:** Only static imports (string literals) are tracked. Dynamic imports are filtered by design. See [CLAUDE.md](CLAUDE.md) for details.
 
+### `rfx ask`
+
+Translate natural language questions into `rfx query` commands using AI.
+
+**Setup:**
+```bash
+# First-time setup: interactive configuration wizard
+rfx ask --configure
+```
+
+**Key Options:**
+- `--configure` - Launch interactive setup wizard for API keys
+- `--execute, -e` - Auto-execute generated queries without confirmation
+- `--provider <PROVIDER>` - Override configured provider (openai, anthropic, groq)
+- `--interactive, -i` - Launch interactive chat mode with conversation history
+- `--agentic` - Enable multi-step reasoning with automatic context gathering
+- `--answer` - Generate conversational answer based on search results
+- `--json` - Output as JSON
+- `--debug` - Show full LLM prompts and retain terminal history
+
+**Examples:**
+```bash
+# Interactive setup
+rfx ask --configure
+
+# Simple query (reviews generated commands before executing)
+rfx ask "Find all TODOs in Rust files"
+
+# Auto-execute without confirmation
+rfx ask "Where is the main function defined?" --execute
+
+# Interactive chat mode
+rfx ask --interactive
+
+# Agentic mode with answer generation
+rfx ask "How does the indexer work?" --agentic --answer
+
+# Use specific provider
+rfx ask "Show error handling" --provider groq
+```
+
+**See also:** The [AI Query Assistant](#-ai-query-assistant) section for detailed setup and usage information.
+
+### `rfx context`
+
+Generate codebase context for AI prompts. Useful with `rfx ask --additional-context`.
+
+**Key Options:**
+- `--structure` - Show directory structure (enabled by default)
+- `--file-types` - Show file type distribution (enabled by default)
+- `--project-type` - Detect project type (CLI/library/webapp/monorepo)
+- `--framework` - Detect frameworks and conventions
+- `--entry-points` - Show entry point files
+- `--test-layout` - Show test organization pattern
+- `--config-files` - List important configuration files
+- `--full` - Enable all context types
+- `--path <PATH>` - Focus on specific directory
+- `--depth <N>` - Tree depth for structure (default: 1)
+
+**Examples:**
+```bash
+# Basic overview (structure + file types)
+rfx context
+
+# Full context for monorepo subdirectory
+rfx context --path services/backend --full
+
+# Specific context types
+rfx context --framework --entry-points
+
+# Use with semantic queries
+rfx ask "find auth code" --additional-context "$(rfx context --framework)"
+```
+
 ### Other Commands
 
 - `rfx stats` - Display index statistics
@@ -294,7 +426,7 @@ Run `rfx <command> --help` for detailed options.
 
 Reflex supports **structure-aware code search** using Tree-sitter AST queries.
 
-**⚠️ WARNING:** AST queries are **SLOW** (500ms-2s+) and scan the entire codebase. **Use `--symbols` instead for 95% of cases** (10-100x faster).
+**⚠️ WARNING:** AST queries are **SLOW** and scan the entire codebase. **Use `--symbols` instead for 95% of cases** (much faster).
 
 **When to use AST queries:**
 - You need to match code structure, not just text
@@ -365,25 +497,18 @@ Reflex uses a **trigram-based inverted index** combined with **runtime symbol de
 
 ## ⚡ Performance
 
-### Query Performance (Real-World Benchmarks)
+Reflex is designed for speed at every level:
 
-| Codebase | Files | Full-Text Query | Symbol Query | Regex Query |
-|----------|-------|-----------------|--------------|-------------|
-| **Reflex** (small) | 96 | 5-6 ms | 581 ms | 6 ms |
-| **Test corpus** (medium) | 100-500 | 2 ms | 944 ms | 2 ms |
-| **Large project** | 1,000+ | 2-3 ms | 1-2 sec | 2-3 ms |
+**Query Performance:**
+- **Full-text & Regex**: Lightning-fast queries via trigram indexing
+- **Symbol queries**: Slower due to runtime tree-sitter parsing, but still efficient
+- **Cached queries**: Near-instant for repeated searches
+- Scales well from small projects to large codebases (10k+ files)
 
-**Key Insights:**
-- **Full-text & Regex**: Blazing fast (2-6ms) regardless of codebase size
-- **Symbol queries**: Slower (500ms-2s) due to runtime tree-sitter parsing
-- **Cached queries**: 1ms average for repeated queries
-
-### Indexing Performance
-
-| Operation | Files | Time | Notes |
-|-----------|-------|------|-------|
-| **Initial index** | 100-1,000 | 95-106ms | Parallel processing with 80% CPU cores |
-| **Incremental** | 10/100 changed | 32ms | Only rehashes changed files |
+**Indexing Performance:**
+- **Initial indexing**: Fast parallel processing using 80% of CPU cores
+- **Incremental updates**: Only reindexes changed files via blake3 hashing
+- **Memory-mapped I/O**: Zero-copy access for instant cache reads
 
 ## 🔧 Configuration
 
@@ -404,84 +529,39 @@ parallel_threads = 0  # 0 = auto (80% of available cores)
 
 ## 🤖 AI Integration
 
-Reflex outputs clean JSON for AI coding assistants:
+Reflex provides clean JSON output for AI coding assistants and automation:
 
 ```bash
 rfx query "parse_tree" --json --symbols
 ```
 
-**Example JSON output:**
-```json
-{
-  "status": "fresh",
-  "can_trust_results": true,
-  "pagination": {
-    "total": 1,
-    "count": 1,
-    "offset": 0,
-    "limit": 100,
-    "has_more": false
-  },
-  "results": [
-    {
-      "path": "src/parsers/rust.rs",
-      "span": {
-        "start_line": 45,
-        "end_line": 45
-      },
-      "symbol": "parse_tree",
-      "kind": "Function",
-      "preview": "pub fn parse_tree(source: &str) -> Tree {"
-    }
-  ]
-}
-```
+Output includes file paths, line numbers, symbol types, and code previews with pagination metadata.
 
 ## 🔍 Use Cases
 
-### For Developers
-- **Code Navigation**: Find all usages of a function/class
-- **Refactoring**: Identify all call sites before renaming
-- **Code Review**: Search for patterns across files
-- **Debugging**: Locate where variables are used
-
-### For AI Coding Assistants
-- **Context Gathering**: Retrieve relevant code snippets
-- **Symbol Lookup**: Find function definitions and signatures
-- **Pattern Analysis**: Search for architectural patterns
-- **Dependency Tracking**: Understand import relationships
-
-### For Teams
-- **Code Search**: Local alternative to Sourcegraph
-- **Documentation**: Find examples of API usage
-- **Onboarding**: Explore unfamiliar codebases
-- **Security**: Search for potential vulnerabilities
+- **Code Navigation**: Find all usages of functions, classes, and variables
+- **Refactoring**: Identify all call sites before making changes
+- **AI Assistants**: Retrieve relevant code snippets and context for LLMs
+- **Debugging**: Locate where variables and functions are used
+- **Documentation**: Find examples of API usage across the codebase
+- **Security**: Search for potential vulnerabilities or anti-patterns
 
 ## 🧪 Testing
 
-Reflex has **347 comprehensive tests** covering all functionality:
-- **261+ unit tests**: Core modules (cache, indexer, query, parsers, trigrams, AST, symbol cache)
-- **42+ corpus tests**: Real-world code samples across all supported languages
-- **17+ integration tests**: End-to-end workflows, multi-language support, error handling
-- **10+ performance tests**: Indexing speed, query latency, scalability benchmarks
+Reflex has **347 comprehensive tests** covering core modules, real-world code samples across all supported languages, and end-to-end workflows.
 
 ```bash
-# Run all tests
-cargo test
-
-# Run with output
-cargo test -- --nocapture
-
-# Run specific test module
-cargo test indexer::tests
+cargo test                    # Run all tests
+cargo test -- --nocapture     # Run with output
+cargo test indexer::tests     # Run specific module
 ```
 
-All tests pass on Linux, macOS, and Windows. See [TESTING.md](docs/TESTING.md) for details.
+See [TESTING.md](docs/TESTING.md) for details.
 
 ## 🤝 Contributing
 
 Contributions welcome! Reflex is built to be:
-- **Fast**: Sub-100ms queries on large codebases
+- **Fast**: Lightning-fast queries on large codebases
 - **Accurate**: Complete coverage with deterministic results
 - **Extensible**: Easy to add new language parsers
 
