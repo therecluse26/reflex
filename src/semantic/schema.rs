@@ -29,6 +29,10 @@ pub struct AgenticQueryResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gathered_context: Option<String>,
 
+    /// Tools that were executed during context gathering (for UI display)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools_executed: Option<Vec<String>>,
+
     /// Conversational answer synthesized from results (only when --answer is used)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
@@ -53,7 +57,7 @@ pub struct QueryCommand {
     pub merge: bool,
 }
 
-/// JSON schema for LLM prompt (OpenAI/Gemini structured output)
+/// JSON schema for LLM prompt (OpenAI structured output)
 pub const RESPONSE_SCHEMA: &str = r#"{
   "type": "object",
   "properties": {

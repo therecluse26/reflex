@@ -494,7 +494,7 @@ pub enum Command {
     /// Ask a natural language question and generate search queries
     ///
     /// Uses an LLM to translate natural language questions into `rfx query` commands.
-    /// Requires API key configuration for one of: OpenAI, Anthropic, Gemini, or Groq.
+    /// Requires API key configuration for one of: OpenAI, Anthropic, or Groq.
     ///
     /// If no question is provided, launches interactive chat mode by default.
     ///
@@ -503,11 +503,11 @@ pub enum Command {
     ///      rfx ask --configure
     ///
     ///   2. OR set API key via environment variable:
-    ///      - OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, or GROQ_API_KEY
+    ///      - OPENAI_API_KEY, ANTHROPIC_API_KEY, or GROQ_API_KEY
     ///
     ///   3. Optional: Configure provider in .reflex/config.toml:
     ///      [semantic]
-    ///      provider = "groq"  # or openai, anthropic, gemini
+    ///      provider = "groq"  # or openai, anthropic
     ///      model = "llama-3.3-70b-versatile"  # optional, defaults to provider default
     ///
     /// Examples:
@@ -524,7 +524,7 @@ pub enum Command {
         #[arg(short, long)]
         execute: bool,
 
-        /// Override configured LLM provider (openai, anthropic, gemini, groq)
+        /// Override configured LLM provider (openai, anthropic, groq)
         #[arg(short, long)]
         provider: Option<String>,
 
@@ -1947,6 +1947,31 @@ fn handle_stats(as_json: bool, pretty_json: bool) -> Result<()> {
         println!("Files indexed:  {}", stats.total_files);
         println!("Index size:     {} bytes", stats.index_size_bytes);
         println!("Last updated:   {}", stats.last_updated);
+
+        // Display language breakdown if we have indexed files
+        if !stats.files_by_language.is_empty() {
+            println!("\nFiles by language:");
+
+            // Sort languages by count (descending) for consistent output
+            let mut lang_vec: Vec<_> = stats.files_by_language.iter().collect();
+            lang_vec.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+
+            // Calculate column widths
+            let max_lang_len = lang_vec.iter().map(|(lang, _)| lang.len()).max().unwrap_or(8);
+            let lang_width = max_lang_len.max(8); // At least "Language" header width
+
+            // Print table header
+            println!("  {:<width$}  Files  Lines", "Language", width = lang_width);
+            println!("  {}  -----  -------", "-".repeat(lang_width));
+
+            // Print rows
+            for (language, file_count) in lang_vec {
+                let line_count = stats.lines_by_language.get(language).copied().unwrap_or(0);
+                println!("  {:<width$}  {:5}  {:7}",
+                    language, file_count, line_count,
+                    width = lang_width);
+            }
+        }
     }
 
     Ok(())
@@ -2485,7 +2510,6 @@ fn handle_ask(
              Alternatively, you can set an environment variable:\n\
              - OPENAI_API_KEY\n\
              - ANTHROPIC_API_KEY\n\
-             - GEMINI_API_KEY\n\
              - GROQ_API_KEY"
         );
     }
@@ -2667,13 +2691,19 @@ fn handle_ask(
             model,
         )?;
 
-        // Generate answer (with optional gathered context from agentic mode)
+        // Extract codebase context (always available metadata: languages, file counts, directories)
+        let codebase_context_str = crate::semantic::context::CodebaseContext::extract(&cache)
+            .ok()
+            .map(|ctx| ctx.to_prompt_string());
+
+        // Generate answer (with optional gathered context from agentic mode + codebase context)
         let answer_result = runtime.block_on(async {
             crate::semantic::generate_answer(
                 &question,
                 &results,
                 total_count,
                 gathered_context.as_deref(),
+                codebase_context_str.as_deref(),
                 &*provider_instance,
             ).await
         }).context("Failed to generate answer")?;
@@ -2695,6 +2725,7 @@ fn handle_ask(
             results: results.clone(),
             total_count: if count_only { None } else { Some(total_count) },
             gathered_context: gathered_context.clone(),
+            tools_executed: None, // No tools in non-agentic mode
             answer: generated_answer,
         };
 

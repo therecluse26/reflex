@@ -16,7 +16,7 @@ use ratatui::{
 use std::io::{self, Stdout};
 
 /// Available AI providers
-const PROVIDERS: &[&str] = &["groq", "openai", "anthropic", "gemini"];
+const PROVIDERS: &[&str] = &["groq", "openai", "anthropic"];
 
 /// Available models per provider
 const OPENAI_MODELS: &[&str] = &[
@@ -31,11 +31,6 @@ const ANTHROPIC_MODELS: &[&str] = &[
     "claude-sonnet-4-5",
     "claude-haiku-4-5",
     "claude-sonnet-4",
-];
-const GEMINI_MODELS: &[&str] = &[
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
 ];
 const GROQ_MODELS: &[&str] = &[
     "openai/gpt-oss-120b",
@@ -121,7 +116,6 @@ impl ConfigWizard {
         match self.selected_provider() {
             "openai" => OPENAI_MODELS,
             "anthropic" => ANTHROPIC_MODELS,
-            "gemini" => GEMINI_MODELS,
             "groq" => GROQ_MODELS,
             _ => &[],
         }

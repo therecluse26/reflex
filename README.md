@@ -15,7 +15,7 @@ Reflex is a blazingly fast, trigram-based code search engine designed for develo
 - **🎯 Symbol-Aware**: Runtime tree-sitter parsing for precise symbol filtering
 - **🔄 Incremental**: Only reindexes changed files (blake3 hashing)
 - **🌍 Multi-Language**: Rust, TypeScript/JavaScript, Vue, Svelte, PHP, Python, Go, Java, C, C++, C#, Ruby, Kotlin, Zig
-- **🤖 AI Query Assistant**: Natural language search with `rfx ask` (OpenAI, Anthropic, Gemini, Groq)
+- **🤖 AI Query Assistant**: Natural language search with `rfx ask` (OpenAI, Anthropic, Groq)
 - **🌐 HTTP API**: REST API for editor plugins and external tools
 - **📡 MCP Support**: Model Context Protocol server for AI assistants
 - **📦 Local-First**: Fully offline, all data stays on your machine
@@ -70,7 +70,7 @@ Don't want to remember search syntax? Use `rfx ask` to translate natural languag
 
 ### Setup
 
-First-time setup requires configuring an AI provider (OpenAI, Anthropic, Gemini, or Groq):
+First-time setup requires configuring an AI provider (OpenAI, Anthropic, or Groq):
 
 ```bash
 # Interactive configuration wizard (recommended)
@@ -86,7 +86,7 @@ Configuration is saved to `~/.reflex/config.toml`:
 
 ```toml
 [semantic]
-provider = "openai"  # or anthropic, gemini, groq
+provider = "openai"  # or anthropic, groq
 
 [credentials]
 openai_api_key = "sk-..."
@@ -97,7 +97,6 @@ Alternatively, set environment variables:
 ```bash
 export OPENAI_API_KEY="sk-..."
 export ANTHROPIC_API_KEY="sk-ant-..."
-export GEMINI_API_KEY="..."
 export GROQ_API_KEY="gsk_..."
 ```
 
@@ -353,7 +352,7 @@ rfx ask --configure
 **Key Options:**
 - `--configure` - Launch interactive setup wizard for API keys
 - `--execute, -e` - Auto-execute generated queries without confirmation
-- `--provider <PROVIDER>` - Override configured provider (openai, anthropic, gemini, groq)
+- `--provider <PROVIDER>` - Override configured provider (openai, anthropic, groq)
 - `--interactive, -i` - Launch interactive chat mode with conversation history
 - `--agentic` - Enable multi-step reasoning with automatic context gathering
 - `--answer` - Generate conversational answer based on search results

@@ -53,6 +53,12 @@ enum PhaseUpdate {
         results_count: usize,
         execution_time_ms: u64,
     },
+    /// Reindexing cache (schema mismatch detected)
+    Reindexing {
+        current: usize,
+        total: usize,
+        message: String,
+    },
     /// Phase 5: Final answer (both paths)
     Answer {
         answer: String,
@@ -354,7 +360,6 @@ impl ChatApp {
             match provider_name.to_lowercase().as_str() {
                 "openai" => "gpt-4o-mini".to_string(),
                 "anthropic" => "claude-3-5-haiku-20241022".to_string(),
-                "gemini" => "gemini-1.5-flash".to_string(),
                 "groq" => "llama-3.3-70b-versatile".to_string(),
                 _ => "unknown".to_string(),
             }
@@ -1037,6 +1042,18 @@ impl ChatApp {
                 self.session.add_execution_message(results_count, execution_time_ms);
                 self.scroll_offset = 0;
             }
+            PhaseUpdate::Reindexing { current, total, message } => {
+                let percentage = if total > 0 {
+                    (current as f32 / total as f32 * 100.0) as u8
+                } else {
+                    0
+                };
+                self.status_message = Some(format!(
+                    "Reindexing cache: [{}/{}] {}% - {}",
+                    current, total, percentage, message
+                ));
+                // Don't scroll during reindexing - user should stay where they are
+            }
             PhaseUpdate::Answer { answer } => {
                 self.status_message = Some("Generating answer...".to_string());
                 self.session.add_answer_message(answer);
@@ -1172,7 +1189,7 @@ impl ChatApp {
                  • Provider: {}\n\
                  • Model: {}\n\
                  \n\
-                 Available providers: openai, anthropic, gemini, groq\n\
+                 Available providers: openai, anthropic, groq\n\
                  \n\
                  Usage:\n\
                  • /model <provider> - Switch provider (uses configured model or default)\n\
@@ -1188,7 +1205,7 @@ impl ChatApp {
         let new_model_arg = parts.get(2).map(|s| s.to_string());
 
         // Validate provider
-        let valid_providers = ["openai", "anthropic", "gemini", "groq"];
+        let valid_providers = ["openai", "anthropic", "groq"];
         if !valid_providers.contains(&new_provider.as_str()) {
             self.status_message = Some(format!(
                 "Invalid provider '{}'. Available: {}",
@@ -1208,7 +1225,6 @@ impl ChatApp {
             match new_provider.as_str() {
                 "openai" => "gpt-4o-mini".to_string(),
                 "anthropic" => "claude-3-5-haiku-20241022".to_string(),
-                "gemini" => "gemini-1.5-flash".to_string(),
                 "groq" => "llama-3.3-70b-versatile".to_string(),
                 _ => unreachable!(),
             }
@@ -1366,6 +1382,11 @@ async fn execute_query_async(
     let root_dir = cache_path.parent().unwrap_or(&cache_path);
     let cache = CacheManager::new(root_dir);
 
+    // Extract codebase context (always available metadata: languages, file counts, directories)
+    let codebase_context_str = super::context::CodebaseContext::extract(&cache)
+        .ok()
+        .map(|ctx| ctx.to_prompt_string());
+
     // TRIAGE PHASE: Decide if we need to search or can answer directly
     let _ = tx.send(PhaseUpdate::Triaging);
 
@@ -1457,18 +1478,34 @@ async fn execute_query_async(
 
                     match super::run_agentic_loop(question, &cache, agentic_config, &*reporter).await {
                         Ok(agentic_response) => {
-                            let query_strings: Vec<String> = agentic_response.queries
-                                .iter()
-                                .map(|q| q.command.clone())
-                                .collect();
+                            // Send tools phase update if tools were executed
+                            if let Some(ref tools) = agentic_response.tools_executed {
+                                if !tools.is_empty() {
+                                    let content = format!("Gathered context using {} tools", tools.len());
+                                    let _ = tx.send(PhaseUpdate::Tools {
+                                        content,
+                                        tool_calls: tools.clone(),
+                                    });
+                                }
+                            }
 
-                            let _ = tx.send(PhaseUpdate::Queries { queries: query_strings });
-
+                            // Get results count (needed for answer generation)
                             let results_count = agentic_response.total_count.unwrap_or(0);
-                            let _ = tx.send(PhaseUpdate::Executing {
-                                results_count,
-                                execution_time_ms: 0,
-                            });
+
+                            // Send queries phase update only if queries were generated
+                            if !agentic_response.queries.is_empty() {
+                                let query_strings: Vec<String> = agentic_response.queries
+                                    .iter()
+                                    .map(|q| q.command.clone())
+                                    .collect();
+
+                                let _ = tx.send(PhaseUpdate::Queries { queries: query_strings });
+
+                                let _ = tx.send(PhaseUpdate::Executing {
+                                    results_count,
+                                    execution_time_ms: 0,
+                                });
+                            }
 
                             let provider_instance = match (|| -> Result<_> {
                                 let mut config = super::config::load_config(&cache_path)?;
@@ -1491,6 +1528,7 @@ async fn execute_query_async(
                                 &agentic_response.results,
                                 results_count,
                                 agentic_response.gathered_context.as_deref(),
+                                codebase_context_str.as_deref(),
                                 &*provider_instance,
                             ).await {
                                 Ok(answer) => {
@@ -1553,25 +1591,40 @@ async fn execute_query_async(
                 }
             };
 
-            // Send queries phase update (convert Vec<QueryCommand> to Vec<String>)
-            let query_strings: Vec<String> = agentic_response.queries
-                .iter()
-                .map(|q| q.command.clone())
-                .collect();
+            // Send tools phase update if tools were executed
+            if let Some(ref tools) = agentic_response.tools_executed {
+                if !tools.is_empty() {
+                    let content = format!("Gathered context using {} tools", tools.len());
+                    let _ = tx.send(PhaseUpdate::Tools {
+                        content,
+                        tool_calls: tools.clone(),
+                    });
+                }
+            }
 
-            let _ = tx.send(PhaseUpdate::Queries {
-                queries: query_strings,
-            });
-
-            // Send execution phase update
-            let start_time = std::time::Instant::now();
+            // Get results count (needed for answer generation)
             let results_count = agentic_response.total_count.unwrap_or(0);
-            let execution_time_ms = start_time.elapsed().as_millis() as u64;
 
-            let _ = tx.send(PhaseUpdate::Executing {
-                results_count,
-                execution_time_ms,
-            });
+            // Send queries phase update only if queries were generated
+            if !agentic_response.queries.is_empty() {
+                let query_strings: Vec<String> = agentic_response.queries
+                    .iter()
+                    .map(|q| q.command.clone())
+                    .collect();
+
+                let _ = tx.send(PhaseUpdate::Queries {
+                    queries: query_strings,
+                });
+
+                // Send execution phase update only if queries were executed
+                let start_time = std::time::Instant::now();
+                let execution_time_ms = start_time.elapsed().as_millis() as u64;
+
+                let _ = tx.send(PhaseUpdate::Executing {
+                    results_count,
+                    execution_time_ms,
+                });
+            }
 
             // Generate answer
             let provider_instance = match (|| -> Result<_> {
@@ -1595,6 +1648,7 @@ async fn execute_query_async(
                 &agentic_response.results,
                 results_count,
                 agentic_response.gathered_context.as_deref(),
+                codebase_context_str.as_deref(),
                 &*provider_instance,
             ).await {
                 Ok(answer) => answer,

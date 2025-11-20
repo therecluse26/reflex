@@ -2,7 +2,6 @@
 
 pub mod openai;
 pub mod anthropic;
-pub mod gemini;
 pub mod groq;
 
 use anyhow::Result;
@@ -38,10 +37,9 @@ pub fn create_provider(
     match provider_name.to_lowercase().as_str() {
         "openai" => Ok(Box::new(openai::OpenAiProvider::new(api_key, model)?)),
         "anthropic" => Ok(Box::new(anthropic::AnthropicProvider::new(api_key, model)?)),
-        "gemini" => Ok(Box::new(gemini::GeminiProvider::new(api_key, model)?)),
         "groq" => Ok(Box::new(groq::GroqProvider::new(api_key, model)?)),
         _ => anyhow::bail!(
-            "Unknown provider: {}. Supported: openai, anthropic, gemini, groq",
+            "Unknown provider: {}. Supported: openai, anthropic, groq",
             provider_name
         ),
     }

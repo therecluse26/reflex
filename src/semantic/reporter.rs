@@ -33,6 +33,9 @@ pub trait AgenticReporter: Send + Sync {
     /// Report phase start
     fn report_phase(&self, phase_num: usize, phase_name: &str);
 
+    /// Report reindexing progress (when cache needs to be rebuilt)
+    fn report_reindex_progress(&self, current: usize, total: usize, message: String);
+
     /// Clear all ephemeral output (called before final results are shown)
     fn clear_all(&self);
 }
@@ -144,6 +147,22 @@ impl ConsoleReporter {
                 } else {
                     format!("search_documentation: '{}'", query)
                 }
+            }
+            ToolCall::GetStatistics => {
+                "get_statistics: Retrieve index statistics".to_string()
+            }
+            ToolCall::GetDependencies { file_path, reverse } => {
+                if *reverse {
+                    format!("get_dependencies: Reverse deps for '{}'", file_path)
+                } else {
+                    format!("get_dependencies: Dependencies of '{}'", file_path)
+                }
+            }
+            ToolCall::GetAnalysisSummary { min_dependents } => {
+                format!("get_analysis_summary: Dependency analysis (min_dependents={})", min_dependents)
+            }
+            ToolCall::FindIslands { min_size, max_size } => {
+                format!("find_islands: Disconnected components (size {}-{})", min_size, max_size)
             }
         }
     }
@@ -394,6 +413,40 @@ impl AgenticReporter for ConsoleReporter {
         });
     }
 
+    fn report_reindex_progress(&self, current: usize, total: usize, message: String) {
+        self.with_suspended_spinner(|| {
+            // Update the current line with progress
+            if current > 0 {
+                // Clear previous progress line
+                eprint!("\r\x1b[2K");
+            }
+
+            let percentage = if total > 0 {
+                (current as f32 / total as f32 * 100.0) as u8
+            } else {
+                0
+            };
+
+            eprint!("  {} Reindexing cache: [{}/{}] {}% - {}",
+                "⋯".yellow(),
+                current,
+                total,
+                percentage,
+                message.dimmed()
+            );
+
+            // Flush to ensure immediate display
+            use std::io::Write;
+            let _ = std::io::stderr().flush();
+
+            // If we're done, add a newline
+            if current >= total {
+                eprintln!();
+                self.add_lines(1);
+            }
+        });
+    }
+
     fn clear_all(&self) {
         // Clear all ephemeral output before showing final results
         // (skip in debug mode to retain terminal history)
@@ -412,6 +465,7 @@ impl AgenticReporter for QuietReporter {
     fn report_evaluation(&self, _evaluation: &EvaluationReport) {}
     fn report_refinement_start(&self) {}
     fn report_phase(&self, _phase_num: usize, _phase_name: &str) {}
+    fn report_reindex_progress(&self, _current: usize, _total: usize, _message: String) {}
     fn clear_all(&self) {}
 }
 

@@ -12,7 +12,7 @@ pub struct SemanticConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 
-    /// LLM provider (openai, anthropic, gemini, groq)
+    /// LLM provider (openai, anthropic, groq)
     #[serde(default = "default_provider")]
     pub provider: String,
 
@@ -144,15 +144,11 @@ struct Credentials {
     #[serde(default)]
     anthropic_api_key: Option<String>,
     #[serde(default)]
-    gemini_api_key: Option<String>,
-    #[serde(default)]
     groq_api_key: Option<String>,
     #[serde(default)]
     openai_model: Option<String>,
     #[serde(default)]
     anthropic_model: Option<String>,
-    #[serde(default)]
-    gemini_model: Option<String>,
     #[serde(default)]
     groq_model: Option<String>,
 }
@@ -197,7 +193,6 @@ pub fn get_api_key(provider: &str) -> Result<String> {
             let key = match provider.to_lowercase().as_str() {
                 "openai" => credentials.openai_api_key.as_ref(),
                 "anthropic" => credentials.anthropic_api_key.as_ref(),
-                "gemini" => credentials.gemini_api_key.as_ref(),
                 "groq" => credentials.groq_api_key.as_ref(),
                 _ => None,
             };
@@ -213,7 +208,6 @@ pub fn get_api_key(provider: &str) -> Result<String> {
     let env_var = match provider.to_lowercase().as_str() {
         "openai" => "OPENAI_API_KEY",
         "anthropic" => "ANTHROPIC_API_KEY",
-        "gemini" => "GEMINI_API_KEY",
         "groq" => "GROQ_API_KEY",
         _ => anyhow::bail!("Unknown provider: {}", provider),
     };
@@ -236,11 +230,11 @@ pub fn get_api_key(provider: &str) -> Result<String> {
 ///
 /// Checks in priority order:
 /// 1. ~/.reflex/config.toml (credentials section)
-/// 2. Environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, GROQ_API_KEY)
+/// 2. Environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY, GROQ_API_KEY)
 ///
 /// Returns true if at least one API key is found for any provider.
 pub fn is_any_api_key_configured() -> bool {
-    let providers = ["openai", "anthropic", "gemini", "groq"];
+    let providers = ["openai", "anthropic", "groq"];
 
     // Check user config file first
     if let Ok(Some(user_config)) = load_user_config() {
@@ -248,7 +242,6 @@ pub fn is_any_api_key_configured() -> bool {
             // Check if any provider has an API key in the config file
             if credentials.openai_api_key.is_some()
                 || credentials.anthropic_api_key.is_some()
-                || credentials.gemini_api_key.is_some()
                 || credentials.groq_api_key.is_some()
             {
                 log::debug!("Found API key in ~/.reflex/config.toml");
@@ -262,7 +255,6 @@ pub fn is_any_api_key_configured() -> bool {
         let env_var = match *provider {
             "openai" => "OPENAI_API_KEY",
             "anthropic" => "ANTHROPIC_API_KEY",
-            "gemini" => "GEMINI_API_KEY",
             "groq" => "GROQ_API_KEY",
             _ => continue,
         };
@@ -287,7 +279,6 @@ pub fn get_user_model(provider: &str) -> Option<String> {
             let model = match provider.to_lowercase().as_str() {
                 "openai" => credentials.openai_model.as_ref(),
                 "anthropic" => credentials.anthropic_model.as_ref(),
-                "gemini" => credentials.gemini_model.as_ref(),
                 "groq" => credentials.groq_model.as_ref(),
                 _ => None,
             };

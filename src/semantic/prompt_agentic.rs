@@ -21,7 +21,8 @@ pub fn build_assessment_prompt(
     cache: &CacheManager,
 ) -> Result<String> {
     // Extract basic codebase context
-    let context = CodebaseContext::extract(cache).unwrap_or_else(|_| {
+    let context = CodebaseContext::extract(cache).unwrap_or_else(|e| {
+        log::warn!("Failed to extract codebase context: {}. Using empty context.", e);
         CodebaseContext {
             total_files: 0,
             languages: vec![],
@@ -68,27 +69,36 @@ You are in the **assessment phase**. Your task is to determine if you have enoug
 
 Analyze the question and determine:
 
-1. **Do you have enough context?**
-   - Can you generate accurate queries with the current information?
+1. **Can you answer the question using ONLY the Codebase Context above?**
+   - For counting questions (file counts, language stats): Check if the answer is already in the Codebase Context
+   - For simple factual questions: Check if the metadata already provides the answer
+   - If yes, return `phase: "final"` with empty queries array `[]`
+
+2. **If not, do you have enough context to generate accurate search queries?**
    - Do you understand the project structure well enough?
    - Do you know which directories/files to target?
+   - Can you generate precise search patterns?
 
-2. **What additional context would help?** (if needed)
+3. **What additional context would help?** (if needed)
    - Project structure details (`gather_context`)
    - Exploratory queries to find patterns (`explore_codebase`)
    - Dependency analysis (`analyze_structure`)
+   - File counts and statistics (`get_statistics`)
 
 ## Response Format
 
 Return a JSON object with:
 - `phase`: "assessment" or "final"
 - `reasoning`: Your thought process
-- `needs_context`: true if you need more info, false if ready to generate queries
+- `needs_context`: true if you need more info, false if ready to answer
 - `tool_calls`: Array of tools to execute (if needs_context=true)
-- `queries`: Empty for assessment, populated if phase="final"
+- `queries`: Empty for assessment, or array of queries if phase="final" (CAN BE EMPTY if answer is in context)
 - `confidence`: 0.0-1.0 confidence score
 
-If you have enough context, set `phase: "final"` and provide the queries directly.
+**Important:**
+- If the answer is already in the Codebase Context, set `phase: "final"` with `queries: []` (empty array)
+- If you need to search the codebase, set `phase: "final"` and provide the search queries
+- If you need more context first, set `phase: "assessment"` with `needs_context: true` and specify tools
 
 **Schema:**
 ```json
@@ -115,7 +125,8 @@ pub fn build_generation_prompt(
     cache: &CacheManager,
 ) -> Result<String> {
     // Extract basic codebase context
-    let context = CodebaseContext::extract(cache).unwrap_or_else(|_| {
+    let context = CodebaseContext::extract(cache).unwrap_or_else(|e| {
+        log::warn!("Failed to extract codebase context: {}. Using empty context.", e);
         CodebaseContext {
             total_files: 0,
             languages: vec![],
@@ -162,14 +173,23 @@ You have completed context gathering. Now generate the final search queries.
 
 ## Your Task
 
-Generate precise search queries based on ALL the context above.
+Determine if you can answer the question from the available context, or if you need to search the codebase:
+
+1. **Check if the answer is already available:**
+   - Review the Codebase Context for file counts, language stats, and structural information
+   - Review the Gathered Context for tool outputs (documentation, dependency info, etc.)
+   - If the answer is there, return empty queries array `[]`
+
+2. **If not, generate precise search queries:**
+   - Use the context to create targeted search patterns
+   - Focus queries on the most relevant files and patterns
 
 ## Response Format
 
 Return a JSON object with:
 - `phase`: "final"
-- `reasoning`: Your thought process for these queries
-- `queries`: Array of query commands
+- `reasoning`: Your thought process (explain why queries are needed, or why answer is in context)
+- `queries`: Array of query commands (CAN BE EMPTY if answer is already in Codebase/Gathered Context)
 - `confidence`: 0.0-1.0 confidence score
 
 **Schema:**
@@ -199,7 +219,8 @@ pub fn build_refinement_prompt(
     cache: &CacheManager,
 ) -> Result<String> {
     // Extract basic codebase context
-    let context = CodebaseContext::extract(cache).unwrap_or_else(|_| {
+    let context = CodebaseContext::extract(cache).unwrap_or_else(|e| {
+        log::warn!("Failed to extract codebase context: {}. Using empty context.", e);
         CodebaseContext {
             total_files: 0,
             languages: vec![],

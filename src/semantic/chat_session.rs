@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 /// Maximum context window sizes by provider (in tokens)
 const OPENAI_CONTEXT_WINDOW: usize = 128_000;
 const ANTHROPIC_CONTEXT_WINDOW: usize = 200_000;
-const GEMINI_CONTEXT_WINDOW: usize = 1_000_000;
 const GROQ_CONTEXT_WINDOW: usize = 32_000; // Conservative default for Groq
 
 /// Rough estimate: 4 characters per token (common heuristic)
@@ -387,7 +386,6 @@ impl ChatSession {
         match provider.to_lowercase().as_str() {
             "openai" => OPENAI_CONTEXT_WINDOW,
             "anthropic" => ANTHROPIC_CONTEXT_WINDOW,
-            "gemini" => GEMINI_CONTEXT_WINDOW,
             "groq" => GROQ_CONTEXT_WINDOW,
             _ => 32_000, // Conservative default
         }

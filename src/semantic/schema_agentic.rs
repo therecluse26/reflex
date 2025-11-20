@@ -91,6 +91,37 @@ pub enum ToolCall {
         #[serde(default)]
         files: Option<Vec<String>>,
     },
+
+    /// Get index statistics (file counts, languages, etc.)
+    GetStatistics,
+
+    /// Get dependencies of a specific file
+    GetDependencies {
+        /// File path (supports fuzzy matching)
+        file_path: String,
+
+        /// Show reverse dependencies (what depends on this file)
+        #[serde(default)]
+        reverse: bool,
+    },
+
+    /// Get dependency analysis summary
+    GetAnalysisSummary {
+        /// Minimum dependents for hotspot counting
+        #[serde(default = "default_min_dependents")]
+        min_dependents: usize,
+    },
+
+    /// Find disconnected components (islands) in the dependency graph
+    FindIslands {
+        /// Minimum island size to include
+        #[serde(default = "default_min_island_size")]
+        min_size: usize,
+
+        /// Maximum island size to include
+        #[serde(default = "default_max_island_size")]
+        max_size: usize,
+    },
 }
 
 /// Parameters for context gathering tool
@@ -135,6 +166,18 @@ pub struct ContextGatheringParams {
 
 fn default_depth() -> usize {
     2
+}
+
+fn default_min_dependents() -> usize {
+    2
+}
+
+fn default_min_island_size() -> usize {
+    2
+}
+
+fn default_max_island_size() -> usize {
+    500
 }
 
 impl Default for ContextGatheringParams {
@@ -283,6 +326,35 @@ pub const AGENTIC_RESPONSE_SCHEMA: &str = r#"{
               }
             },
             "required": ["type", "query"]
+          },
+          {
+            "properties": {
+              "type": { "const": "get_statistics" }
+            },
+            "required": ["type"]
+          },
+          {
+            "properties": {
+              "type": { "const": "get_dependencies" },
+              "file_path": { "type": "string" },
+              "reverse": { "type": "boolean" }
+            },
+            "required": ["type", "file_path"]
+          },
+          {
+            "properties": {
+              "type": { "const": "get_analysis_summary" },
+              "min_dependents": { "type": "integer" }
+            },
+            "required": ["type"]
+          },
+          {
+            "properties": {
+              "type": { "const": "find_islands" },
+              "min_size": { "type": "integer" },
+              "max_size": { "type": "integer" }
+            },
+            "required": ["type"]
           }
         ]
       }

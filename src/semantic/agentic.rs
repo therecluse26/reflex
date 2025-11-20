@@ -75,6 +75,40 @@ pub async fn run_agentic_loop(
 ) -> Result<AgenticQueryResponse> {
     log::info!("Starting agentic loop for question: {}", question);
 
+    // Validate cache before starting - auto-reindex if schema mismatch detected
+    if let Err(e) = cache.validate() {
+        let error_msg = e.to_string();
+
+        // Check if this is a schema mismatch error
+        if error_msg.contains("Cache schema version mismatch") {
+            log::warn!("Cache schema mismatch detected, auto-reindexing...");
+
+            // Create progress callback that reports to the reporter
+            use std::sync::Arc;
+            let progress_callback: crate::indexer::ProgressCallback = Arc::new({
+                // Clone reporter reference for the callback closure
+                // Note: We can't capture `reporter` directly since it's a trait object,
+                // so we'll just log progress and rely on the indexer's built-in progress bar
+                move |current: usize, total: usize, message: String| {
+                    log::debug!("Reindex progress: [{}/{}] {}", current, total, message);
+                }
+            });
+
+            // Trigger reindexing
+            let workspace_root = cache.workspace_root();
+            let index_config = crate::IndexConfig::default();
+            let indexer = crate::indexer::Indexer::new(cache.clone(), index_config);
+
+            log::info!("Auto-reindexing cache at {:?}", workspace_root);
+            indexer.index_with_callback(&workspace_root, false, Some(progress_callback))?;
+
+            log::info!("Cache reindexing completed successfully");
+        } else {
+            // Other validation errors should propagate up
+            return Err(e);
+        }
+    }
+
     // Initialize provider
     let provider = initialize_provider(&config, cache)?;
 
@@ -88,7 +122,7 @@ pub async fn run_agentic_loop(
     ).await?;
 
     // Phase 2: Context gathering (if needed)
-    let gathered_context = if needs_context {
+    let (gathered_context, tools_executed) = if needs_context {
         phase_2_gather(
             question,
             initial_response,
@@ -98,7 +132,7 @@ pub async fn run_agentic_loop(
             reporter,
         ).await?
     } else {
-        String::new()
+        (String::new(), Vec::new())
     };
 
     // Phase 3: Generate final queries
@@ -158,6 +192,11 @@ pub async fn run_agentic_loop(
         total_count: if count_only { None } else { Some(total_count) },
         gathered_context: if !gathered_context.is_empty() {
             Some(gathered_context)
+        } else {
+            None
+        },
+        tools_executed: if !tools_executed.is_empty() {
+            Some(tools_executed)
         } else {
             None
         },
@@ -221,10 +260,11 @@ async fn phase_2_gather(
     _provider: &dyn LlmProvider,
     config: &AgenticConfig,
     reporter: &dyn AgenticReporter,
-) -> Result<String> {
+) -> Result<(String, Vec<String>)> {
     log::info!("Phase 2: Gathering context via tools");
 
     let mut all_tool_results = Vec::new();
+    let mut tool_descriptions = Vec::new();
 
     // Limit tool calls to prevent excessive execution
     let tool_calls: Vec<ToolCall> = initial_response.tool_calls
@@ -237,6 +277,10 @@ async fn phase_2_gather(
     // Execute all tool calls
     for (idx, tool) in tool_calls.iter().enumerate() {
         log::debug!("Executing tool {}/{}: {:?}", idx + 1, tool_calls.len(), tool);
+
+        // Get tool description for UI display
+        let tool_desc = describe_tool_for_ui(tool);
+        tool_descriptions.push(tool_desc);
 
         // Report tool start
         reporter.report_tool_start(idx + 1, tool);
@@ -266,7 +310,58 @@ async fn phase_2_gather(
 
     log::info!("Context gathering complete: {} chars", gathered_context.len());
 
-    Ok(gathered_context)
+    Ok((gathered_context, tool_descriptions))
+}
+
+/// Generate a user-friendly description of a tool call
+fn describe_tool_for_ui(tool: &ToolCall) -> String {
+    match tool {
+        ToolCall::GatherContext { params } => {
+            let mut parts = Vec::new();
+            if params.structure { parts.push("structure"); }
+            if params.file_types { parts.push("file types"); }
+            if params.project_type { parts.push("project type"); }
+            if params.framework { parts.push("frameworks"); }
+            if params.entry_points { parts.push("entry points"); }
+            if params.test_layout { parts.push("test layout"); }
+            if params.config_files { parts.push("config files"); }
+
+            if parts.is_empty() {
+                "gather_context: General codebase context".to_string()
+            } else {
+                format!("gather_context: {}", parts.join(", "))
+            }
+        }
+        ToolCall::ExploreCodebase { description, .. } => {
+            format!("explore_codebase: {}", description)
+        }
+        ToolCall::AnalyzeStructure { analysis_type } => {
+            format!("analyze_structure: {:?}", analysis_type)
+        }
+        ToolCall::SearchDocumentation { query, files } => {
+            if let Some(file_list) = files {
+                format!("search_documentation: '{}' in files {:?}", query, file_list)
+            } else {
+                format!("search_documentation: '{}'", query)
+            }
+        }
+        ToolCall::GetStatistics => {
+            "get_statistics: Retrieved file counts and language stats".to_string()
+        }
+        ToolCall::GetDependencies { file_path, reverse } => {
+            if *reverse {
+                format!("get_dependencies: What depends on '{}'", file_path)
+            } else {
+                format!("get_dependencies: Dependencies of '{}'", file_path)
+            }
+        }
+        ToolCall::GetAnalysisSummary { .. } => {
+            "get_analysis_summary: Dependency health overview".to_string()
+        }
+        ToolCall::FindIslands { .. } => {
+            "find_islands: Disconnected component analysis".to_string()
+        }
+    }
 }
 
 /// Phase 3: Generate final queries
@@ -403,6 +498,7 @@ async fn phase_6_refine(
         } else {
             None
         },
+        tools_executed: None,  // No new tools executed during refinement
         answer: None,  // No answer generation in agentic mode (handled in CLI)
     })
 }

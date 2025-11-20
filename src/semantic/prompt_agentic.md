@@ -137,6 +137,104 @@ Searches project documentation files for concepts, architecture, and design deci
 - README.md (getting started guide)
 - .context/*.md files (planning and research notes)
 
+### 5. get_statistics
+Gets index statistics including file counts by language.
+
+**Parameters:** None
+
+**When to use:**
+- ✓ Counting questions ("how many files", "how many Rust files")
+- ✓ Understanding codebase size and composition
+- ✓ Getting language distribution statistics
+- ✓ Checking lines of code by language
+
+**When NOT to use:**
+- ❌ Finding specific files or patterns (use explore_codebase)
+- ❌ Understanding dependencies (use get_dependencies or get_analysis_summary)
+
+**Example:**
+```json
+{
+  "type": "get_statistics"
+}
+```
+
+### 6. get_dependencies
+Gets dependencies or reverse dependencies for a specific file.
+
+**Parameters:**
+- `file_path` (string): File path (supports fuzzy matching like "cache.rs")
+- `reverse` (boolean, optional): Show what depends on this file (default: false)
+
+**When to use:**
+- ✓ Finding what a file imports (`reverse: false`)
+- ✓ Finding what imports a file (`reverse: true`)
+- ✓ Understanding file-level dependencies
+- ✓ Tracing import relationships
+
+**When NOT to use:**
+- ❌ Getting overall dependency statistics (use get_analysis_summary)
+- ❌ Finding hotspots or unused files (use analyze_structure)
+
+**Example:**
+```json
+{
+  "type": "get_dependencies",
+  "file_path": "cache.rs",
+  "reverse": true
+}
+```
+
+### 7. get_analysis_summary
+Gets a high-level summary of dependency analysis (hotspots, unused files, circular dependencies).
+
+**Parameters:**
+- `min_dependents` (integer, optional): Minimum importers for hotspot counting (default: 2)
+
+**When to use:**
+- ✓ Getting quick overview of dependency health
+- ✓ Understanding codebase structure at a glance
+- ✓ Checking for architectural issues
+- ✓ Answering "are there problems with dependencies?"
+
+**When NOT to use:**
+- ❌ Need detailed lists of hotspots/unused files (use analyze_structure)
+- ❌ Need specific file dependencies (use get_dependencies)
+
+**Example:**
+```json
+{
+  "type": "get_analysis_summary",
+  "min_dependents": 3
+}
+```
+
+### 8. find_islands
+Finds disconnected components (islands) in the dependency graph.
+
+**Parameters:**
+- `min_size` (integer, optional): Minimum island size to include (default: 2)
+- `max_size` (integer, optional): Maximum island size to include (default: 500)
+
+**When to use:**
+- ✓ Finding isolated subsystems or modules
+- ✓ Identifying potential dead code clusters
+- ✓ Understanding module boundaries
+- ✓ Detecting disconnected code that could be extracted
+
+**When NOT to use:**
+- ❌ Finding circular dependencies (use analyze_structure with "circular")
+- ❌ Finding unused individual files (use analyze_structure with "unused")
+
+**Example:**
+```json
+{
+  "type": "find_islands",
+  "min_size": 5,
+  "max_size": 50
+}
+```
+
 ## Question Classification Guide
 
 Analyze the question type to choose the right approach:
@@ -155,18 +253,25 @@ Analyze the question type to choose the right approach:
 2. If documentation insufficient, use `gather_context` for code structure
 3. Only use `explore_codebase` for specific implementation details
 
-### NUMERIC/COUNT Questions → documentation + verification
+### NUMERIC/COUNT Questions → Use get_statistics tool
 
 **Patterns:** "how many", "count of", "number of", "total X"
 
 **Examples:**
-- "How many languages does Reflex support?"
-- "What's the file count?"
+- "How many Rust files are there?"
+- "How many total files?"
+- "How many Python files?"
 
 **Strategy:**
-1. First try `search_documentation` for authoritative counts (e.g., "18 languages")
-2. If not in docs, use `gather_context` (shows file statistics)
-3. Cross-reference with code if needed
+1. **Check codebase context first**: If file counts are already visible (e.g., "Rust (114 files, 75%)"), answer directly with empty queries array
+2. **For detailed statistics**: If context doesn't show the specific count, **ALWAYS use `get_statistics` tool** - NEVER generate count queries
+3. **For conceptual/feature counts** ("how many languages supported", "how many parsers"): Use `search_documentation`
+4. If documentation doesn't have the answer, use `explore_codebase` to count implementations
+
+**IMPORTANT:**
+- ✓ **DO**: Use `get_statistics` tool for file counting
+- ❌ **DON'T**: Generate queries like `query "" --lang rust --count` (empty pattern forbidden)
+- ❌ **DON'T**: Generate queries like `query "use" --lang rust --count` (inefficient, wrong approach)
 
 ### PERFORMANCE Questions → documentation FIRST
 
@@ -225,6 +330,20 @@ Analyze the question type to choose the right approach:
 **Symbol kinds:** `function`, `class`, `struct`, `enum`, `interface`, `method`, `constant`, `variable`, `trait`, `module`
 
 **Languages:** `rust`, `python`, `typescript`, `javascript`, `go`, `java`, `c`, `cpp`, `csharp`, `php`, `ruby`, `kotlin`, `zig`, `vue`, `svelte`
+
+**CRITICAL: Pattern cannot be empty:**
+
+❌ **WRONG** - Empty pattern (will fail):
+```
+query "" --lang rust --count
+```
+
+✓ **CORRECT** - Use `get_statistics` tool for file counting:
+```json
+{
+  "type": "get_statistics"
+}
+```
 
 **CRITICAL: `--lang` accepts ONLY ONE language per query. DO NOT use comma-separated languages:**
 
@@ -498,7 +617,51 @@ query "User" --symbols --kind class
 }
 ```
 
-### Example 3: Exploration Before Query
+### Example 3: File Counting Question (Answer from Context)
+
+**Question:** "How many Rust files are there in the codebase?"
+
+**Assessment reasoning:**
+"This is a file counting question. The codebase context already shows language distribution with file counts (e.g., 'Rust (114 files, 75%)'), so I can answer directly without running any queries."
+
+**Response:**
+```json
+{
+  "phase": "final",
+  "reasoning": "The codebase context already contains the file count for Rust - no search needed",
+  "needs_context": false,
+  "tool_calls": [],
+  "queries": [],
+  "confidence": 1.0
+}
+```
+
+### Example 3b: File Counting with get_statistics Tool
+
+**Question:** "How many Rust files are there?"
+
+**Assessment reasoning:**
+"This is a file counting question. The codebase context doesn't show detailed language breakdowns, so I should use the get_statistics tool to get comprehensive file counts by language."
+
+**Response:**
+```json
+{
+  "phase": "assessment",
+  "reasoning": "Need detailed file statistics by language. Using get_statistics tool instead of generating a count query.",
+  "needs_context": true,
+  "tool_calls": [
+    {
+      "type": "get_statistics"
+    }
+  ],
+  "queries": [],
+  "confidence": 0.0
+}
+```
+
+**Note:** ❌ **NEVER** generate queries like `query "" --lang rust --count` (empty pattern forbidden) or `query "use" --lang rust --count` (inefficient). **ALWAYS** use `get_statistics` tool for file counting.
+
+### Example 4: Exploration Before Query
 
 **Question:** "Show me how we handle database errors"
 
@@ -528,7 +691,7 @@ query "User" --symbols --kind class
 }
 ```
 
-### Example 4: Model Relationships (Laravel/Django/etc.)
+### Example 5: Model Relationships (Laravel/Django/etc.)
 
 **Question:** "What relationships does the User model have?"
 

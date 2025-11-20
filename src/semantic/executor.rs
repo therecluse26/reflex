@@ -311,6 +311,10 @@ pub async fn execute_queries(
     let mut total_count: usize = 0;
     let mut all_count_only = true;
 
+    // Create a single QueryEngine and reuse it for all queries
+    // This avoids redundant cache validation and SQLite connection overhead
+    let engine = QueryEngine::new(cache.clone());
+
     for query_cmd in sorted_queries {
         log::debug!("Executing query {}: {}", query_cmd.order, query_cmd.command);
 
@@ -326,10 +330,7 @@ pub async fn execute_queries(
         // Convert to QueryFilter
         let filter = parsed.to_query_filter()?;
 
-        // Create a new engine for each query (QueryEngine takes ownership of cache)
-        let engine = QueryEngine::new(CacheManager::new(cache.workspace_root()));
-
-        // Execute query
+        // Execute query (reusing the same engine)
         let response = engine.search_with_metadata(&parsed.pattern, filter)
             .with_context(|| format!("Failed to execute query: {}", query_cmd.command))?;
 

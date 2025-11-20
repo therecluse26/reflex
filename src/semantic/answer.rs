@@ -25,6 +25,7 @@ const MAX_PREVIEW_LENGTH: usize = 200;
 /// * `results` - Search results grouped by file
 /// * `total_count` - Total number of matches found
 /// * `gathered_context` - Optional context gathered from tools (documentation, codebase structure)
+/// * `codebase_context` - Optional codebase metadata (always available, language distribution, directories)
 /// * `provider` - LLM provider to use for answer generation
 ///
 /// # Returns
@@ -35,10 +36,12 @@ pub async fn generate_answer(
     results: &[FileGroupedResult],
     total_count: usize,
     gathered_context: Option<&str>,
+    codebase_context: Option<&str>,
     provider: &dyn LlmProvider,
 ) -> Result<String> {
-    // Handle empty results - use gathered context if available
+    // Handle empty results - use gathered context if available, then codebase context
     if results.is_empty() {
+        // Try gathered context first (from tools like search_documentation, gather_context)
         if let Some(context) = gathered_context {
             if !context.is_empty() {
                 // Generate answer from documentation/context alone
@@ -49,6 +52,19 @@ pub async fn generate_answer(
                 return Ok(cleaned.to_string());
             }
         }
+
+        // Try codebase context (language distribution, file counts, directories)
+        if let Some(context) = codebase_context {
+            if !context.is_empty() {
+                // Generate answer from codebase metadata alone
+                let prompt = build_codebase_context_prompt(question, context);
+                log::debug!("Generating answer from codebase context ({} chars)", prompt.len());
+                let answer = provider.complete(&prompt, false).await?;
+                let cleaned = strip_markdown_fences(&answer);
+                return Ok(cleaned.to_string());
+            }
+        }
+
         return Ok(format!("No results found for: {}", question));
     }
 
@@ -192,6 +208,31 @@ fn build_context_only_prompt(question: &str, gathered_context: &str) -> String {
     prompt.push_str("2. References documentation sections or files where relevant\n");
     prompt.push_str("3. Is concise but informative (typically 2-4 sentences)\n");
     prompt.push_str("4. Only mentions information that appears in the context above\n\n");
+
+    prompt.push_str("Answer (plain text only, no markdown):\n");
+
+    prompt
+}
+
+/// Build prompt for answering from codebase metadata alone (file counts, languages, directories)
+fn build_codebase_context_prompt(question: &str, codebase_context: &str) -> String {
+    let mut prompt = String::new();
+
+    prompt.push_str("You are answering a developer's question using codebase metadata.\n\n");
+    prompt.push_str("IMPORTANT: Provide ONLY the answer text, without any markdown formatting, code fences, or explanatory prefixes.\n\n");
+
+    prompt.push_str(&format!("Question: {}\n\n", question));
+
+    prompt.push_str("Codebase Metadata:\n");
+    prompt.push_str("==================\n\n");
+    prompt.push_str(codebase_context);
+    prompt.push_str("\n\n");
+
+    prompt.push_str("Provide a conversational answer that:\n");
+    prompt.push_str("1. Directly answers the question using the metadata above\n");
+    prompt.push_str("2. Uses specific numbers and percentages from the metadata\n");
+    prompt.push_str("3. Is concise but informative (typically 1-2 sentences)\n");
+    prompt.push_str("4. Only mentions information that appears in the metadata above\n\n");
 
     prompt.push_str("Answer (plain text only, no markdown):\n");
 

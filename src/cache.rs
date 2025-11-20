@@ -25,6 +25,7 @@ pub const HASHES_JSON: &str = "hashes.json";
 pub const CONFIG_TOML: &str = "config.toml";
 
 /// Manages the Reflex cache directory
+#[derive(Clone)]
 pub struct CacheManager {
     cache_path: PathBuf,
 }
@@ -260,7 +261,7 @@ compression_level = 3  # zstd level
 [semantic]
 # Semantic query generation using LLMs
 # Translate natural language questions into rfx query commands
-provider = "groq"  # Options: openai, anthropic, gemini, groq
+provider = "groq"  # Options: openai, anthropic, groq
 # model = "llama-3.3-70b-versatile"  # Optional: override provider default model
 # auto_execute = false  # Optional: auto-execute queries without confirmation
 "#;
@@ -414,8 +415,17 @@ provider = "groq"  # Options: openai, anthropic, gemini, groq
                     current_schema_hash
                 );
                 anyhow::bail!(
-                    "Cache was built with schema version {} but current binary expects {}. \
-                     Cache format may be incompatible. Run 'rfx index' to rebuild cache.",
+                    "Cache schema version mismatch.\n\
+                     \n\
+                     - Cache was built with version {}\n\
+                     - Current binary expects version {}\n\
+                     \n\
+                     The cache format may be incompatible with this version of Reflex.\n\
+                     Please rebuild the index by running:\n\
+                     \n\
+                       rfx index\n\
+                     \n\
+                     This usually happens after upgrading Reflex or making code changes.",
                     stored_hash,
                     current_schema_hash
                 );
