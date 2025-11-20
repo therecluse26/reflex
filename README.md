@@ -1,8 +1,8 @@
 # Reflex
 
-**Local-first, full-text code search engine for AI coding workflows**
+**Local-first code search engine with full-text search, symbol extraction, and dependency analysis for AI coding workflows**
 
-Reflex is a blazingly fast, trigram-based code search engine designed for developers and AI coding assistants. Unlike symbol-only tools, Reflex finds **every occurrence** of patterns—function calls, variable usage, comments, and more.
+Reflex is a code search engine designed for developers and AI coding assistants. It combines trigram indexing for full-text search with Tree-sitter parsing for symbol extraction and static analysis for dependency tracking. Unlike symbol-only tools, Reflex finds **every occurrence** of patterns, function calls, variable usage, comments, and more with deterministic, repeatable results.
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
 [![Tests](https://img.shields.io/badge/tests-347%20passing-brightgreen)]()
@@ -11,7 +11,7 @@ Reflex is a blazingly fast, trigram-based code search engine designed for develo
 ## ✨ Features
 
 - **🔍 Complete Coverage**: Find every occurrence, not just symbol definitions
-- **⚡ Blazing Fast**: Lightning-fast queries via trigram indexing
+- **⚡ Fast Queries**: Trigram indexing with memory-mapped I/O for efficient search
 - **🎯 Symbol-Aware**: Runtime tree-sitter parsing for precise symbol filtering
 - **🔄 Incremental**: Only reindexes changed files (blake3 hashing)
 - **🌍 Multi-Language**: Rust, TypeScript/JavaScript, Vue, Svelte, PHP, Python, Go, Java, C, C++, C#, Ruby, Kotlin, Zig
@@ -28,12 +28,7 @@ Reflex is a blazingly fast, trigram-based code search engine designed for develo
 ### Installation
 
 ```bash
-# Clone and build from source
-git clone https://github.com/reflex-search/reflex.git
-cd reflex
-cargo build --release
-
-# Binary will be at target/release/rfx
+cargo install reflex-search
 ```
 
 ### Basic Usage
@@ -51,7 +46,7 @@ rfx query "extract_symbols" --symbols
 # Filter by language and symbol kind
 rfx query "parse" --lang rust --kind function --symbols
 
-# Include dependency information (imports/exports)
+# Include dependency information (imports)
 rfx query "MyStruct" --dependencies
 
 # Regex search
@@ -93,30 +88,31 @@ openai_api_key = "sk-..."
 openai_model = "gpt-4o-mini"  # optional
 ```
 
-Alternatively, set environment variables:
-```bash
-export OPENAI_API_KEY="sk-..."
-export ANTHROPIC_API_KEY="sk-ant-..."
-export GROQ_API_KEY="gsk_..."
-```
-
 ### Usage
 
-```bash
-# Ask a question (generates and optionally executes rfx query commands)
-rfx ask "Find all TODOs in Rust files"
+There are two ways to use `rfx ask`: 
 
-# Auto-execute without confirmation
-rfx ask "Where is the main function defined?" --execute
+1) Interactive mode
+
+Interactive chat mode with conversation history. This mode uses `--agentic` and `--answer` under the hood.
+
+```bash
+rfx ask
+```
+
+2) CLI-only mode
+
+One-shot, non-conversational commands that return results directly via CLI.
+
+```bash
+# Ask a question (generates and executes rfx query commands, only returns query results)
+rfx ask "Find all TODOs in Rust files"
 
 # Use a specific provider
 rfx ask "Show me error handling code" --provider groq
 
-# Interactive chat mode with conversation history
-rfx ask --interactive
-
 # Agentic mode (multi-step reasoning with automatic context gathering)
-rfx ask "How does authentication work?" --agentic --answer
+rfx ask "How does authentication work?" --agentic
 
 # Get a conversational answer based on search results
 rfx ask "What does the indexer module do?" --answer
@@ -185,32 +181,18 @@ rfx query "TODO" --paths
 rfx query "Config" --symbols --dependencies
 ```
 
-### `rfx serve`
-
-Start an HTTP API server for programmatic access.
-
-```bash
-rfx serve --port 7878 --host 127.0.0.1
-```
-
-**Endpoints:**
-- `GET /query` - Search (params: `q`, `lang`, `kind`, `limit`, `symbols`, `regex`, `dependencies`, etc.)
-- `GET /stats` - Index statistics
-- `POST /index` - Trigger reindexing
-- `GET /health` - Health check
-
 ### `rfx mcp`
 
 Start as an MCP (Model Context Protocol) server for AI coding assistants.
 
-**Configuration for Claude Code** (`~/.claude/claude_code_config.json`):
 ```json
 {
   "mcpServers": {
     "reflex": {
-      "type": "stdio",
       "command": "rfx",
-      "args": ["mcp"]
+      "args": ["mcp"],
+      "env": {},
+      "disabled": false
     }
   }
 }
@@ -337,50 +319,7 @@ rfx deps src/main.rs --format table
 
 **Supported Languages:** Rust, TypeScript, JavaScript, Python, Go, Java, C, C++, C#, PHP, Ruby, Kotlin
 
-**Note:** Only static imports (string literals) are tracked. Dynamic imports are filtered by design. See [CLAUDE.md](CLAUDE.md) for details.
-
-### `rfx ask`
-
-Translate natural language questions into `rfx query` commands using AI.
-
-**Setup:**
-```bash
-# First-time setup: interactive configuration wizard
-rfx ask --configure
-```
-
-**Key Options:**
-- `--configure` - Launch interactive setup wizard for API keys
-- `--execute, -e` - Auto-execute generated queries without confirmation
-- `--provider <PROVIDER>` - Override configured provider (openai, anthropic, groq)
-- `--interactive, -i` - Launch interactive chat mode with conversation history
-- `--agentic` - Enable multi-step reasoning with automatic context gathering
-- `--answer` - Generate conversational answer based on search results
-- `--json` - Output as JSON
-- `--debug` - Show full LLM prompts and retain terminal history
-
-**Examples:**
-```bash
-# Interactive setup
-rfx ask --configure
-
-# Simple query (reviews generated commands before executing)
-rfx ask "Find all TODOs in Rust files"
-
-# Auto-execute without confirmation
-rfx ask "Where is the main function defined?" --execute
-
-# Interactive chat mode
-rfx ask --interactive
-
-# Agentic mode with answer generation
-rfx ask "How does the indexer work?" --agentic --answer
-
-# Use specific provider
-rfx ask "Show error handling" --provider groq
-```
-
-**See also:** The [AI Query Assistant](#-ai-query-assistant) section for detailed setup and usage information.
+**Note:** Only static imports (string literals) are tracked. Dynamic imports are filtered by design.
 
 ### `rfx context`
 
@@ -448,7 +387,7 @@ rfx query "class" --ast "(class_declaration) @class" --lang typescript
 
 For detailed AST query syntax and examples, see the [Tree-sitter documentation](https://tree-sitter.github.io/tree-sitter/using-parsers#pattern-matching-with-queries).
 
-## 🌐 Supported Languages
+## 🌐 Supported Languages/Dialects
 
 | Language | Extensions | Symbol Extraction |
 |----------|------------|-------------------|
@@ -500,15 +439,15 @@ Reflex uses a **trigram-based inverted index** combined with **runtime symbol de
 Reflex is designed for speed at every level:
 
 **Query Performance:**
-- **Full-text & Regex**: Lightning-fast queries via trigram indexing
+- **Full-text & Regex**: Efficient queries via trigram indexing
 - **Symbol queries**: Slower due to runtime tree-sitter parsing, but still efficient
-- **Cached queries**: Near-instant for repeated searches
+- **Cached queries**: Repeated searches benefit from memory-mapped cache
 - Scales well from small projects to large codebases (10k+ files)
 
 **Indexing Performance:**
-- **Initial indexing**: Fast parallel processing using 80% of CPU cores
+- **Initial indexing**: Parallel processing using 80% of CPU cores
 - **Incremental updates**: Only reindexes changed files via blake3 hashing
-- **Memory-mapped I/O**: Zero-copy access for instant cache reads
+- **Memory-mapped I/O**: Zero-copy access for cache reads
 
 ## 🔧 Configuration
 
@@ -548,7 +487,7 @@ Output includes file paths, line numbers, symbol types, and code previews with p
 
 ## 🧪 Testing
 
-Reflex has **347 comprehensive tests** covering core modules, real-world code samples across all supported languages, and end-to-end workflows.
+Reflex has comprehensive test coverage including core modules, real-world code samples across all supported languages, and end-to-end workflows.
 
 ```bash
 cargo test                    # Run all tests
@@ -556,23 +495,12 @@ cargo test -- --nocapture     # Run with output
 cargo test indexer::tests     # Run specific module
 ```
 
-See [TESTING.md](docs/TESTING.md) for details.
-
 ## 🤝 Contributing
 
 Contributions welcome! Reflex is built to be:
-- **Fast**: Lightning-fast queries on large codebases
+- **Fast**: Efficient search using trigram indexing and memory-mapped I/O
 - **Accurate**: Complete coverage with deterministic results
 - **Extensible**: Easy to add new language parsers
-
-See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for implementation details and [CLAUDE.md](CLAUDE.md) for development workflow.
-
-## 📚 Documentation
-
-- **[ARCHITECTURE.md](docs/ARCHITECTURE.md)**: System design, data formats, extension guide
-- **[CLAUDE.md](CLAUDE.md)**: Project overview and development workflow
-- **[TESTING.md](docs/TESTING.md)**: Test suite documentation
-- **[DISCREPANCIES.md](docs/DISCREPANCIES.md)**: Known documentation issues
 
 ## 📄 License
 
