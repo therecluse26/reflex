@@ -136,7 +136,7 @@ pub async fn run_agentic_loop(
     };
 
     // Phase 3: Generate final queries
-    let query_response = phase_3_generate(
+    let (query_response, query_confidence) = phase_3_generate(
         question,
         &gathered_context,
         cache,
@@ -160,6 +160,9 @@ pub async fn run_agentic_loop(
             total_count,
             question,
             &config.eval_config,
+            if !gathered_context.is_empty() { Some(gathered_context.as_str()) } else { None },
+            query_response.queries.len(),
+            Some(query_confidence),
         );
 
         log::info!("Evaluation: success={}, score={:.2}", evaluation.success, evaluation.score);
@@ -365,6 +368,8 @@ fn describe_tool_for_ui(tool: &ToolCall) -> String {
 }
 
 /// Phase 3: Generate final queries
+///
+/// Returns (QueryResponse, confidence_score)
 async fn phase_3_generate(
     question: &str,
     gathered_context: &str,
@@ -372,7 +377,7 @@ async fn phase_3_generate(
     provider: &dyn LlmProvider,
     reporter: &dyn AgenticReporter,
     debug: bool,
-) -> Result<QueryResponse> {
+) -> Result<(QueryResponse, f32)> {
     log::info!("Phase 3: Generating final queries");
 
     // Build generation prompt with gathered context
@@ -398,17 +403,22 @@ async fn phase_3_generate(
     // Try AgenticResponse first (for agentic mode)
     if let Ok(agentic_response) = serde_json::from_str::<AgenticResponse>(&json_response) {
         if agentic_response.phase == Phase::Final {
+            let confidence = agentic_response.confidence;
+
             // Report generation with reasoning
             reporter.report_generation(
                 Some(&agentic_response.reasoning),
                 agentic_response.queries.len(),
-                agentic_response.confidence,
+                confidence,
             );
 
-            // Convert to QueryResponse
-            return Ok(QueryResponse {
-                queries: agentic_response.queries,
-            });
+            // Convert to QueryResponse and return with confidence
+            return Ok((
+                QueryResponse {
+                    queries: agentic_response.queries,
+                },
+                confidence,
+            ));
         }
     }
 
@@ -421,7 +431,8 @@ async fn phase_3_generate(
     // Report generation without reasoning (fallback mode)
     reporter.report_generation(None, query_response.queries.len(), 1.0);
 
-    Ok(query_response)
+    // Default confidence of 1.0 for fallback mode
+    Ok((query_response, 1.0))
 }
 
 /// Phase 6: Refine queries based on evaluation
@@ -480,6 +491,9 @@ async fn phase_6_refine(
         total_count,
         question,
         &config.eval_config,
+        if !gathered_context.is_empty() { Some(gathered_context) } else { None },
+        refined_response.queries.len(),
+        None,  // No confidence available in refinement
     );
 
     log::info!(

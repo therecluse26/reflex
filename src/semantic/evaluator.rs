@@ -44,23 +44,53 @@ impl Default for EvaluationConfig {
 /// - Too many results (query too broad)
 /// - Results in unexpected file types or directories
 /// - Potential language or symbol type mismatches
+///
+/// # Parameters
+/// - `gathered_context`: Optional context from tools (if context gathering was used)
+/// - `num_queries`: Number of queries generated (0 = direct answer from context)
+/// - `confidence`: LLM confidence score (0.0-1.0) in the response
 pub fn evaluate_results(
     results: &[FileGroupedResult],
     total_count: usize,
     user_question: &str,
     config: &EvaluationConfig,
+    gathered_context: Option<&str>,
+    num_queries: usize,
+    confidence: Option<f32>,
 ) -> EvaluationReport {
     let mut issues = Vec::new();
     let mut score = 1.0; // Start at perfect score, deduct for issues
 
-    // Check 1: Empty results
+    // Check 1: Empty results - BUT check if this is intentional
     if total_count == 0 {
-        issues.push(EvaluationIssue {
-            issue_type: IssueType::EmptyResults,
-            description: "No results found. Query may be too specific or pattern may be incorrect.".to_string(),
-            severity: 0.9,
-        });
-        score -= 0.9;
+        // Case 1: No queries generated (LLM answered directly from context/metadata)
+        if num_queries == 0 {
+            // High confidence direct answer - this is GOOD, not an error
+            if confidence.unwrap_or(0.0) >= 0.90 {
+                // Perfect score - answer is in gathered context or metadata
+                score = 1.0;
+                // Don't add any issues - this is the correct behavior
+            } else {
+                // Lower confidence direct answer - still probably okay
+                issues.push(EvaluationIssue {
+                    issue_type: IssueType::EmptyResults,
+                    description: "No queries generated. Answer provided from available context.".to_string(),
+                    severity: 0.2,  // Very low severity - likely intentional
+                });
+                score -= 0.2;
+            }
+        }
+        // Case 2: Queries were generated but found nothing - actual problem
+        else {
+            // Reduce severity if context was gathered (more forgiving)
+            let severity = if gathered_context.is_some() { 0.6 } else { 0.8 };
+            issues.push(EvaluationIssue {
+                issue_type: IssueType::EmptyResults,
+                description: "No results found. Query may be too specific or pattern may be incorrect.".to_string(),
+                severity,
+            });
+            score -= severity;
+        }
     }
     // Check 2: Too many results
     else if total_count > config.max_results {
@@ -107,7 +137,7 @@ pub fn evaluate_results(
     score = score.max(0.0).min(1.0);
 
     // Determine success based on score and strictness
-    let success_threshold = 0.5 + (config.strictness * 0.3);
+    let success_threshold = 0.4 + (config.strictness * 0.2);
     let success = score >= success_threshold;
 
     // Generate refinement suggestions
@@ -172,7 +202,7 @@ fn check_file_type_consistency(
                             .collect::<Vec<_>>()
                             .join(", ")
                     ),
-                    severity: 0.6,
+                    severity: 0.3,
                 });
             }
         }
@@ -216,7 +246,7 @@ fn check_location_patterns(
                         hint,
                         expected_dirs.join(", ")
                     ),
-                    severity: 0.3, // Lower severity - this is more of a hint
+                    severity: 0.15, // Very low severity - just a hint
                 });
             }
         }
@@ -330,7 +360,7 @@ mod tests {
     #[test]
     fn test_evaluate_empty_results() {
         let config = EvaluationConfig::default();
-        let report = evaluate_results(&[], 0, "find todos", &config);
+        let report = evaluate_results(&[], 0, "find todos", &config, None, 1, Some(0.9));
 
         assert!(!report.success);
         assert!(!report.issues.is_empty());
@@ -342,7 +372,7 @@ mod tests {
     fn test_evaluate_too_many_results() {
         let config = EvaluationConfig::default();
         let results = vec![create_test_result("test.rs", 1)];
-        let report = evaluate_results(&results, 2000, "find all", &config);
+        let report = evaluate_results(&results, 2000, "find all", &config, None, 1, Some(0.9));
 
         assert!(!report.success);
         assert!(report.issues.iter().any(|i| i.issue_type == IssueType::TooManyResults));
@@ -355,7 +385,7 @@ mod tests {
             create_test_result("src/main.rs", 10),
             create_test_result("src/lib.rs", 20),
         ];
-        let report = evaluate_results(&results, 10, "find functions", &config);
+        let report = evaluate_results(&results, 10, "find functions", &config, None, 1, Some(0.85));
 
         assert!(report.success);
         assert!(report.score > 0.7);
@@ -398,5 +428,26 @@ mod tests {
         let suggestions = generate_suggestions(&issues, &[], "test");
         assert!(!suggestions.is_empty());
         assert!(suggestions.iter().any(|s| s.contains("broader")));
+    }
+
+    #[test]
+    fn test_evaluate_direct_answer_high_confidence() {
+        let config = EvaluationConfig::default();
+        let report = evaluate_results(&[], 0, "How many files?", &config, None, 0, Some(0.95));
+
+        assert!(report.success);  // Should pass!
+        assert_eq!(report.score, 1.0);  // Perfect score
+        assert!(report.issues.is_empty());  // No issues
+    }
+
+    #[test]
+    fn test_evaluate_direct_answer_low_confidence() {
+        let config = EvaluationConfig::default();
+        let report = evaluate_results(&[], 0, "How many files?", &config, None, 0, Some(0.75));
+
+        assert!(report.success);  // Should still pass
+        assert!(report.score >= 0.7);  // Decent score
+        assert_eq!(report.issues.len(), 1);  // One low-severity issue
+        assert!(report.issues[0].severity < 0.3);  // Low severity
     }
 }
