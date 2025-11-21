@@ -17,7 +17,6 @@ Reflex is a code search engine designed for developers and AI coding assistants.
 - **🔄 Incremental**: Only reindexes changed files (blake3 hashing)
 - **🌍 Multi-Language**: Rust, TypeScript/JavaScript, Vue, Svelte, PHP, Python, Go, Java, C, C++, C#, Ruby, Kotlin, Zig
 - **🤖 AI Query Assistant**: Natural language search with `rfx ask` (OpenAI, Anthropic, Groq)
-- **🌐 HTTP API**: REST API for editor plugins and external tools
 - **📡 MCP Support**: Model Context Protocol server for AI assistants
 - **📦 Local-First**: Fully offline, all data stays on your machine
 - **🎨 Regex Support**: Trigram-optimized regex search
