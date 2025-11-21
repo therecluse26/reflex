@@ -384,66 +384,14 @@ jobs:
             --notes-file "$RUNNER_TEMP/notes.txt" \
             rfx-* \
             *installer* \
+            *-npm-package.tar.gz \
             *.tar.xz \
             *.zip
-
-  publish-npm:
-    name: Publish to NPM
-    needs:
-      - plan
-      - build-global-artifacts
-    if: ${{ needs.plan.outputs.publishing == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          submodules: recursive
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: artifacts-*
-          path: artifacts
-          merge-multiple: true
-
-      - name: Publish NPM packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -e
-          cd artifacts
-
-          echo "=== Available files ==="
-          ls -la
-
-          # Find and publish all npm packages
-          for tarball in *.tgz; do
-            if [ -f "$tarball" ]; then
-              echo "=== Publishing $tarball to NPM ==="
-              npm publish "$tarball" --access public
-              echo "✓ Successfully published $tarball"
-            fi
-          done
-
-          # If no tarballs found, check for npm packages in subdirectories
-          if ! ls *.tgz 1> /dev/null 2>&1; then
-            echo "No .tgz files found in artifacts directory"
-            echo "This might mean cargo-dist didn't generate npm packages"
-            echo "Check that 'npm' is in the installers list in dist-workspace.toml"
-          fi
 
   announce:
     needs:
       - plan
       - host
-      - publish-npm
     # use "always() && ..." to allow us to wait for all publish jobs while
     # still allowing individual publish jobs to skip themselves (for prereleases).
     # "host" however must run to completion, no skipping allowed!

@@ -32,69 +32,43 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
-  publish-winget:
-    name: Publish to WinGet
+  publish-npm:
+    name: Publish to NPM
     runs-on: ubuntu-latest
     steps:
-      - name: Publish to WinGet
-        uses: vedantmgoyal9/winget-releaser@v2
-        with:
-          identifier: reflex-search.reflex
-          token: ${{ secrets.WINGET_TOKEN }}
-          # This will auto-create a PR to microsoft/winget-pkgs
-
-  update-scoop:
-    name: Update Scoop Bucket
-    runs-on: ubuntu-latest
-    steps:
-      - name: Update Scoop manifest
-        uses: Ash258/Scoop-GithubActions@stable
-        env:
-          GITHUB_TOKEN: ${{ secrets.SCOOP_TOKEN }}
-          GITH_EMAIL: github-actions[bot]@users.noreply.github.com
-        with:
-          app_name: reflex
-
-  update-homebrew:
-    name: Update Homebrew Tap
-    runs-on: ubuntu-latest
-    steps:
-      - name: Update Homebrew formula
-        uses: dawidd6/action-homebrew-bump-formula@v3
-        with:
-          token: ${{ secrets.HOMEBREW_GITHUB_API_TOKEN }}
-          formula: reflex
-          tap: reflex-search/homebrew-tap
-          tag: ${{ github.event.release.tag_name || github.event.inputs.tag }}
-        env:
-          HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.HOMEBREW_GITHUB_API_TOKEN }}
-
-  update-aur:
-    name: Update AUR Package
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Generate PKGBUILD
+      - name: Get release tag
+        id: get_tag
         run: |
-          VERSION="${{ github.event.release.tag_name || github.event.inputs.tag }}"
-          VERSION="${VERSION#v}"  # Remove 'v' prefix
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          fi
 
-          # Update version in PKGBUILD
-          sed -i "s/pkgver=.*/pkgver=${VERSION}/" aur/PKGBUILD
+      - name: Download npm package from release
+        run: |
+          # Download the npm package tarball from the GitHub release
+          gh release download "${{ steps.get_tag.outputs.tag }}" \
+            --pattern "*-npm-package.tar.gz" \
+            --dir npm-packages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-          # Calculate checksums for all architectures
-          cd aur
-          makepkg --verifysource --skipchecksums
-          updpkgsums
-          makepkg --printsrcinfo > .SRCINFO
-
-      - name: Publish to AUR
-        uses: KSXGitHub/github-actions-deploy-aur@v2.7.2
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          pkgname: reflex-bin
-          pkgbuild: aur/PKGBUILD
-          commit_username: ${{ secrets.AUR_USERNAME }}
-          commit_email: ${{ secrets.AUR_EMAIL }}
-          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: "Update to version ${{ github.event.release.tag_name || github.event.inputs.tag }}"
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish to NPM
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd npm-packages
+          for tarball in *-npm-package.tar.gz; do
+            if [ -f "$tarball" ]; then
+              echo "Publishing $tarball to NPM..."
+              npm publish "$tarball" --access public
+              echo "✓ Successfully published $tarball"
+            fi
+          done
