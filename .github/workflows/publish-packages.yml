@@ -75,6 +75,12 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Upgrade npm for Trusted Publishing
+        run: npm install -g npm@latest
+
+      - name: Verify npm version
+        run: npm --version
+
       - name: Publish to NPM
         run: |
           cd npm-packages
