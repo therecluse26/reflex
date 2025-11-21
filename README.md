@@ -35,6 +35,10 @@ npm install -g reflex-search
 cargo install reflex-search
 ```
 
+**Important Setup Notes:**
+- Run `rfx` commands from the root of your project directory
+- Add `.reflex/` to your `.gitignore` file to exclude the search index from version control
+
 ### Basic Usage
 
 ```bash
