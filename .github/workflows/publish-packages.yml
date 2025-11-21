@@ -42,14 +42,27 @@ jobs:
         id: get_tag
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+            TAG="${{ github.event.inputs.tag }}"
           else
-            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+            TAG="${{ github.event.release.tag_name }}"
           fi
+
+          # Ensure tag has 'v' prefix if it's a version number
+          if [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            TAG="v${TAG}"
+          fi
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Using release tag: ${TAG}"
 
       - name: Download npm package from release
         run: |
+          # List available releases for debugging
+          echo "Available releases:"
+          gh release list --limit 5
+
           # Download the npm package tarball from the GitHub release
+          echo "Downloading from release: ${{ steps.get_tag.outputs.tag }}"
           gh release download "${{ steps.get_tag.outputs.tag }}" \
             --pattern "*-npm-package.tar.gz" \
             --dir npm-packages
