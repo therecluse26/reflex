@@ -85,6 +85,8 @@ pub enum Command {
 
     /// Query the code index
     ///
+    /// If no pattern is provided, launches interactive mode (TUI).
+    ///
     /// Search modes:
     ///   - Default: Word-boundary matching (precise, finds complete identifiers)
     ///     Example: rfx query "Error" → finds "Error" but not "NetworkError"
@@ -99,9 +101,14 @@ pub enum Command {
     ///
     ///   - Regex search: Pattern-controlled matching (opt-in with --regex)
     ///     Example: rfx query "^mb_.*" --regex → finds "mb_init", "mb_start", etc.
+    ///
+    /// Interactive mode:
+    ///   - Launch with: rfx query
+    ///   - Search, filter, and navigate code results in a live TUI
+    ///   - Press '?' for help, 'q' to quit
     Query {
-        /// Search pattern
-        pattern: String,
+        /// Search pattern (omit to launch interactive mode)
+        pattern: Option<String>,
 
         /// Search symbol definitions only (functions, classes, etc.)
         #[arg(short, long)]
@@ -770,7 +777,11 @@ impl Cli {
                 }
             }
             Some(Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force, dependencies }) => {
-                handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force, dependencies)
+                // If no pattern provided, launch interactive mode
+                match pattern {
+                    None => handle_interactive(),
+                    Some(pattern) => handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force, dependencies)
+                }
             }
             Some(Command::Serve { port, host }) => {
                 handle_serve(port, host)
