@@ -81,7 +81,7 @@ jobs:
           for tarball in *-npm-package.tar.gz; do
             if [ -f "$tarball" ]; then
               echo "Publishing $tarball to NPM..."
-              npm publish "$tarball" --access public
+              npm publish "$tarball" --access public --provenance
               echo "✓ Successfully published $tarball"
             fi
           done
