@@ -76,8 +76,6 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Publish to NPM
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd npm-packages
           for tarball in *-npm-package.tar.gz; do
