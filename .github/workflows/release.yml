@@ -404,22 +404,3 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-
-  # Trigger the publish-packages workflow after successful release
-  trigger-publish:
-    needs:
-      - plan
-      - announce
-    if: ${{ always() && needs.announce.result == 'success' }}
-    runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Trigger publish-packages workflow
-        run: |
-          echo "Triggering publish-packages workflow with tag: ${{ needs.plan.outputs.tag }}"
-          gh workflow run publish-packages.yml \
-            --field tag="${{ needs.plan.outputs.tag }}"
