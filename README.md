@@ -220,6 +220,16 @@ Start as an MCP (Model Context Protocol) server for AI coding assistants.
 }
 ```
 
+**Error Handling:**
+
+If any MCP tool returns an error about a missing or stale index (e.g., "Index not found. Run 'rfx index' to build the cache first."), the AI agent should:
+
+1. Call `index_project` to rebuild the index
+2. Wait for indexing to complete
+3. Retry the previously failed operation
+
+This pattern ensures that queries always run against an up-to-date index.
+
 **Available MCP Tools:**
 1. **`list_locations`** - Fast location discovery (file + line only, minimal tokens)
 2. **`count_occurrences`** - Quick statistics (total count + file count)
