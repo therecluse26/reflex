@@ -46,14 +46,14 @@ pub struct ContextOptions {
 impl Default for ContextOptions {
     fn default() -> Self {
         Self {
-            structure: false,
+            structure: true,
             path: None,
-            file_types: false,
-            project_type: false,
-            framework: false,
-            entry_points: false,
-            test_layout: false,
-            config_files: false,
+            file_types: true,
+            project_type: true,
+            framework: true,
+            entry_points: true,
+            test_layout: true,
+            config_files: true,
             depth: 1,
             json: false,
         }
@@ -63,7 +63,7 @@ impl Default for ContextOptions {
 impl ContextOptions {
     /// Check if no context types are explicitly enabled
     ///
-    /// When true, we should default to --structure --file-types
+    /// When true, we should enable all context types (default behavior)
     pub fn is_empty(&self) -> bool {
         !self.structure
             && !self.file_types
@@ -72,17 +72,6 @@ impl ContextOptions {
             && !self.entry_points
             && !self.test_layout
             && !self.config_files
-    }
-
-    /// Enable all context types (--full flag)
-    pub fn enable_all(&mut self) {
-        self.structure = true;
-        self.file_types = true;
-        self.project_type = true;
-        self.framework = true;
-        self.entry_points = true;
-        self.test_layout = true;
-        self.config_files = true;
     }
 }
 
@@ -104,8 +93,14 @@ pub fn generate_context(cache: &CacheManager, opts: &ContextOptions) -> Result<S
     // Apply defaults if no flags specified
     let mut effective_opts = opts.clone();
     if effective_opts.is_empty() {
+        // Enable all context types by default
         effective_opts.structure = true;
         effective_opts.file_types = true;
+        effective_opts.project_type = true;
+        effective_opts.framework = true;
+        effective_opts.entry_points = true;
+        effective_opts.test_layout = true;
+        effective_opts.config_files = true;
     }
 
     if opts.json {

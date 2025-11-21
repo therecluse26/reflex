@@ -80,9 +80,15 @@ fn execute_gather_context(
         json: false, // Always use text format for LLM consumption
     };
 
-    // If no specific flags, default to --full (all context types)
+    // If no specific flags, enable all context types by default
     if opts.is_empty() {
-        opts.enable_all();
+        opts.structure = true;
+        opts.file_types = true;
+        opts.project_type = true;
+        opts.framework = true;
+        opts.entry_points = true;
+        opts.test_layout = true;
+        opts.config_files = true;
     }
 
     // Generate context

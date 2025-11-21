@@ -44,7 +44,7 @@ Collects comprehensive codebase information.
 - ❌ Looking up performance statistics (use search_documentation)
 - ❌ Understanding high-level how things work (use search_documentation)
 
-**Note:** By default (no parameters), all context types are gathered (--full mode).
+**Note:** By default (no parameters), all context types are gathered.
 
 **Example:**
 ```json
