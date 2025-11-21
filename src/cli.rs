@@ -85,6 +85,8 @@ pub enum Command {
 
     /// Query the code index
     ///
+    /// If no pattern is provided, launches interactive mode (TUI).
+    ///
     /// Search modes:
     ///   - Default: Word-boundary matching (precise, finds complete identifiers)
     ///     Example: rfx query "Error" → finds "Error" but not "NetworkError"
@@ -99,9 +101,14 @@ pub enum Command {
     ///
     ///   - Regex search: Pattern-controlled matching (opt-in with --regex)
     ///     Example: rfx query "^mb_.*" --regex → finds "mb_init", "mb_start", etc.
+    ///
+    /// Interactive mode:
+    ///   - Launch with: rfx query
+    ///   - Search, filter, and navigate code results in a live TUI
+    ///   - Press '?' for help, 'q' to quit
     Query {
-        /// Search pattern
-        pattern: String,
+        /// Search pattern (omit to launch interactive mode)
+        pattern: Option<String>,
 
         /// Search symbol definitions only (functions, classes, etc.)
         #[arg(short, long)]
@@ -586,12 +593,13 @@ pub enum Command {
     /// Provides structural and organizational context about the project to help
     /// LLMs understand project layout. Use with `rfx ask --additional-context`.
     ///
-    /// By default (no flags), shows --structure and --file-types.
+    /// By default (no flags), shows all context types. Use individual flags to
+    /// select specific context types.
     ///
     /// Examples:
-    ///   rfx context                                    # Basic overview
-    ///   rfx context --path services/backend --full     # Full context for monorepo
-    ///   rfx context --framework --entry-points         # Specific context types
+    ///   rfx context                                    # Full context (all types)
+    ///   rfx context --path services/backend            # Full context for monorepo subdirectory
+    ///   rfx context --framework --entry-points         # Specific context types only
     ///   rfx context --structure --depth 5              # Deep directory tree
     ///
     ///   # Use with semantic queries
@@ -628,10 +636,6 @@ pub enum Command {
         /// List important configuration files
         #[arg(long)]
         config_files: bool,
-
-        /// Enable all context types
-        #[arg(long)]
-        full: bool,
 
         /// Tree depth for --structure (default: 1)
         #[arg(long, default_value = "1")]
@@ -770,7 +774,11 @@ impl Cli {
                 }
             }
             Some(Command::Query { pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force, dependencies }) => {
-                handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force, dependencies)
+                // If no pattern provided, launch interactive mode
+                match pattern {
+                    None => handle_interactive(),
+                    Some(pattern) => handle_query(pattern, symbols, lang, kind, ast, regex, json, pretty, ai, limit, offset, expand, file, exact, contains, count, timeout, plain, glob, exclude, paths, no_truncate, all, force, dependencies)
+                }
             }
             Some(Command::Serve { port, host }) => {
                 handle_serve(port, host)
@@ -799,8 +807,8 @@ impl Cli {
             Some(Command::Ask { question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet, answer, interactive, debug }) => {
                 handle_ask(question, execute, provider, json, pretty, additional_context, configure, agentic, max_iterations, no_eval, show_reasoning, verbose, quiet, answer, interactive, debug)
             }
-            Some(Command::Context { structure, path, file_types, project_type, framework, entry_points, test_layout, config_files, full, depth, json }) => {
-                handle_context(structure, path, file_types, project_type, framework, entry_points, test_layout, config_files, full, depth, json)
+            Some(Command::Context { structure, path, file_types, project_type, framework, entry_points, test_layout, config_files, depth, json }) => {
+                handle_context(structure, path, file_types, project_type, framework, entry_points, test_layout, config_files, depth, json)
             }
             Some(Command::IndexSymbolsInternal { cache_dir }) => {
                 handle_index_symbols_internal(cache_dir)
@@ -2828,7 +2836,6 @@ fn handle_context(
     entry_points: bool,
     test_layout: bool,
     config_files: bool,
-    full: bool,
     depth: usize,
     json: bool,
 ) -> Result<()> {
@@ -2847,7 +2854,7 @@ fn handle_context(
     }
 
     // Build context options
-    let mut opts = crate::context::ContextOptions {
+    let opts = crate::context::ContextOptions {
         structure,
         path,
         file_types,
@@ -2859,11 +2866,6 @@ fn handle_context(
         depth,
         json,
     };
-
-    // Apply --full flag
-    if full {
-        opts.enable_all();
-    }
 
     // Generate context
     let context_output = crate::context::generate_context(&cache, &opts)

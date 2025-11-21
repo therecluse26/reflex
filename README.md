@@ -13,6 +13,7 @@ Reflex is a code search engine designed for developers and AI coding assistants.
 - **🔍 Complete Coverage**: Find every occurrence, not just symbol definitions
 - **⚡ Fast Queries**: Trigram indexing with memory-mapped I/O for efficient search
 - **🎯 Symbol-Aware**: Runtime tree-sitter parsing for precise symbol filtering
+- **🖥️ Interactive Mode**: Live TUI for exploring code with instant search and filters
 - **🔄 Incremental**: Only reindexes changed files (blake3 hashing)
 - **🌍 Multi-Language**: Rust, TypeScript/JavaScript, Vue, Svelte, PHP, Python, Go, Java, C, C++, C#, Ruby, Kotlin, Zig
 - **🤖 AI Query Assistant**: Natural language search with `rfx ask` (OpenAI, Anthropic, Groq)
@@ -150,7 +151,25 @@ Subcommands:
 
 ### `rfx query`
 
-Search the codebase. Run `rfx query --help` for full options.
+Search the codebase with CLI or interactive TUI mode.
+
+**Interactive Mode (TUI):**
+```bash
+# Launch interactive mode (no pattern required)
+rfx query
+
+# Features:
+# - Live search with instant results
+# - Toggle filters: symbols-only, regex, language
+# - Navigate results with keyboard (j/k, arrows)
+# - Open files in $EDITOR (press 'o')
+# - Query history with Ctrl+P/Ctrl+N
+# - Press '?' for help, 'q' to quit
+```
+
+**CLI Mode:**
+
+Run `rfx query --help` for full options.
 
 **Key Options:**
 - `--symbols, -s` - Symbol-only search (definitions, not usage)
@@ -326,26 +345,27 @@ rfx deps src/main.rs --format table
 Generate codebase context for AI prompts. Useful with `rfx ask --additional-context`.
 
 **Key Options:**
-- `--structure` - Show directory structure (enabled by default)
-- `--file-types` - Show file type distribution (enabled by default)
+- `--structure` - Show directory structure
+- `--file-types` - Show file type distribution
 - `--project-type` - Detect project type (CLI/library/webapp/monorepo)
 - `--framework` - Detect frameworks and conventions
 - `--entry-points` - Show entry point files
 - `--test-layout` - Show test organization pattern
 - `--config-files` - List important configuration files
-- `--full` - Enable all context types
 - `--path <PATH>` - Focus on specific directory
 - `--depth <N>` - Tree depth for structure (default: 1)
 
+By default (no flags), all context types are shown. Use individual flags to show specific types only.
+
 **Examples:**
 ```bash
-# Basic overview (structure + file types)
+# Full context (all types - default behavior)
 rfx context
 
 # Full context for monorepo subdirectory
-rfx context --path services/backend --full
+rfx context --path services/backend
 
-# Specific context types
+# Specific context types only
 rfx context --framework --entry-points
 
 # Use with semantic queries

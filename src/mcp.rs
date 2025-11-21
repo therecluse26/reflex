@@ -514,6 +514,51 @@ fn handle_list_tools(_params: Option<Value>) -> Result<Value> {
                         }
                     }
                 }
+            },
+            {
+                "name": "gather_context",
+                "description": "Collects comprehensive codebase information.\n\n**Parameters:**\n- `structure` (bool): Show directory tree\n- `file_types` (bool): Show file type distribution\n- `project_type` (bool): Detect project type (CLI/library/webapp)\n- `framework` (bool): Detect frameworks (React, Django, etc.)\n- `entry_points` (bool): Find main/index files\n- `test_layout` (bool): Show test organization\n- `config_files` (bool): List configuration files\n- `depth` (int): Tree depth for structure (default: 2)\n- `path` (string, optional): Focus on specific directory\n\n**When to use:**\n- Understanding project structure and organization\n- Finding which frameworks/languages are used\n- Locating entry points and test layouts\n- Getting file statistics and distribution\n\n**When NOT to use:**\n- Finding conceptual/architectural information (use search_documentation)\n- Understanding high-level how things work (use search_documentation)\n\n**Note:** By default (no parameters), all context types are gathered.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "structure": {
+                            "type": "boolean",
+                            "description": "Show directory structure"
+                        },
+                        "file_types": {
+                            "type": "boolean",
+                            "description": "Show file type distribution"
+                        },
+                        "project_type": {
+                            "type": "boolean",
+                            "description": "Detect project type (CLI/library/webapp/monorepo)"
+                        },
+                        "framework": {
+                            "type": "boolean",
+                            "description": "Detect frameworks and conventions"
+                        },
+                        "entry_points": {
+                            "type": "boolean",
+                            "description": "Show entry point files"
+                        },
+                        "test_layout": {
+                            "type": "boolean",
+                            "description": "Show test organization pattern"
+                        },
+                        "config_files": {
+                            "type": "boolean",
+                            "description": "List important configuration files"
+                        },
+                        "depth": {
+                            "type": "integer",
+                            "description": "Tree depth for structure (default: 2)"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Focus on specific directory path"
+                        }
+                    }
+                }
             }
         ]
     }))
@@ -1407,6 +1452,56 @@ fn handle_call_tool(params: Option<Value>) -> Result<Value> {
                 "content": [{
                     "type": "text",
                     "text": serde_json::to_string(&summary)?
+                }]
+            }))
+        }
+        "gather_context" => {
+            // Parse optional parameters
+            let structure = arguments["structure"].as_bool().unwrap_or(false);
+            let file_types = arguments["file_types"].as_bool().unwrap_or(false);
+            let project_type = arguments["project_type"].as_bool().unwrap_or(false);
+            let framework = arguments["framework"].as_bool().unwrap_or(false);
+            let entry_points = arguments["entry_points"].as_bool().unwrap_or(false);
+            let test_layout = arguments["test_layout"].as_bool().unwrap_or(false);
+            let config_files = arguments["config_files"].as_bool().unwrap_or(false);
+            let depth = arguments["depth"]
+                .as_u64()
+                .map(|n| n as usize)
+                .unwrap_or(2);
+            let path = arguments["path"].as_str().map(|s| s.to_string());
+
+            // Build context options
+            let mut opts = crate::context::ContextOptions {
+                structure,
+                path,
+                file_types,
+                project_type,
+                framework,
+                entry_points,
+                test_layout,
+                config_files,
+                depth,
+                json: false,  // MCP always returns text format
+            };
+
+            // If no context flags specified, enable all types (default behavior)
+            if opts.is_empty() {
+                opts.structure = true;
+                opts.file_types = true;
+                opts.project_type = true;
+                opts.framework = true;
+                opts.entry_points = true;
+                opts.test_layout = true;
+                opts.config_files = true;
+            }
+
+            let cache = CacheManager::new(".");
+            let context = crate::context::generate_context(&cache, &opts)?;
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": context
                 }]
             }))
         }
