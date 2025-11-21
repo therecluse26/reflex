@@ -28,6 +28,10 @@ Reflex is a code search engine designed for developers and AI coding assistants.
 ### Installation
 
 ```bash
+# Via NPM
+npm install -g reflex-search
+
+# Or via cargo
 cargo install reflex-search
 ```
 
