@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { query } from '../utils/reflexClient';
-import { SearchFilters, RfxQueryResult } from '../types/search';
+import { query, ask } from '../utils/reflexClient';
+import { SearchFilters, RfxQueryResult, ChatMessage } from '../types/search';
+import { SecretsManager } from '../utils/secrets';
 
 /**
  * Provider for the Reflex search webview panel
@@ -11,8 +12,16 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
 
 	private _view?: vscode.WebviewView;
 	private _currentSearch?: { query: string; filters: SearchFilters };
+	private _chatHistory: ChatMessage[] = [];
 
-	constructor(private readonly _extensionUri: vscode.Uri) {}
+	constructor(
+		private readonly _extensionUri: vscode.Uri,
+		private readonly _context: vscode.ExtensionContext,
+		private readonly _secretsManager: SecretsManager
+	) {
+		// Load chat history from workspace state
+		this._chatHistory = this._context.workspaceState.get('reflex.chatHistory', []);
+	}
 
 	public resolveWebviewView(
 		webviewView: vscode.WebviewView,
@@ -42,6 +51,15 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
 					break;
 				case 'reindex':
 					await vscode.commands.executeCommand('reflex.reindex');
+					break;
+				case 'chat':
+					await this._handleChat(data.message, data.provider);
+					break;
+				case 'getChatHistory':
+					this._sendChatHistory();
+					break;
+				case 'clearChatHistory':
+					this._clearChatHistory();
 					break;
 			}
 		});
@@ -135,6 +153,138 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
 	 */
 	private async _handleNavigate(filePath: string, line: number) {
 		await vscode.commands.executeCommand('reflex.openFile', filePath, line);
+	}
+
+	/**
+	 * Handle chat message from webview
+	 */
+	private async _handleChat(message: string, provider?: string) {
+		// Send loading state
+		this.sendChatLoading(true);
+
+		try {
+			// Get configured provider if not specified
+			const config = vscode.workspace.getConfiguration('reflex');
+			const selectedProvider = (provider || config.get<string>('aiProvider') || 'openai') as 'openai' | 'anthropic' | 'groq';
+
+			// Get API key
+			const apiKey = await this._secretsManager.getApiKey(selectedProvider);
+
+			if (!apiKey) {
+				const errorMessage: ChatMessage = {
+					role: 'error',
+					content: `No API key configured for ${selectedProvider}. Please run "Reflex: Configure AI Provider" command.`,
+					timestamp: Date.now()
+				};
+				this.sendChatResponse(errorMessage);
+				this._saveChatMessage(errorMessage);
+				this.sendChatLoading(false);
+				return;
+			}
+
+			// Execute rfx ask
+			const result = await ask(message, {
+				provider: selectedProvider,
+				execute: true,
+				json: true,
+				answer: true,
+				apiKey
+			});
+
+			this.sendChatLoading(false);
+
+			if (!result.success) {
+				const errorMessage: ChatMessage = {
+					role: 'error',
+					content: result.stderr || 'Failed to get response from AI',
+					timestamp: Date.now()
+				};
+				this.sendChatResponse(errorMessage);
+				this._saveChatMessage(errorMessage);
+				return;
+			}
+
+			// Parse JSON response
+			let data: any;
+			try {
+				data = JSON.parse(result.stdout);
+			} catch (parseError) {
+				const errorMessage: ChatMessage = {
+					role: 'error',
+					content: `Failed to parse response: ${result.stdout}`,
+					timestamp: Date.now()
+				};
+				this.sendChatResponse(errorMessage);
+				this._saveChatMessage(errorMessage);
+				return;
+			}
+
+			// Build response message
+			const responseMessage: ChatMessage = {
+				role: 'assistant',
+				content: data.answer || 'No answer provided',
+				timestamp: Date.now(),
+				queries: data.queries,
+				results: data.results ? { ...data, pagination: data.pagination || { total: 0, count: 0, offset: 0, limit: 0, has_more: false } } : undefined
+			};
+
+			this.sendChatResponse(responseMessage);
+			this._saveChatMessage(responseMessage);
+
+		} catch (error) {
+			this.sendChatLoading(false);
+			const errorMessage: ChatMessage = {
+				role: 'error',
+				content: error instanceof Error ? error.message : 'Unknown error occurred',
+				timestamp: Date.now()
+			};
+			this.sendChatResponse(errorMessage);
+			this._saveChatMessage(errorMessage);
+		}
+	}
+
+	/**
+	 * Save chat message to history and persist to workspace state
+	 */
+	private _saveChatMessage(message: ChatMessage) {
+		this._chatHistory.push(message);
+		this._context.workspaceState.update('reflex.chatHistory', this._chatHistory);
+	}
+
+	/**
+	 * Send chat history to webview
+	 */
+	private _sendChatHistory() {
+		if (this._view) {
+			this._view.webview.postMessage({ type: 'chatHistory', messages: this._chatHistory });
+		}
+	}
+
+	/**
+	 * Clear chat history
+	 */
+	private _clearChatHistory() {
+		this._chatHistory = [];
+		this._context.workspaceState.update('reflex.chatHistory', []);
+		this._sendChatHistory();
+	}
+
+	/**
+	 * Send chat response to webview
+	 */
+	public sendChatResponse(message: ChatMessage) {
+		if (this._view) {
+			this._view.webview.postMessage({ type: 'chatResponse', message });
+		}
+	}
+
+	/**
+	 * Send chat loading state to webview
+	 */
+	public sendChatLoading(isLoading: boolean) {
+		if (this._view) {
+			this._view.webview.postMessage({ type: 'chatLoading', isLoading });
+		}
 	}
 
 	/**

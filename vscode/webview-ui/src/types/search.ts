@@ -62,12 +62,26 @@ export interface RfxQueryResult {
 }
 
 /**
+ * Chat message in conversation history
+ */
+export interface ChatMessage {
+	role: 'user' | 'assistant' | 'error';
+	content: string;
+	timestamp: number;
+	queries?: string[];
+	results?: RfxQueryResult;
+}
+
+/**
  * Messages from webview to extension
  */
 export type WebviewToExtensionMessage =
 	| { type: 'search'; query: string; filters: SearchFilters }
 	| { type: 'navigate'; path: string; line: number }
-	| { type: 'reindex' };
+	| { type: 'reindex' }
+	| { type: 'chat'; message: string; provider?: string }
+	| { type: 'getChatHistory' }
+	| { type: 'clearChatHistory' };
 
 /**
  * Messages from extension to webview
@@ -75,4 +89,7 @@ export type WebviewToExtensionMessage =
 export type ExtensionToWebviewMessage =
 	| { type: 'results'; data: RfxQueryResult }
 	| { type: 'error'; message: string }
-	| { type: 'loading'; isLoading: boolean };
+	| { type: 'loading'; isLoading: boolean }
+	| { type: 'chatResponse'; message: ChatMessage }
+	| { type: 'chatHistory'; messages: ChatMessage[] }
+	| { type: 'chatLoading'; isLoading: boolean };

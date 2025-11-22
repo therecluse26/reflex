@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useVSCodeAPI } from './hooks/useVSCodeAPI';
+import ChatPanel from './components/ChatPanel';
 import {
 	SearchFilters,
 	RfxQueryResult,
@@ -19,8 +20,11 @@ const SYMBOL_KINDS = [
 	'macro', 'property', 'event', 'import', 'export', 'attribute'
 ];
 
+type Tab = 'search' | 'chat';
+
 export default function SearchView() {
 	const { postMessage, onMessage } = useVSCodeAPI();
+	const [activeTab, setActiveTab] = useState<Tab>('search');
 
 	// Search state
 	const [query, setQuery] = useState('');
@@ -82,10 +86,43 @@ export default function SearchView() {
 		postMessage({ type: 'reindex' });
 	}, [postMessage]);
 
+	const handleConfigure = useCallback(() => {
+		// TODO: This should trigger the configure command
+		// For now, just show a message
+		alert('Run "Reflex: Configure AI Provider" from the Command Palette');
+	}, []);
+
 	return (
 		<div className="flex flex-col h-full bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)]">
-			{/* Search Input */}
-			<div className="p-3 border-b border-[var(--vscode-panel-border)]">
+			{/* Tabs */}
+			<div className="flex border-b border-[var(--vscode-panel-border)]">
+				<button
+					onClick={() => setActiveTab('search')}
+					className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+						activeTab === 'search'
+							? 'border-[var(--vscode-focusBorder)] text-[var(--vscode-foreground)]'
+							: 'border-transparent text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-foreground)]'
+					}`}
+				>
+					🔍 Search
+				</button>
+				<button
+					onClick={() => setActiveTab('chat')}
+					className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+						activeTab === 'chat'
+							? 'border-[var(--vscode-focusBorder)] text-[var(--vscode-foreground)]'
+							: 'border-transparent text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-foreground)]'
+					}`}
+				>
+					💬 Chat
+				</button>
+			</div>
+
+			{/* Tab Content */}
+			{activeTab === 'search' ? (
+				<div className="flex flex-col flex-1 overflow-hidden">
+					{/* Search Input */}
+					<div className="p-3 border-b border-[var(--vscode-panel-border)]">
 				<input
 					type="text"
 					value={query}
@@ -255,6 +292,14 @@ export default function SearchView() {
 					</div>
 				)}
 			</div>
+				</div>
+			) : (
+				<ChatPanel
+					onConfigure={handleConfigure}
+					postMessage={postMessage}
+					onMessage={onMessage}
+				/>
+			)}
 		</div>
 	);
 }

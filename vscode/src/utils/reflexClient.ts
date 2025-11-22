@@ -20,6 +20,7 @@ export interface RfxCommandOptions {
 	args: string[];
 	cwd?: string;
 	timeout?: number; // milliseconds
+	env?: Record<string, string>; // Environment variables
 	onStdout?: (data: string) => void;
 	onStderr?: (data: string) => void;
 }
@@ -105,7 +106,8 @@ export async function executeRfx(options: RfxCommandOptions): Promise<RfxCommand
 
 		const proc: ChildProcess = spawn(rfxPath, options.args, {
 			cwd,
-			shell: false
+			shell: false,
+			env: { ...process.env, ...options.env } // Merge environment variables
 		});
 
 		// Set timeout
@@ -224,5 +226,50 @@ export async function query(
 	return executeRfx({
 		args,
 		timeout: 30000 // 30 seconds for queries
+	});
+}
+
+/**
+ * Execute rfx ask command (AI-powered natural language search)
+ */
+export async function ask(
+	question: string,
+	options?: {
+		provider?: string;
+		execute?: boolean;
+		json?: boolean;
+		answer?: boolean;
+		apiKey?: string; // API key to pass via environment variable
+	}
+): Promise<RfxCommandResult> {
+	const args = ['ask', question];
+
+	if (options?.execute) {
+		args.push('--execute');
+	}
+
+	if (options?.json) {
+		args.push('--json');
+	}
+
+	if (options?.answer) {
+		args.push('--answer');
+	}
+
+	if (options?.provider) {
+		args.push('--provider', options.provider);
+	}
+
+	// Build environment variables for API key
+	const env: Record<string, string> = {};
+	if (options?.apiKey && options?.provider) {
+		const envVarName = `${options.provider.toUpperCase()}_API_KEY`;
+		env[envVarName] = options.apiKey;
+	}
+
+	return executeRfx({
+		args,
+		env,
+		timeout: 60000 // 60 seconds for AI queries
 	});
 }
