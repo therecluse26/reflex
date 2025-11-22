@@ -1,0 +1,71 @@
+{
+  "name": "reflex",
+  "displayName": "Reflex Code Search",
+  "description": "Fast, local-first code search powered by Reflex",
+  "version": "0.1.0",
+  "publisher": "reflex",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "reflex.helloWorld",
+        "title": "Reflex: Hello World"
+      },
+      {
+        "command": "reflex.reindex",
+        "title": "Reflex: Re-Index Project"
+      }
+    ],
+    "configuration": {
+      "title": "Reflex",
+      "properties": {
+        "reflex.binaryPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the rfx binary. Leave empty to use PATH."
+        },
+        "reflex.promptGitignore": {
+          "type": "boolean",
+          "default": true,
+          "description": "Prompt to add .reflex/ to .gitignore after first index"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/glob": "^8.1.0",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "20.x",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0",
+    "@vscode/test-electron": "^2.3.8",
+    "@vscode/vsce": "^2.22.0",
+    "eslint": "^8.56.0",
+    "glob": "^10.3.10",
+    "mocha": "^10.2.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "@iarna/toml": "^2.2.5",
+    "reflex-search": "^1.0.3"
+  }
+}

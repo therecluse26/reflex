@@ -1,0 +1,16 @@
+.vscode/**
+.vscode-test/**
+src/**
+.gitignore
+.yarnrc
+vsc-extension-quickstart.md
+**/tsconfig.json
+**/.eslintrc.json
+**/*.map
+**/*.ts
+node_modules/**
+webview-ui/src/**
+webview-ui/node_modules/**
+webview-ui/tsconfig.json
+webview-ui/vite.config.ts
+webview-ui/index.html

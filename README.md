@@ -486,6 +486,18 @@ Reflex is designed for speed at every level:
 - **Incremental updates**: Only reindexes changed files via blake3 hashing
 - **Memory-mapped I/O**: Zero-copy access for cache reads
 
+## 💻 IDE Integration
+
+### VS Code Extension
+
+A VS Code extension is available in the `vscode/` directory (in development):
+
+- **Search Panel**: Full-text and symbol search with instant navigation
+- **Re-Index**: One-click index updates from the UI
+- **AI Chat**: Natural language queries via Chat Participant API (coming soon)
+
+See [vscode/README.md](vscode/README.md) for installation and usage.
+
 ## 🔧 Configuration
 
 Reflex respects `.gitignore` files automatically. Additional configuration via `.reflex/config.toml`:

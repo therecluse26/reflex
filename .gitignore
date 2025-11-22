@@ -26,3 +26,10 @@ reflex
 
 # cargo-dist artifacts
 /target/distrib/
+
+# VS Code Extension
+vscode/node_modules/
+vscode/webview-ui/node_modules/
+vscode/out/
+vscode/webview-ui/dist/
+vscode/*.vsix
