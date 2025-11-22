@@ -11,10 +11,29 @@
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onView:reflex.searchView"
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "reflex",
+          "title": "Reflex Search",
+          "icon": "$(search)"
+        }
+      ]
+    },
+    "views": {
+      "reflex": [
+        {
+          "id": "reflex.searchView",
+          "name": "Code Search",
+          "type": "webview"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "reflex.helloWorld",
@@ -23,6 +42,10 @@
       {
         "command": "reflex.reindex",
         "title": "Reflex: Re-Index Project"
+      },
+      {
+        "command": "reflex.openFile",
+        "title": "Reflex: Open File"
       }
     ],
     "configuration": {

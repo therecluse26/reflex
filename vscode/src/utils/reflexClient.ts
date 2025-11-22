@@ -175,3 +175,54 @@ export async function reindex(): Promise<RfxCommandResult> {
 		timeout: 120000 // 2 minutes for indexing
 	});
 }
+
+/**
+ * Execute rfx query command
+ */
+export async function query(
+	searchQuery: string,
+	options?: {
+		language?: string;
+		glob?: string;
+		symbolsOnly?: boolean;
+		regex?: boolean;
+		kind?: string;
+		contains?: boolean;
+		limit?: number;
+	}
+): Promise<RfxCommandResult> {
+	const args = ['query', searchQuery, '--json'];
+
+	if (options?.language) {
+		args.push('--lang', options.language);
+	}
+
+	if (options?.glob) {
+		args.push('--glob', options.glob);
+	}
+
+	if (options?.symbolsOnly) {
+		args.push('--symbols');
+	}
+
+	if (options?.regex) {
+		args.push('--regex');
+	}
+
+	if (options?.kind) {
+		args.push('--kind', options.kind);
+	}
+
+	if (options?.contains) {
+		args.push('--contains');
+	}
+
+	if (options?.limit) {
+		args.push('--limit', String(options.limit));
+	}
+
+	return executeRfx({
+		args,
+		timeout: 30000 // 30 seconds for queries
+	});
+}

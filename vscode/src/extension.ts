@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 import { registerReindexCommand } from './commands/reindex';
+import { registerOpenFileCommand } from './commands/openFile';
+import { SearchViewProvider } from './providers/SearchViewProvider';
 
 /**
  * This method is called when the extension is activated
@@ -16,6 +18,18 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// Register reindex command
 	registerReindexCommand(context);
+
+	// Register openFile command
+	registerOpenFileCommand(context);
+
+	// Register search view provider
+	const searchViewProvider = new SearchViewProvider(context.extensionUri);
+	context.subscriptions.push(
+		vscode.window.registerWebviewViewProvider(
+			SearchViewProvider.viewType,
+			searchViewProvider
+		)
+	);
 }
 
 /**
