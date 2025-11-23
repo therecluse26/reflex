@@ -3,7 +3,7 @@ import { registerReindexCommand } from './commands/reindex';
 import { registerOpenFileCommand } from './commands/openFile';
 import { registerConfigureAICommand } from './commands/configureAI';
 import { SearchViewProvider } from './providers/SearchViewProvider';
-import { SecretsManager } from './utils/secrets';
+import { ConfigManager } from './utils/config';
 
 /**
  * This method is called when the extension is activated
@@ -18,8 +18,8 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 	context.subscriptions.push(disposable);
 
-	// Create secrets manager for API keys
-	const secretsManager = new SecretsManager(context.secrets);
+	// Create config manager for API keys and settings
+	const configManager = new ConfigManager();
 
 	// Register reindex command
 	registerReindexCommand(context);
@@ -28,13 +28,20 @@ export function activate(context: vscode.ExtensionContext) {
 	registerOpenFileCommand(context);
 
 	// Register AI configuration command
-	registerConfigureAICommand(context, secretsManager);
+	registerConfigureAICommand(context, configManager);
+
+	// Register command to clear chat history (useful for recovering from corruption)
+	const clearChatCommand = vscode.commands.registerCommand('reflex.clearChatHistory', async () => {
+		await context.workspaceState.update('reflex.chatHistory', []);
+		vscode.window.showInformationMessage('Reflex chat history cleared');
+	});
+	context.subscriptions.push(clearChatCommand);
 
 	// Register search view provider (now with chat functionality)
 	const searchViewProvider = new SearchViewProvider(
 		context.extensionUri,
 		context,
-		secretsManager
+		configManager
 	);
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider(

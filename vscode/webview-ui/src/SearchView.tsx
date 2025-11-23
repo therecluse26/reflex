@@ -87,10 +87,8 @@ export default function SearchView() {
 	}, [postMessage]);
 
 	const handleConfigure = useCallback(() => {
-		// TODO: This should trigger the configure command
-		// For now, just show a message
-		alert('Run "Reflex: Configure AI Provider" from the Command Palette');
-	}, []);
+		postMessage({ type: 'configure' });
+	}, [postMessage]);
 
 	return (
 		<div className="flex flex-col h-full bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)]">

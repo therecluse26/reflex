@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { query, ask } from '../utils/reflexClient';
 import { SearchFilters, RfxQueryResult, ChatMessage } from '../types/search';
-import { SecretsManager } from '../utils/secrets';
+import { ConfigManager } from '../utils/config';
+import { getModelValues, PROVIDER_NAMES } from '../utils/models';
 
 /**
  * Provider for the Reflex search webview panel
@@ -17,10 +18,44 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
 	constructor(
 		private readonly _extensionUri: vscode.Uri,
 		private readonly _context: vscode.ExtensionContext,
-		private readonly _secretsManager: SecretsManager
+		private readonly _configManager: ConfigManager
 	) {
-		// Load chat history from workspace state
-		this._chatHistory = this._context.workspaceState.get('reflex.chatHistory', []);
+		// Load chat history from workspace state and sanitize
+		try {
+			const savedHistory = this._context.workspaceState.get<ChatMessage[]>('reflex.chatHistory', []);
+			this._chatHistory = this._sanitizeChatHistory(savedHistory);
+		} catch (error) {
+			// If history is corrupted, clear it
+			console.error('Failed to load chat history, clearing:', error);
+			this._context.workspaceState.update('reflex.chatHistory', []);
+			this._chatHistory = [];
+		}
+	}
+
+	/**
+	 * Sanitize chat history to ensure all content is strings
+	 */
+	private _sanitizeChatHistory(messages: ChatMessage[]): ChatMessage[] {
+		try {
+			return messages.map(msg => {
+				// Skip any malformed messages
+				if (!msg || typeof msg !== 'object') {
+					return null;
+				}
+
+				return {
+					role: msg.role || 'assistant',
+					content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+					timestamp: msg.timestamp || Date.now(),
+					queries: Array.isArray(msg.queries) ? msg.queries : undefined,
+					// Don't include results in sanitized history - they can be huge
+					results: undefined
+				};
+			}).filter(msg => msg !== null) as ChatMessage[];
+		} catch (error) {
+			console.error('Failed to sanitize chat history:', error);
+			return [];
+		}
 	}
 
 	public resolveWebviewView(
@@ -60,6 +95,20 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
 					break;
 				case 'clearChatHistory':
 					this._clearChatHistory();
+					break;
+				case 'configure':
+					await vscode.commands.executeCommand('reflex.configureAI');
+					// Refresh available models after configuration completes (this updates the dropdown)
+					await this._sendAvailableModels();
+					break;
+				case 'getModelInfo':
+					await this.sendModelInfo();
+					break;
+				case 'getAvailableModels':
+					await this._sendAvailableModels();
+					break;
+				case 'selectModel':
+					await this._handleSelectModel(data.provider as 'openai' | 'anthropic' | 'groq', data.model);
 					break;
 			}
 		});
@@ -167,28 +216,18 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
 			const config = vscode.workspace.getConfiguration('reflex');
 			const selectedProvider = (provider || config.get<string>('aiProvider') || 'openai') as 'openai' | 'anthropic' | 'groq';
 
-			// Get API key
-			const apiKey = await this._secretsManager.getApiKey(selectedProvider);
-
-			if (!apiKey) {
-				const errorMessage: ChatMessage = {
-					role: 'error',
-					content: `No API key configured for ${selectedProvider}. Please run "Reflex: Configure AI Provider" command.`,
-					timestamp: Date.now()
-				};
-				this.sendChatResponse(errorMessage);
-				this._saveChatMessage(errorMessage);
-				this.sendChatLoading(false);
-				return;
-			}
+			// Get API key from config (optional - rfx ask will fall back to ~/.reflex/config.toml)
+			const apiKey = await this._configManager.getApiKey(selectedProvider);
 
 			// Execute rfx ask
+			// Note: apiKey is optional - if not provided, rfx ask will read from ~/.reflex/config.toml
 			const result = await ask(message, {
 				provider: selectedProvider,
 				execute: true,
 				json: true,
 				answer: true,
-				apiKey
+				agentic: true,
+				apiKey: apiKey || undefined
 			});
 
 			this.sendChatLoading(false);
@@ -220,9 +259,19 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
 			}
 
 			// Build response message
+			// Ensure content is always a string (React can't render objects)
+			let content: string;
+			if (typeof data.answer === 'string') {
+				content = data.answer;
+			} else if (data.answer) {
+				content = JSON.stringify(data.answer, null, 2);
+			} else {
+				content = 'No answer provided';
+			}
+
 			const responseMessage: ChatMessage = {
 				role: 'assistant',
-				content: data.answer || 'No answer provided',
+				content,
 				timestamp: Date.now(),
 				queries: data.queries,
 				results: data.results ? { ...data, pagination: data.pagination || { total: 0, count: 0, offset: 0, limit: 0, has_more: false } } : undefined
@@ -284,6 +333,82 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
 	public sendChatLoading(isLoading: boolean) {
 		if (this._view) {
 			this._view.webview.postMessage({ type: 'chatLoading', isLoading });
+		}
+	}
+
+	/**
+	 * Send current model info to webview
+	 */
+	public async sendModelInfo() {
+		try {
+			const config = vscode.workspace.getConfiguration('reflex');
+			const provider = (config.get<string>('aiProvider') || 'openai') as 'openai' | 'anthropic' | 'groq';
+			const model = await this._configManager.getModel(provider);
+
+			if (this._view && model) {
+				this._view.webview.postMessage({
+					type: 'modelInfo',
+					provider,
+					model
+				});
+			}
+		} catch (error) {
+			console.error('Failed to get model info:', error);
+		}
+	}
+
+	/**
+	 * Send available models to webview (only for providers with API keys)
+	 */
+	private async _sendAvailableModels() {
+		try {
+			const config = vscode.workspace.getConfiguration('reflex');
+			const currentProvider = (config.get<string>('aiProvider') || 'openai') as 'openai' | 'anthropic' | 'groq';
+			const currentModel = await this._configManager.getModel(currentProvider) || '';
+
+			// Check which providers have API keys configured
+			const providers: Array<'openai' | 'anthropic' | 'groq'> = ['openai', 'anthropic', 'groq'];
+			const models: Record<string, string[]> = {};
+
+			for (const provider of providers) {
+				const hasKey = await this._configManager.hasApiKey(provider);
+				if (hasKey) {
+					models[provider] = getModelValues(provider);
+				}
+			}
+
+			if (this._view) {
+				this._view.webview.postMessage({
+					type: 'availableModels',
+					models,
+					currentProvider,
+					currentModel
+				});
+			}
+		} catch (error) {
+			console.error('Failed to get available models:', error);
+		}
+	}
+
+	/**
+	 * Handle model selection from webview
+	 */
+	private async _handleSelectModel(provider: 'openai' | 'anthropic' | 'groq', model: string) {
+		try {
+			// Update provider and model in config
+			await this._configManager.setProvider(provider);
+			await this._configManager.setModel(provider, model);
+
+			// Also update VS Code setting for UI consistency
+			await vscode.workspace
+				.getConfiguration('reflex')
+				.update('aiProvider', provider, vscode.ConfigurationTarget.Global);
+
+			// Send updated available models to refresh the dropdown
+			await this._sendAvailableModels();
+		} catch (error) {
+			console.error('Failed to select model:', error);
+			vscode.window.showErrorMessage(`Failed to select model: ${error instanceof Error ? error.message : 'Unknown error'}`);
 		}
 	}
 

@@ -81,7 +81,11 @@ export type WebviewToExtensionMessage =
 	| { type: 'reindex' }
 	| { type: 'chat'; message: string; provider?: string }
 	| { type: 'getChatHistory' }
-	| { type: 'clearChatHistory' };
+	| { type: 'clearChatHistory' }
+	| { type: 'configure' }
+	| { type: 'getModelInfo' }
+	| { type: 'getAvailableModels' }
+	| { type: 'selectModel'; provider: string; model: string };
 
 /**
  * Messages from extension to webview
@@ -92,4 +96,6 @@ export type ExtensionToWebviewMessage =
 	| { type: 'loading'; isLoading: boolean }
 	| { type: 'chatResponse'; message: ChatMessage }
 	| { type: 'chatHistory'; messages: ChatMessage[] }
-	| { type: 'chatLoading'; isLoading: boolean };
+	| { type: 'chatLoading'; isLoading: boolean }
+	| { type: 'modelInfo'; provider: string; model: string }
+	| { type: 'availableModels'; models: Record<string, string[]>; currentProvider: string; currentModel: string };

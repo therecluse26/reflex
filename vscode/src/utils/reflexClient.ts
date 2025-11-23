@@ -239,6 +239,7 @@ export async function ask(
 		execute?: boolean;
 		json?: boolean;
 		answer?: boolean;
+		agentic?: boolean;
 		apiKey?: string; // API key to pass via environment variable
 	}
 ): Promise<RfxCommandResult> {
@@ -254,6 +255,10 @@ export async function ask(
 
 	if (options?.answer) {
 		args.push('--answer');
+	}
+
+	if (options?.agentic) {
+		args.push('--agentic');
 	}
 
 	if (options?.provider) {
