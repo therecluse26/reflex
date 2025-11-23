@@ -95,6 +95,7 @@ walkdir = "2.5"
 # Date/time utilities
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
+uuid = { version = "1.11", features = ["v4", "serde"] }
 
 # Lock and cleanup utilities
 scopeguard = "1.2"

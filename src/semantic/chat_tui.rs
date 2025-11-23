@@ -1476,7 +1476,7 @@ async fn execute_query_async(
 
                     let reporter = Box::new(super::QuietReporter);
 
-                    match super::run_agentic_loop(question, &cache, agentic_config, &*reporter).await {
+                    match super::run_agentic_loop(question, &cache, agentic_config, &*reporter, Some(conversation_history)).await {
                         Ok(agentic_response) => {
                             // Send tools phase update if tools were executed
                             if let Some(ref tools) = agentic_response.tools_executed {
@@ -1529,6 +1529,7 @@ async fn execute_query_async(
                                 results_count,
                                 agentic_response.gathered_context.as_deref(),
                                 codebase_context_str.as_deref(),
+                                Some(conversation_history),
                                 &*provider_instance,
                             ).await {
                                 Ok(answer) => {
@@ -1581,6 +1582,7 @@ async fn execute_query_async(
                 &cache,
                 agentic_config,
                 &*reporter,
+                Some(conversation_history),
             ).await {
                 Ok(response) => response,
                 Err(e) => {
@@ -1649,6 +1651,7 @@ async fn execute_query_async(
                 results_count,
                 agentic_response.gathered_context.as_deref(),
                 codebase_context_str.as_deref(),
+                Some(conversation_history),
                 &*provider_instance,
             ).await {
                 Ok(answer) => answer,

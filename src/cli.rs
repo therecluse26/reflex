@@ -286,7 +286,7 @@ pub enum Command {
     /// Start a local HTTP API server
     Serve {
         /// Port to listen on
-        #[arg(short, long, default_value = "7878")]
+        #[arg(short, long, default_value = "57878")]
         port: u16,
 
         /// Host to bind to
@@ -1605,19 +1605,22 @@ fn handle_serve(port: u16, host: String) -> Result<()> {
 /// Run the HTTP server
 async fn run_server(port: u16, host: String) -> Result<()> {
     use axum::{
-        extract::{Query as AxumQuery, State},
+        extract::{Path, Query as AxumQuery, State},
         http::StatusCode,
         response::{IntoResponse, Json},
-        routing::{get, post},
+        routing::{get, post, delete},
         Router,
     };
     use tower_http::cors::{CorsLayer, Any};
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
+    use std::collections::HashMap;
+    use uuid::Uuid;
 
     // Server state shared across requests
     #[derive(Clone)]
     struct AppState {
         cache_path: String,
+        sessions: Arc<RwLock<HashMap<String, crate::semantic::chat_session::ChatSession>>>,
     }
 
     // Query parameters for GET /query
@@ -1670,6 +1673,63 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         force: bool,
         #[serde(default)]
         languages: Vec<String>,
+    }
+
+    // Request body for POST /chat/sessions
+    #[derive(Debug, serde::Deserialize)]
+    struct CreateSessionRequest {
+        provider: String,
+        #[serde(default)]
+        model: Option<String>,
+    }
+
+    // Response for POST /chat/sessions
+    #[derive(Debug, serde::Serialize)]
+    struct CreateSessionResponse {
+        session_id: String,
+        provider: String,
+        model: String,
+    }
+
+    // Request body for POST /chat/sessions/{id}/messages
+    #[derive(Debug, serde::Deserialize)]
+    struct SendMessageRequest {
+        message: String,
+    }
+
+    // Response for POST /chat/sessions/{id}/messages
+    #[derive(Debug, serde::Serialize)]
+    struct SendMessageResponse {
+        role: String,
+        content: String,
+        timestamp: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        queries: Option<Vec<String>>,
+    }
+
+    // Response for GET /chat/sessions/{id}
+    #[derive(Debug, serde::Serialize)]
+    struct SessionInfoResponse {
+        session_id: String,
+        provider: String,
+        model: String,
+        total_tokens: usize,
+        context_limit: usize,
+        context_usage: f32,
+        message_count: usize,
+    }
+
+    // Response for GET /chat/sessions/{id}/messages
+    #[derive(Debug, serde::Serialize)]
+    struct MessageHistoryResponse {
+        messages: Vec<MessageResponse>,
+    }
+
+    #[derive(Debug, serde::Serialize)]
+    struct MessageResponse {
+        role: String,
+        content: String,
+        timestamp: u64,
     }
 
     // GET /query endpoint
@@ -1849,9 +1909,280 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         (StatusCode::OK, "Reflex is running")
     }
 
+    // POST /chat/sessions - Create a new chat session
+    async fn handle_create_session(
+        State(state): State<Arc<AppState>>,
+        Json(req): Json<CreateSessionRequest>,
+    ) -> Result<Json<CreateSessionResponse>, (StatusCode, String)> {
+        log::info!("Creating chat session: provider={}, model={:?}", req.provider, req.model);
+
+        // Determine model (use provided model or provider default)
+        let model = if let Some(m) = req.model {
+            m
+        } else {
+            match req.provider.to_lowercase().as_str() {
+                "openai" => "gpt-4o-mini".to_string(),
+                "anthropic" => "claude-3-5-haiku-20241022".to_string(),
+                "groq" => "llama-3.3-70b-versatile".to_string(),
+                _ => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        format!("Unknown provider '{}'. Supported: openai, anthropic, groq", req.provider)
+                    ));
+                }
+            }
+        };
+
+        // Create session
+        let session = crate::semantic::chat_session::ChatSession::new(req.provider.clone(), model.clone());
+        let session_id = Uuid::new_v4().to_string();
+
+        // Store session
+        {
+            let mut sessions = state.sessions.write().map_err(|e| {
+                log::error!("Failed to acquire write lock: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, "Session lock error".to_string())
+            })?;
+            sessions.insert(session_id.clone(), session);
+        }
+
+        log::info!("Created session {} with provider {} and model {}", session_id, req.provider, model);
+
+        Ok(Json(CreateSessionResponse {
+            session_id,
+            provider: req.provider,
+            model,
+        }))
+    }
+
+    // POST /chat/sessions/{id}/messages - Send a message to a session
+    async fn handle_send_message(
+        State(state): State<Arc<AppState>>,
+        Path(session_id): Path<String>,
+        Json(req): Json<SendMessageRequest>,
+    ) -> Result<Json<SendMessageResponse>, (StatusCode, String)> {
+        log::info!("Message for session {}: {}", session_id, req.message);
+
+        // Get session info (provider, model) before async work
+        let (provider_name, model_override) = {
+            let sessions = state.sessions.read().map_err(|e| {
+                log::error!("Failed to acquire read lock: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, "Session lock error".to_string())
+            })?;
+
+            let session = sessions.get(&session_id).ok_or_else(|| {
+                (StatusCode::NOT_FOUND, format!("Session {} not found", session_id))
+            })?;
+
+            (session.provider().to_string(), Some(session.model().to_string()))
+        };
+
+        // Add user message to session
+        {
+            let mut sessions = state.sessions.write().map_err(|e| {
+                log::error!("Failed to acquire write lock: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, "Session lock error".to_string())
+            })?;
+
+            let session = sessions.get_mut(&session_id).ok_or_else(|| {
+                (StatusCode::NOT_FOUND, format!("Session {} not found", session_id))
+            })?;
+
+            session.add_user_message(req.message.clone());
+        }
+
+        // Build conversation history
+        let conversation_history = {
+            let sessions = state.sessions.read().map_err(|e| {
+                log::error!("Failed to acquire read lock: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, "Session lock error".to_string())
+            })?;
+
+            let session = sessions.get(&session_id).ok_or_else(|| {
+                (StatusCode::NOT_FOUND, format!("Session {} not found", session_id))
+            })?;
+
+            session.build_context()
+        };
+
+        // Execute query using the same logic as TUI chat
+        let cache = CacheManager::new(&state.cache_path);
+
+        // Run agentic loop with conversation history
+        let agentic_config = crate::semantic::AgenticConfig {
+            max_iterations: 2,
+            max_tools_per_phase: 5,
+            enable_evaluation: true,
+            eval_config: Default::default(),
+            provider_override: Some(provider_name.clone()),
+            model_override,
+            show_reasoning: false,
+            verbose: false,
+            debug: false,
+        };
+
+        let reporter = Box::new(crate::semantic::QuietReporter);
+
+        let agentic_response = match crate::semantic::run_agentic_loop(
+            &req.message,
+            &cache,
+            agentic_config,
+            &*reporter,
+            Some(&conversation_history),
+        ).await {
+            Ok(response) => response,
+            Err(e) => {
+                log::error!("Agentic loop failed: {}", e);
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Query failed: {}", e)));
+            }
+        };
+
+        // Extract codebase context
+        let codebase_context_str = crate::semantic::context::CodebaseContext::extract(&cache)
+            .ok()
+            .map(|ctx| ctx.to_prompt_string());
+
+        // Generate answer
+        let provider_instance = match (|| -> Result<_> {
+            let mut config = crate::semantic::config::load_config(cache.path())?;
+            config.provider = provider_name;
+            let api_key = crate::semantic::config::get_api_key(&config.provider)?;
+            crate::semantic::providers::create_provider(&config.provider, api_key, config.model)
+        })() {
+            Ok(provider) => provider,
+            Err(e) => {
+                log::error!("Failed to create provider: {}", e);
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Provider error: {}", e)));
+            }
+        };
+
+        let answer = match crate::semantic::generate_answer(
+            &req.message,
+            &agentic_response.results,
+            agentic_response.total_count.unwrap_or(0),
+            agentic_response.gathered_context.as_deref(),
+            codebase_context_str.as_deref(),
+            Some(&conversation_history),
+            &*provider_instance,
+        ).await {
+            Ok(answer) => answer,
+            Err(e) => {
+                log::error!("Failed to generate answer: {}", e);
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Answer generation failed: {}", e)));
+            }
+        };
+
+        // Add answer to session and get timestamp
+        let timestamp = {
+            let mut sessions = state.sessions.write().map_err(|e| {
+                log::error!("Failed to acquire write lock: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, "Session lock error".to_string())
+            })?;
+
+            let session = sessions.get_mut(&session_id).ok_or_else(|| {
+                (StatusCode::NOT_FOUND, format!("Session {} not found", session_id))
+            })?;
+
+            session.add_answer_message(answer.clone());
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        };
+
+        // Extract queries if any
+        let queries = if !agentic_response.queries.is_empty() {
+            Some(agentic_response.queries.iter().map(|q| q.command.clone()).collect())
+        } else {
+            None
+        };
+
+        Ok(Json(SendMessageResponse {
+            role: "assistant".to_string(),
+            content: answer,
+            timestamp,
+            queries,
+        }))
+    }
+
+    // GET /chat/sessions/{id} - Get session info
+    async fn handle_get_session(
+        State(state): State<Arc<AppState>>,
+        Path(session_id): Path<String>,
+    ) -> Result<Json<SessionInfoResponse>, (StatusCode, String)> {
+        log::info!("Getting session info: {}", session_id);
+
+        let sessions = state.sessions.read().map_err(|e| {
+            log::error!("Failed to acquire read lock: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Session lock error".to_string())
+        })?;
+
+        let session = sessions.get(&session_id).ok_or_else(|| {
+            (StatusCode::NOT_FOUND, format!("Session {} not found", session_id))
+        })?;
+
+        Ok(Json(SessionInfoResponse {
+            session_id: session_id.clone(),
+            provider: session.provider().to_string(),
+            model: session.model().to_string(),
+            total_tokens: session.total_tokens(),
+            context_limit: session.context_limit(),
+            context_usage: session.context_usage(),
+            message_count: session.messages().len(),
+        }))
+    }
+
+    // GET /chat/sessions/{id}/messages - Get message history
+    async fn handle_get_messages(
+        State(state): State<Arc<AppState>>,
+        Path(session_id): Path<String>,
+    ) -> Result<Json<MessageHistoryResponse>, (StatusCode, String)> {
+        log::info!("Getting messages for session: {}", session_id);
+
+        let sessions = state.sessions.read().map_err(|e| {
+            log::error!("Failed to acquire read lock: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Session lock error".to_string())
+        })?;
+
+        let session = sessions.get(&session_id).ok_or_else(|| {
+            (StatusCode::NOT_FOUND, format!("Session {} not found", session_id))
+        })?;
+
+        let messages: Vec<MessageResponse> = session.messages()
+            .iter()
+            .map(|msg| MessageResponse {
+                role: format!("{:?}", msg.role).to_lowercase(),
+                content: msg.content.clone(),
+                timestamp: msg.timestamp.timestamp() as u64,
+            })
+            .collect();
+
+        Ok(Json(MessageHistoryResponse { messages }))
+    }
+
+    // DELETE /chat/sessions/{id} - Delete a session
+    async fn handle_delete_session(
+        State(state): State<Arc<AppState>>,
+        Path(session_id): Path<String>,
+    ) -> Result<StatusCode, (StatusCode, String)> {
+        log::info!("Deleting session: {}", session_id);
+
+        let mut sessions = state.sessions.write().map_err(|e| {
+            log::error!("Failed to acquire write lock: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Session lock error".to_string())
+        })?;
+
+        sessions.remove(&session_id).ok_or_else(|| {
+            (StatusCode::NOT_FOUND, format!("Session {} not found", session_id))
+        })?;
+
+        Ok(StatusCode::NO_CONTENT)
+    }
+
     // Create shared state
     let state = Arc::new(AppState {
         cache_path: ".".to_string(),
+        sessions: Arc::new(RwLock::new(HashMap::new())),
     });
 
     // Configure CORS
@@ -1866,6 +2197,11 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         .route("/stats", get(handle_stats_endpoint))
         .route("/index", post(handle_index_endpoint))
         .route("/health", get(handle_health))
+        .route("/chat/sessions", post(handle_create_session))
+        .route("/chat/sessions/:id", get(handle_get_session))
+        .route("/chat/sessions/:id", delete(handle_delete_session))
+        .route("/chat/sessions/:id/messages", post(handle_send_message))
+        .route("/chat/sessions/:id/messages", get(handle_get_messages))
         .layer(cors)
         .with_state(state);
 
@@ -2621,7 +2957,7 @@ fn handle_ask(
         };
 
         let agentic_response = runtime.block_on(async {
-            crate::semantic::run_agentic_loop(&question, &cache, agentic_config, &*reporter).await
+            crate::semantic::run_agentic_loop(&question, &cache, agentic_config, &*reporter, None).await
         }).context("Failed to run agentic loop")?;
 
         // Clear spinner after agentic loop completes
@@ -2712,6 +3048,7 @@ fn handle_ask(
                 total_count,
                 gathered_context.as_deref(),
                 codebase_context_str.as_deref(),
+                None,
                 &*provider_instance,
             ).await
         }).context("Failed to generate answer")?;

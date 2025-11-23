@@ -1,9 +1,10 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { query, ask } from '../utils/reflexClient';
+import { query, ask, createChatSession, sendChatMessage, deleteChatSession } from '../utils/reflexClient';
 import { SearchFilters, RfxQueryResult, ChatMessage } from '../types/search';
 import { ConfigManager } from '../utils/config';
 import { getModelValues, PROVIDER_NAMES } from '../utils/models';
+import { ServerManager } from '../utils/serverManager';
 
 /**
  * Provider for the Reflex search webview panel
@@ -14,11 +15,13 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
 	private _view?: vscode.WebviewView;
 	private _currentSearch?: { query: string; filters: SearchFilters };
 	private _chatHistory: ChatMessage[] = [];
+	private _chatSessionId?: string;
 
 	constructor(
 		private readonly _extensionUri: vscode.Uri,
 		private readonly _context: vscode.ExtensionContext,
-		private readonly _configManager: ConfigManager
+		private readonly _configManager: ConfigManager,
+		private readonly _serverManager?: ServerManager
 	) {
 		// Load chat history from workspace state and sanitize
 		try {
@@ -212,69 +215,36 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
 		this.sendChatLoading(true);
 
 		try {
+			// Ensure server is running (auto-start if needed)
+			if (!this._serverManager) {
+				throw new Error('No workspace folder open. Please open a folder to use chat.');
+			}
+
+			await this._serverManager.ensureRunning();
+
 			// Get configured provider if not specified
 			const config = vscode.workspace.getConfiguration('reflex');
 			const selectedProvider = (provider || config.get<string>('aiProvider') || 'openai') as 'openai' | 'anthropic' | 'groq';
+			const model = await this._configManager.getModel(selectedProvider);
 
-			// Get API key from config (optional - rfx ask will fall back to ~/.reflex/config.toml)
-			const apiKey = await this._configManager.getApiKey(selectedProvider);
+			// Create session if doesn't exist
+			if (!this._chatSessionId) {
+				const session = await createChatSession(selectedProvider, model || undefined, this._serverManager);
+				this._chatSessionId = session.session_id;
+				console.log(`Created chat session: ${this._chatSessionId}`);
+			}
 
-			// Execute rfx ask
-			// Note: apiKey is optional - if not provided, rfx ask will read from ~/.reflex/config.toml
-			const result = await ask(message, {
-				provider: selectedProvider,
-				execute: true,
-				json: true,
-				answer: true,
-				agentic: true,
-				apiKey: apiKey || undefined
-			});
+			// Send message to session
+			const response = await sendChatMessage(this._chatSessionId, message, this._serverManager);
 
 			this.sendChatLoading(false);
 
-			if (!result.success) {
-				const errorMessage: ChatMessage = {
-					role: 'error',
-					content: result.stderr || 'Failed to get response from AI',
-					timestamp: Date.now()
-				};
-				this.sendChatResponse(errorMessage);
-				this._saveChatMessage(errorMessage);
-				return;
-			}
-
-			// Parse JSON response
-			let data: any;
-			try {
-				data = JSON.parse(result.stdout);
-			} catch (parseError) {
-				const errorMessage: ChatMessage = {
-					role: 'error',
-					content: `Failed to parse response: ${result.stdout}`,
-					timestamp: Date.now()
-				};
-				this.sendChatResponse(errorMessage);
-				this._saveChatMessage(errorMessage);
-				return;
-			}
-
 			// Build response message
-			// Ensure content is always a string (React can't render objects)
-			let content: string;
-			if (typeof data.answer === 'string') {
-				content = data.answer;
-			} else if (data.answer) {
-				content = JSON.stringify(data.answer, null, 2);
-			} else {
-				content = 'No answer provided';
-			}
-
 			const responseMessage: ChatMessage = {
 				role: 'assistant',
-				content,
-				timestamp: Date.now(),
-				queries: data.queries,
-				results: data.results ? { ...data, pagination: data.pagination || { total: 0, count: 0, offset: 0, limit: 0, has_more: false } } : undefined
+				content: response.content,
+				timestamp: response.timestamp,
+				queries: response.queries
 			};
 
 			this.sendChatResponse(responseMessage);
@@ -312,7 +282,17 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
 	/**
 	 * Clear chat history
 	 */
-	private _clearChatHistory() {
+	private async _clearChatHistory() {
+		// Delete session if exists
+		if (this._chatSessionId && this._serverManager) {
+			try {
+				await deleteChatSession(this._chatSessionId, this._serverManager);
+			} catch (error) {
+				console.error('Failed to delete chat session:', error);
+			}
+			this._chatSessionId = undefined;
+		}
+
 		this._chatHistory = [];
 		this._context.workspaceState.update('reflex.chatHistory', []);
 		this._sendChatHistory();

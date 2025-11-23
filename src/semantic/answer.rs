@@ -26,6 +26,7 @@ const MAX_PREVIEW_LENGTH: usize = 200;
 /// * `total_count` - Total number of matches found
 /// * `gathered_context` - Optional context gathered from tools (documentation, codebase structure)
 /// * `codebase_context` - Optional codebase metadata (always available, language distribution, directories)
+/// * `conversation_history` - Optional conversation history from chat session
 /// * `provider` - LLM provider to use for answer generation
 ///
 /// # Returns
@@ -37,6 +38,7 @@ pub async fn generate_answer(
     total_count: usize,
     gathered_context: Option<&str>,
     codebase_context: Option<&str>,
+    conversation_history: Option<&str>,
     provider: &dyn LlmProvider,
 ) -> Result<String> {
     // Handle empty results - use gathered context if available, then codebase context
@@ -45,7 +47,7 @@ pub async fn generate_answer(
         if let Some(context) = gathered_context {
             if !context.is_empty() {
                 // Generate answer from documentation/context alone
-                let prompt = build_context_only_prompt(question, context);
+                let prompt = build_context_only_prompt(question, context, conversation_history);
                 log::debug!("Generating answer from gathered context ({} chars)", prompt.len());
                 let answer = provider.complete(&prompt, false).await?;
                 let cleaned = strip_markdown_fences(&answer);
@@ -57,7 +59,7 @@ pub async fn generate_answer(
         if let Some(context) = codebase_context {
             if !context.is_empty() {
                 // Generate answer from codebase metadata alone
-                let prompt = build_codebase_context_prompt(question, context);
+                let prompt = build_codebase_context_prompt(question, context, conversation_history);
                 log::debug!("Generating answer from codebase context ({} chars)", prompt.len());
                 let answer = provider.complete(&prompt, false).await?;
                 let cleaned = strip_markdown_fences(&answer);
@@ -68,8 +70,8 @@ pub async fn generate_answer(
         return Ok(format!("No results found for: {}", question));
     }
 
-    // Build the prompt with search results (and optional gathered context)
-    let prompt = build_answer_prompt(question, results, total_count, gathered_context);
+    // Build the prompt with search results (and optional gathered context and conversation history)
+    let prompt = build_answer_prompt(question, results, total_count, gathered_context, conversation_history);
 
     log::debug!("Generating answer with prompt ({} chars)", prompt.len());
 
@@ -82,18 +84,27 @@ pub async fn generate_answer(
     Ok(cleaned.to_string())
 }
 
-/// Build the prompt for answer generation (with optional gathered context)
+/// Build the prompt for answer generation (with optional gathered context and conversation history)
 fn build_answer_prompt(
     question: &str,
     results: &[FileGroupedResult],
     total_count: usize,
     gathered_context: Option<&str>,
+    conversation_history: Option<&str>,
 ) -> String {
     let mut prompt = String::new();
 
     // Instructions
     prompt.push_str("You are analyzing code search results to answer a developer's question.\n\n");
     prompt.push_str("IMPORTANT: Provide ONLY the answer text, without any markdown formatting, code fences, or explanatory prefixes.\n\n");
+
+    // Include conversation history if available
+    if let Some(history) = conversation_history {
+        if !history.is_empty() {
+            prompt.push_str(history);
+            prompt.push_str("\n");
+        }
+    }
 
     prompt.push_str(&format!("Question: {}\n\n", question));
 
@@ -190,11 +201,19 @@ fn build_answer_prompt(
 }
 
 /// Build prompt for answering from context alone (no code search results)
-fn build_context_only_prompt(question: &str, gathered_context: &str) -> String {
+fn build_context_only_prompt(question: &str, gathered_context: &str, conversation_history: Option<&str>) -> String {
     let mut prompt = String::new();
 
     prompt.push_str("You are answering a developer's question using documentation and codebase context.\n\n");
     prompt.push_str("IMPORTANT: Provide ONLY the answer text, without any markdown formatting, code fences, or explanatory prefixes.\n\n");
+
+    // Include conversation history if available
+    if let Some(history) = conversation_history {
+        if !history.is_empty() {
+            prompt.push_str(history);
+            prompt.push_str("\n");
+        }
+    }
 
     prompt.push_str(&format!("Question: {}\n\n", question));
 
@@ -215,11 +234,19 @@ fn build_context_only_prompt(question: &str, gathered_context: &str) -> String {
 }
 
 /// Build prompt for answering from codebase metadata alone (file counts, languages, directories)
-fn build_codebase_context_prompt(question: &str, codebase_context: &str) -> String {
+fn build_codebase_context_prompt(question: &str, codebase_context: &str, conversation_history: Option<&str>) -> String {
     let mut prompt = String::new();
 
     prompt.push_str("You are answering a developer's question using codebase metadata.\n\n");
     prompt.push_str("IMPORTANT: Provide ONLY the answer text, without any markdown formatting, code fences, or explanatory prefixes.\n\n");
+
+    // Include conversation history if available
+    if let Some(history) = conversation_history {
+        if !history.is_empty() {
+            prompt.push_str(history);
+            prompt.push_str("\n");
+        }
+    }
 
     prompt.push_str(&format!("Question: {}\n\n", question));
 

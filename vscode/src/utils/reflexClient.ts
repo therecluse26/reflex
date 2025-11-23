@@ -278,3 +278,145 @@ export async function ask(
 		timeout: 60000 // 60 seconds for AI queries
 	});
 }
+
+/**
+ * Chat session API types and functions (HTTP API)
+ */
+
+export interface ChatSession {
+	session_id: string;
+	provider: string;
+	model: string;
+}
+
+export interface ChatSessionMessage {
+	role: string;
+	content: string;
+	timestamp: number;
+	queries?: string[];
+}
+
+/**
+ * Get the API server URL
+ * If serverManager is provided, uses its URL (for auto-started server)
+ * Otherwise falls back to default port 57878
+ */
+function getApiUrl(serverManager?: any): string {
+	if (serverManager && typeof serverManager.getUrl === 'function') {
+		return serverManager.getUrl();
+	}
+	// Default port for manually started servers
+	return 'http://127.0.0.1:57878';
+}
+
+/**
+ * Create a new chat session via HTTP API
+ */
+export async function createChatSession(
+	provider: string,
+	model?: string,
+	serverManager?: any
+): Promise<ChatSession> {
+	const url = `${getApiUrl(serverManager)}/chat/sessions`;
+	const response = await fetch(url, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ provider, model })
+	});
+
+	if (!response.ok) {
+		const error = await response.text();
+		throw new Error(`Failed to create chat session: ${error}`);
+	}
+
+	return response.json() as Promise<ChatSession>;
+}
+
+/**
+ * Send a message to a chat session via HTTP API
+ */
+export async function sendChatMessage(
+	sessionId: string,
+	message: string,
+	serverManager?: any
+): Promise<ChatSessionMessage> {
+	const url = `${getApiUrl(serverManager)}/chat/sessions/${sessionId}/messages`;
+	const response = await fetch(url, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ message })
+	});
+
+	if (!response.ok) {
+		const error = await response.text();
+		throw new Error(`Failed to send message: ${error}`);
+	}
+
+	return response.json() as Promise<ChatSessionMessage>;
+}
+
+/**
+ * Get chat session info via HTTP API
+ */
+export async function getChatSessionInfo(
+	sessionId: string,
+	serverManager?: any
+): Promise<{
+	session_id: string;
+	provider: string;
+	model: string;
+	total_tokens: number;
+	context_limit: number;
+	context_usage: number;
+	message_count: number;
+}> {
+	const url = `${getApiUrl(serverManager)}/chat/sessions/${sessionId}`;
+	const response = await fetch(url);
+
+	if (!response.ok) {
+		const error = await response.text();
+		throw new Error(`Failed to get session info: ${error}`);
+	}
+
+	return response.json() as Promise<{
+		session_id: string;
+		provider: string;
+		model: string;
+		total_tokens: number;
+		context_limit: number;
+		context_usage: number;
+		message_count: number;
+	}>;
+}
+
+/**
+ * Delete a chat session via HTTP API
+ */
+export async function deleteChatSession(
+	sessionId: string,
+	serverManager?: any
+): Promise<void> {
+	const url = `${getApiUrl(serverManager)}/chat/sessions/${sessionId}`;
+	const response = await fetch(url, { method: 'DELETE' });
+
+	if (!response.ok) {
+		const error = await response.text();
+		throw new Error(`Failed to delete session: ${error}`);
+	}
+}
+
+/**
+ * Check if the API server is running
+ */
+export async function isApiServerRunning(serverManager?: any): Promise<boolean> {
+	try {
+		const url = `${getApiUrl(serverManager)}/health`;
+		const response = await fetch(url, {
+			method: 'GET',
+			signal: AbortSignal.timeout(2000) // 2 second timeout
+		});
+		return response.ok;
+	} catch (error) {
+		return false;
+	}
+}

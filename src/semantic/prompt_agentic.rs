@@ -19,6 +19,7 @@ const AGENTIC_TEMPLATE: &str = include_str!("prompt_agentic.md");
 pub fn build_assessment_prompt(
     question: &str,
     cache: &CacheManager,
+    conversation_history: Option<&str>,
 ) -> Result<String> {
     // Extract basic codebase context
     let context = CodebaseContext::extract(cache).unwrap_or_else(|e| {
@@ -45,6 +46,17 @@ pub fn build_assessment_prompt(
     let project_config = read_project_config(&workspace_root)
         .unwrap_or_else(|| "No project-specific instructions provided.".to_string());
 
+    // Build conversation history section
+    let history_section = if let Some(history) = conversation_history {
+        if !history.is_empty() {
+            format!("\n## Conversation History\n\n{}\n", history)
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
     // Build assessment prompt
     Ok(format!(
         r#"{template}
@@ -52,7 +64,7 @@ pub fn build_assessment_prompt(
 ## Current Phase: ASSESSMENT
 
 You are in the **assessment phase**. Your task is to determine if you have enough context to generate accurate search queries for the user's question.
-
+{history_section}
 ## Codebase Context (Currently Available)
 
 {codebase_context}
@@ -123,6 +135,7 @@ pub fn build_generation_prompt(
     question: &str,
     gathered_context: &str,
     cache: &CacheManager,
+    conversation_history: Option<&str>,
 ) -> Result<String> {
     // Extract basic codebase context
     let context = CodebaseContext::extract(cache).unwrap_or_else(|e| {
@@ -145,6 +158,17 @@ pub fn build_generation_prompt(
     let project_config = read_project_config(&workspace_root)
         .unwrap_or_else(|| "No project-specific instructions provided.".to_string());
 
+    // Build conversation history section
+    let history_section = if let Some(history) = conversation_history {
+        if !history.is_empty() {
+            format!("\n## Conversation History\n\n{}\n", history)
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
     // Build context section
     let context_section = if gathered_context.is_empty() {
         String::new()
@@ -158,7 +182,7 @@ pub fn build_generation_prompt(
 ## Current Phase: FINAL QUERY GENERATION
 
 You have completed context gathering. Now generate the final search queries.
-
+{history_section}
 ## Codebase Context
 
 {codebase_context}
@@ -326,7 +350,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let cache = CacheManager::new(temp.path());
 
-        let prompt = build_assessment_prompt("find todos", &cache).unwrap();
+        let prompt = build_assessment_prompt("find todos", &cache, None).unwrap();
 
         assert!(prompt.contains("ASSESSMENT"));
         assert!(prompt.contains("find todos"));
@@ -339,7 +363,7 @@ mod tests {
         let cache = CacheManager::new(temp.path());
         let context = "Test context from tools";
 
-        let prompt = build_generation_prompt("find todos", context, &cache).unwrap();
+        let prompt = build_generation_prompt("find todos", context, &cache, None).unwrap();
 
         assert!(prompt.contains("FINAL QUERY GENERATION"));
         assert!(prompt.contains("Test context from tools"));

@@ -4,6 +4,7 @@ import { registerOpenFileCommand } from './commands/openFile';
 import { registerConfigureAICommand } from './commands/configureAI';
 import { SearchViewProvider } from './providers/SearchViewProvider';
 import { ConfigManager } from './utils/config';
+import { ServerManager } from './utils/serverManager';
 
 /**
  * This method is called when the extension is activated
@@ -21,6 +22,16 @@ export function activate(context: vscode.ExtensionContext) {
 	// Create config manager for API keys and settings
 	const configManager = new ConfigManager();
 
+	// Initialize server manager for auto-starting rfx serve
+	const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+	const serverManager = workspaceFolder
+		? new ServerManager(workspaceFolder)
+		: undefined;
+
+	if (serverManager) {
+		context.subscriptions.push(serverManager);
+	}
+
 	// Register reindex command
 	registerReindexCommand(context);
 
@@ -37,11 +48,12 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 	context.subscriptions.push(clearChatCommand);
 
-	// Register search view provider (now with chat functionality)
+	// Register search view provider (now with chat functionality and auto-start server)
 	const searchViewProvider = new SearchViewProvider(
 		context.extensionUri,
 		context,
-		configManager
+		configManager,
+		serverManager
 	);
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider(

@@ -72,6 +72,7 @@ pub async fn run_agentic_loop(
     cache: &CacheManager,
     config: AgenticConfig,
     reporter: &dyn AgenticReporter,
+    conversation_history: Option<&str>,
 ) -> Result<AgenticQueryResponse> {
     log::info!("Starting agentic loop for question: {}", question);
 
@@ -119,6 +120,7 @@ pub async fn run_agentic_loop(
         &*provider,
         reporter,
         config.debug,
+        conversation_history,
     ).await?;
 
     // Phase 2: Context gathering (if needed)
@@ -143,6 +145,7 @@ pub async fn run_agentic_loop(
         &*provider,
         reporter,
         config.debug,
+        conversation_history,
     ).await?;
 
     // Phase 4: Execute queries
@@ -214,11 +217,12 @@ async fn phase_1_assess(
     provider: &dyn LlmProvider,
     reporter: &dyn AgenticReporter,
     debug: bool,
+    conversation_history: Option<&str>,
 ) -> Result<(bool, AgenticResponse)> {
     log::info!("Phase 1: Assessing context needs");
 
-    // Build assessment prompt
-    let prompt = super::prompt_agentic::build_assessment_prompt(question, cache)?;
+    // Build assessment prompt with conversation history
+    let prompt = super::prompt_agentic::build_assessment_prompt(question, cache, conversation_history)?;
 
     // Debug mode: output full prompt
     if debug {
@@ -377,14 +381,16 @@ async fn phase_3_generate(
     provider: &dyn LlmProvider,
     reporter: &dyn AgenticReporter,
     debug: bool,
+    conversation_history: Option<&str>,
 ) -> Result<(QueryResponse, f32)> {
     log::info!("Phase 3: Generating final queries");
 
-    // Build generation prompt with gathered context
+    // Build generation prompt with gathered context and conversation history
     let prompt = super::prompt_agentic::build_generation_prompt(
         question,
         gathered_context,
         cache,
+        conversation_history,
     )?;
 
     // Debug mode: output full prompt
