@@ -1507,30 +1507,33 @@ async fn execute_query_async(
                                 });
                             }
 
-                            let provider_instance = match (|| -> Result<_> {
+                            // Get API key for smart pagination
+                            let api_key = match (|| -> Result<_> {
                                 let mut config = super::config::load_config(&cache_path)?;
                                 config.provider = provider_name.to_string();
-                                let api_key = super::config::get_api_key(&config.provider)?;
-                                let model = model_override.map(|s| s.to_string()).or(config.model);
-                                super::providers::create_provider(&config.provider, api_key, model)
+                                super::config::get_api_key(&config.provider)
                             })() {
-                                Ok(provider) => provider,
+                                Ok(key) => key,
                                 Err(e) => {
                                     let _ = tx.send(PhaseUpdate::Error {
-                                        error: format!("Failed to create provider for fallback: {}", e),
+                                        error: format!("Failed to get API key for fallback: {}", e),
                                     });
                                     return;
                                 }
                             };
 
-                            match super::generate_answer(
+                            match super::generate_answer_with_smart_pagination(
                                 question,
+                                &agentic_response.queries,
                                 &agentic_response.results,
                                 results_count,
                                 agentic_response.gathered_context.as_deref(),
                                 codebase_context_str.as_deref(),
                                 Some(conversation_history),
-                                &*provider_instance,
+                                &cache,
+                                provider_name,
+                                model_override,
+                                api_key,
                             ).await {
                                 Ok(answer) => {
                                     let _ = tx.send(PhaseUpdate::Answer { answer });
@@ -1628,31 +1631,33 @@ async fn execute_query_async(
                 });
             }
 
-            // Generate answer
-            let provider_instance = match (|| -> Result<_> {
+            // Get API key for smart pagination
+            let api_key = match (|| -> Result<_> {
                 let mut config = super::config::load_config(&cache_path)?;
                 config.provider = provider_name.to_string();
-                let api_key = super::config::get_api_key(&config.provider)?;
-                let model = model_override.map(|s| s.to_string()).or(config.model);
-                super::providers::create_provider(&config.provider, api_key, model)
+                super::config::get_api_key(&config.provider)
             })() {
-                Ok(provider) => provider,
+                Ok(key) => key,
                 Err(e) => {
                     let _ = tx.send(PhaseUpdate::Error {
-                        error: format!("Failed to create provider: {}", e),
+                        error: format!("Failed to get API key: {}", e),
                     });
                     return;
                 }
             };
 
-            let answer = match super::generate_answer(
+            let answer = match super::generate_answer_with_smart_pagination(
                 question,
+                &agentic_response.queries,
                 &agentic_response.results,
                 results_count,
                 agentic_response.gathered_context.as_deref(),
                 codebase_context_str.as_deref(),
                 Some(conversation_history),
-                &*provider_instance,
+                &cache,
+                provider_name,
+                model_override,
+                api_key,
             ).await {
                 Ok(answer) => answer,
                 Err(e) => {

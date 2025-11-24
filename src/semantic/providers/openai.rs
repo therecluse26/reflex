@@ -29,6 +29,9 @@ impl LlmProvider for OpenAiProvider {
         // GPT-5 models require max_completion_tokens instead of max_tokens
         let is_gpt5 = self.model.starts_with("gpt-5");
 
+        // GPT-5-mini only supports default temperature (1), other models support 0.1
+        let is_gpt5_mini = self.model.contains("gpt-5-mini");
+
         let mut request_body = json!({
             "model": self.model,
             "messages": [
@@ -37,8 +40,12 @@ impl LlmProvider for OpenAiProvider {
                     "content": prompt
                 }
             ],
-            "temperature": 0.1,
         });
+
+        // Only set temperature for models that support custom values
+        if !is_gpt5_mini {
+            request_body["temperature"] = json!(0.1);
+        }
 
         // Add JSON response format if requested
         if json_mode {

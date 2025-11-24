@@ -2046,20 +2046,6 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             .ok()
             .map(|ctx| ctx.to_prompt_string());
 
-        // Initialize provider for answer generation
-        let provider_instance = match (|| -> Result<_> {
-            let mut config = crate::semantic::config::load_config(cache.path())?;
-            config.provider = provider_name;
-            let api_key = crate::semantic::config::get_api_key(&config.provider)?;
-            crate::semantic::providers::create_provider(&config.provider, api_key, config.model)
-        })() {
-            Ok(provider) => provider,
-            Err(e) => {
-                log::error!("Failed to create provider: {}", e);
-                return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Provider error: {}", e)));
-            }
-        };
-
         // Log agentic response details for debugging
         log::info!("Agentic response: queries={}, results_count={}, total_count={:?}, gathered_context={}",
             agentic_response.queries.len(),
@@ -2068,80 +2054,46 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             agentic_response.gathered_context.as_ref().map(|c| c.len()).unwrap_or(0)
         );
 
-        // Paginated answer generation to avoid token limits
-        // Page size: 20 results per page (conservative to stay under 30k TPM limit)
-        const PAGE_SIZE: usize = 20;
-        let total_results = agentic_response.total_count.unwrap_or(0);
-        let mut current_offset = 0;
-        let mut answer_parts = Vec::new();
-
-        log::info!("Generating answer with pagination (total results: {}, page size: {})", total_results, PAGE_SIZE);
-
-        while current_offset < total_results {
-            // Execute queries for this page
-            let (page_results, _, _, pagination) = match crate::semantic::execute_queries(
-                agentic_response.queries.clone(),
-                &cache,
-                Some(PAGE_SIZE),
-                Some(current_offset),
-            ).await {
-                Ok(r) => r,
-                Err(e) => {
-                    log::error!("Failed to execute paginated queries: {}", e);
-                    return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Query execution failed: {}", e)));
-                }
-            };
-
-            log::debug!("Page {}: offset={}, returned {} results, has_more={}",
-                answer_parts.len() + 1, current_offset, page_results.len(), pagination.has_more);
-
-            // Generate answer for this page
-            let page_answer = match crate::semantic::generate_answer(
-                &req.message,
-                &page_results,
-                pagination.total,
-                agentic_response.gathered_context.as_deref(),
-                codebase_context_str.as_deref(),
-                Some(&conversation_history),
-                &*provider_instance,
-            ).await {
-                Ok(answer) => answer,
-                Err(e) => {
-                    log::error!("Failed to generate answer for page: {}", e);
-                    return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Answer generation failed: {}", e)));
-                }
-            };
-
-            answer_parts.push(page_answer);
-
-            // Break if no more results
-            if !pagination.has_more {
-                break;
+        // Get configuration for smart pagination
+        let mut config = match crate::semantic::config::load_config(cache.path()) {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("Failed to load config: {}", e);
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Config error: {}", e)));
             }
+        };
+        config.provider = provider_name;
 
-            current_offset += PAGE_SIZE;
-
-            // Safety limit: max 5 pages (100 total results)
-            if answer_parts.len() >= 5 {
-                log::warn!("Reached max pagination limit (5 pages), stopping");
-                break;
+        let api_key = match crate::semantic::config::get_api_key(&config.provider) {
+            Ok(key) => key,
+            Err(e) => {
+                log::error!("Failed to get API key: {}", e);
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("API key error: {}", e)));
             }
-        }
+        };
 
-        // Combine all answer parts
-        let answer = if answer_parts.is_empty() {
-            // No answers generated - this means all pages failed or returned 0 results
-            log::error!("No answers generated for question: {}", req.message);
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to generate answer: no results or all API calls failed. Check server logs for details.".to_string()
-            ));
-        } else if answer_parts.len() == 1 {
-            answer_parts.into_iter().next().unwrap()
-        } else {
-            // Multiple pages - combine with separators
-            log::info!("Combined {} answer parts", answer_parts.len());
-            answer_parts.join("\n\n---\n\n")
+        // Generate answer with smart pagination (handles all 3 tiers)
+        let answer = match crate::semantic::generate_answer_with_smart_pagination(
+            &req.message,
+            &agentic_response.queries,
+            &agentic_response.results,
+            agentic_response.total_count.unwrap_or(0),
+            agentic_response.gathered_context.as_deref(),
+            codebase_context_str.as_deref(),
+            Some(&conversation_history),
+            &cache,
+            &config.provider,
+            config.model.as_deref(),
+            api_key,
+        ).await {
+            Ok(ans) => ans,
+            Err(e) => {
+                log::error!("Failed to generate answer: {}", e);
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Answer generation failed: {}", e)
+                ));
+            }
         };
 
         // Add answer to session and get timestamp

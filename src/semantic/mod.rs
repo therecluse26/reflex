@@ -27,7 +27,7 @@ pub use executor::{execute_queries, parse_command, ParsedCommand, PaginationInfo
 pub use schema::{QueryCommand, QueryResponse as SemanticQueryResponse, AgenticQueryResponse};
 pub use agentic::{run_agentic_loop, AgenticConfig};
 pub use reporter::{AgenticReporter, ConsoleReporter, QuietReporter};
-pub use answer::generate_answer;
+pub use answer::{generate_answer, generate_answer_with_smart_pagination};
 pub use chat_tui::run_chat_mode;
 pub use config::{save_user_provider, is_any_api_key_configured};
 

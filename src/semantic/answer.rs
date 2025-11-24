@@ -5,7 +5,9 @@
 
 use anyhow::Result;
 use crate::models::FileGroupedResult;
+use crate::cache::CacheManager;
 use super::providers::LlmProvider;
+use super::schema::QueryCommand;
 
 /// Maximum number of matches to include in the prompt (to avoid token limits)
 const MAX_MATCHES_IN_PROMPT: usize = 50;
@@ -264,6 +266,329 @@ fn build_codebase_context_prompt(question: &str, codebase_context: &str, convers
     prompt.push_str("Answer (plain text only, no markdown):\n");
 
     prompt
+}
+
+/// Generate a concise summary of findings from one page of results
+///
+/// Extracts key information (file paths, line numbers, code patterns) for hybrid pagination.
+/// Optimized for fast/cheap models (GPT-5-mini, Claude Haiku-4.5).
+///
+/// Returns a 300-500 token summary of key findings from this page.
+pub async fn generate_page_summary(
+    question: &str,
+    page_results: &[FileGroupedResult],
+    page_num: usize,
+    total_pages: usize,
+    provider: &dyn LlmProvider,
+) -> Result<String> {
+    let prompt = build_summary_prompt(question, page_results, page_num, total_pages);
+
+    log::debug!("Generating summary for page {}/{} ({} chars)", page_num, total_pages, prompt.len());
+
+    let summary = provider.complete(&prompt, false).await?;
+    let cleaned = strip_markdown_fences(&summary);
+
+    Ok(cleaned.to_string())
+}
+
+/// Build prompt for page summary generation
+fn build_summary_prompt(
+    question: &str,
+    results: &[FileGroupedResult],
+    page_num: usize,
+    total_pages: usize,
+) -> String {
+    let mut prompt = String::new();
+
+    prompt.push_str(&format!(
+        "Extract key findings from code search results (page {}/{}).\n\n",
+        page_num, total_pages
+    ));
+
+    prompt.push_str("IMPORTANT: Provide ONLY a structured summary, no markdown formatting.\n\n");
+    prompt.push_str(&format!("Question: {}\n\n", question));
+
+    prompt.push_str("Search Results:\n");
+    prompt.push_str("===============\n\n");
+
+    // Format results (similar to build_answer_prompt but more concise)
+    for file_group in results {
+        prompt.push_str(&format!("File: {}\n", file_group.path));
+
+        for match_result in &file_group.matches {
+            let preview = if match_result.preview.len() > MAX_PREVIEW_LENGTH {
+                format!("{}...", &match_result.preview[..MAX_PREVIEW_LENGTH])
+            } else {
+                match_result.preview.clone()
+            };
+
+            prompt.push_str(&format!(
+                "  Line {}-{}: {}\n",
+                match_result.span.start_line,
+                match_result.span.end_line,
+                preview.trim()
+            ));
+        }
+
+        prompt.push_str("\n");
+    }
+
+    prompt.push_str("\nExtract key findings in this format:\n");
+    prompt.push_str("• File paths and line numbers where relevant code exists\n");
+    prompt.push_str("• Important function/class names mentioned\n");
+    prompt.push_str("• Key code patterns or snippets (max 1-2 lines each)\n");
+    prompt.push_str("• Notable observations relevant to the question\n\n");
+
+    prompt.push_str("Summary (plain text, bullet points):\n");
+
+    prompt
+}
+
+/// Generate final answer from page summaries
+///
+/// Synthesizes findings from multiple page summaries into a coherent answer.
+/// Uses user's premium model for high-quality final response.
+pub async fn generate_final_answer_from_summaries(
+    question: &str,
+    summaries: &[String],
+    total_results: usize,
+    gathered_context: Option<&str>,
+    codebase_context: Option<&str>,
+    conversation_history: Option<&str>,
+    provider: &dyn LlmProvider,
+) -> Result<String> {
+    let prompt = build_final_answer_from_summaries_prompt(
+        question,
+        summaries,
+        total_results,
+        gathered_context,
+        codebase_context,
+        conversation_history,
+    );
+
+    log::debug!("Generating final answer from {} summaries ({} chars)", summaries.len(), prompt.len());
+
+    let answer = provider.complete(&prompt, false).await?;
+    let cleaned = strip_markdown_fences(&answer);
+
+    Ok(cleaned.to_string())
+}
+
+/// Build prompt for final answer generation from summaries
+fn build_final_answer_from_summaries_prompt(
+    question: &str,
+    summaries: &[String],
+    total_results: usize,
+    gathered_context: Option<&str>,
+    codebase_context: Option<&str>,
+    conversation_history: Option<&str>,
+) -> String {
+    let mut prompt = String::new();
+
+    prompt.push_str("You are answering a developer's question based on code search findings.\n\n");
+    prompt.push_str("IMPORTANT: Provide ONLY the answer text, without markdown formatting or prefixes.\n\n");
+
+    // Include conversation history
+    if let Some(history) = conversation_history {
+        if !history.is_empty() {
+            prompt.push_str(history);
+            prompt.push_str("\n");
+        }
+    }
+
+    prompt.push_str(&format!("Question: {}\n\n", question));
+
+    // Add gathered context (documentation, codebase structure)
+    if let Some(context) = gathered_context {
+        if !context.is_empty() {
+            prompt.push_str("Additional Context:\n");
+            prompt.push_str("==================\n\n");
+            prompt.push_str(context);
+            prompt.push_str("\n\n");
+        }
+    }
+
+    // Add codebase metadata
+    if let Some(context) = codebase_context {
+        if !context.is_empty() {
+            prompt.push_str("Codebase Overview:\n");
+            prompt.push_str("=================\n\n");
+            prompt.push_str(context);
+            prompt.push_str("\n\n");
+        }
+    }
+
+    prompt.push_str(&format!("Found {} total matches across the codebase.\n\n", total_results));
+
+    prompt.push_str("Key Findings (extracted from search results):\n");
+    prompt.push_str("===========================================\n\n");
+
+    for (idx, summary) in summaries.iter().enumerate() {
+        prompt.push_str(&format!("Page {}:\n{}\n\n", idx + 1, summary));
+    }
+
+    prompt.push_str("\nProvide a conversational answer that:\n");
+    prompt.push_str("1. Directly answers the question based on the findings\n");
+    prompt.push_str("2. References specific files and line numbers where relevant\n");
+    prompt.push_str("3. Synthesizes patterns across findings\n");
+    prompt.push_str("4. Is concise but informative (typically 2-4 sentences)\n\n");
+
+    prompt.push_str("Answer (plain text only):\n");
+
+    prompt
+}
+
+/// Generate answer with smart pagination based on result count
+///
+/// Three-tier approach:
+/// - Tier 1 (0 results): Answer from context only
+/// - Tier 2 (1-20 results): Single call with all results (fast path, matches TUI)
+/// - Tier 3 (21+ results): Hybrid pagination with summaries (handles TPM limits)
+///
+/// This ensures identical behavior between TUI and VSCode while handling rate limits.
+pub async fn generate_answer_with_smart_pagination(
+    question: &str,
+    queries: &[QueryCommand],
+    results: &[FileGroupedResult],
+    total_count: usize,
+    gathered_context: Option<&str>,
+    codebase_context: Option<&str>,
+    conversation_history: Option<&str>,
+    cache: &CacheManager,
+    provider_name: &str,
+    user_model: Option<&str>,
+    api_key: String,
+) -> Result<String> {
+    const PAGE_SIZE: usize = 20;
+
+    log::info!("Smart pagination: {} results, {} queries", total_count, queries.len());
+
+    let user_model_name = user_model.unwrap_or("default");
+
+    // TIER 1: No results (documentation-only)
+    if total_count == 0 {
+        log::info!("Tier 1: Answering from context (0 results)");
+        let provider = super::providers::create_provider(
+            provider_name,
+            api_key,
+            user_model.map(|s| s.to_string()),
+        )?;
+
+        return generate_answer(
+            question,
+            &[],
+            0,
+            gathered_context,
+            codebase_context,
+            conversation_history,
+            &*provider,
+        ).await;
+    }
+
+    // TIER 2: Small results (fast path - matches TUI behavior)
+    if total_count <= PAGE_SIZE {
+        log::info!("Tier 2: Single call ({} results)", total_count);
+        let provider = super::providers::create_provider(
+            provider_name,
+            api_key,
+            user_model.map(|s| s.to_string()),
+        )?;
+
+        return generate_answer(
+            question,
+            results,
+            total_count,
+            gathered_context,
+            codebase_context,
+            conversation_history,
+            &*provider,
+        ).await;
+    }
+
+    // TIER 3: Large results (hybrid pagination with summaries)
+    let total_pages = (total_count + PAGE_SIZE - 1) / PAGE_SIZE;
+    log::info!("Tier 3: Hybrid pagination ({} results, {} pages)", total_count, total_pages);
+
+    // Determine summary model
+    let summary_model = super::providers::get_summary_model(provider_name, user_model_name);
+
+    if let Some(ref sm) = summary_model {
+        log::info!("Using {} for summaries, {} for final answer", sm, user_model_name);
+    } else {
+        log::info!("Using {} for both (high TPM)", user_model_name);
+    }
+
+    // Create summary provider (cheap/high-TPM model)
+    let summary_provider = if let Some(sm) = summary_model {
+        super::providers::create_provider(
+            provider_name,
+            api_key.clone(),
+            Some(sm),
+        )?
+    } else {
+        super::providers::create_provider(
+            provider_name,
+            api_key.clone(),
+            user_model.map(|s| s.to_string()),
+        )?
+    };
+
+    // Generate page summaries
+    let mut summaries = Vec::new();
+    let mut current_offset = 0;
+
+    while current_offset < total_count {
+        let (page_results, _, _, pagination) = super::executor::execute_queries(
+            queries.to_vec(),
+            cache,
+            Some(PAGE_SIZE),
+            Some(current_offset),
+        ).await?;
+
+        let page_num = (current_offset / PAGE_SIZE) + 1;
+        log::debug!("Page {}/{}: {} results", page_num, total_pages, page_results.len());
+
+        let summary = generate_page_summary(
+            question,
+            &page_results,
+            page_num,
+            total_pages,
+            &*summary_provider,
+        ).await?;
+
+        summaries.push(summary);
+
+        if !pagination.has_more {
+            break;
+        }
+
+        current_offset += PAGE_SIZE;
+
+        // Safety limit: max 20 pages (400 results)
+        if summaries.len() >= 20 {
+            log::warn!("Reached max 20 pages, stopping");
+            break;
+        }
+    }
+
+    log::info!("Generated {} summaries, creating final answer", summaries.len());
+
+    // Create final answer provider (user's premium model)
+    let final_provider = super::providers::create_provider(
+        provider_name,
+        api_key,
+        user_model.map(|s| s.to_string()),
+    )?;
+
+    generate_final_answer_from_summaries(
+        question,
+        &summaries,
+        total_count,
+        gathered_context,
+        codebase_context,
+        conversation_history,
+        &*final_provider,
+    ).await
 }
 
 /// Strip markdown code fences from LLM response
