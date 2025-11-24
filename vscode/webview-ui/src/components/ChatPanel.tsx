@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { ChatMessage, ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../types/search';
+import { ChatMessage, ExtensionToWebviewMessage, WebviewToExtensionMessage, ProgressEvent } from '../types/search';
 
 interface ChatPanelProps {
 	onConfigure: () => void;
@@ -7,10 +7,60 @@ interface ChatPanelProps {
 	onMessage: (handler: (message: ExtensionToWebviewMessage) => void) => () => void;
 }
 
+// Convert ProgressEvent to user-friendly status message
+function getProgressMessage(event: ProgressEvent): string {
+	switch (event.type) {
+		case 'triaging':
+			return 'Analyzing question...';
+		case 'answering_from_context':
+			return 'Answering from conversation history...';
+		case 'thinking':
+			return event.reasoning ? `Thinking... ${event.reasoning}` : 'Thinking...';
+		case 'tools':
+			const toolCount = event.tool_calls?.length || 0;
+			return `Gathering context (${toolCount} tools)...`;
+		case 'queries':
+			const queryCount = event.queries?.length || 0;
+			return `Generated ${queryCount} ${queryCount === 1 ? 'query' : 'queries'}...`;
+		case 'executing':
+			const resultCount = event.results_count || 0;
+			return `Found ${resultCount} ${resultCount === 1 ? 'result' : 'results'}...`;
+		case 'processing_page':
+			if (event.current && event.total) {
+				return `Processing page ${event.current}/${event.total}...`;
+			}
+			return 'Processing results...';
+		case 'generating_summary':
+			if (event.current && event.total) {
+				return `Generating summary for page ${event.current}/${event.total}...`;
+			}
+			return 'Generating summary...';
+		case 'synthesizing_answer':
+			if (event.summary_count) {
+				return `Synthesizing final answer from ${event.summary_count} ${event.summary_count === 1 ? 'summary' : 'summaries'}...`;
+			}
+			return 'Synthesizing answer...';
+		case 'reindexing':
+			if (event.current && event.total) {
+				return `Reindexing (${event.current}/${event.total})...`;
+			}
+			return 'Reindexing...';
+		case 'answer':
+			return 'Generating answer...';
+		case 'error':
+			return event.error || 'An error occurred';
+		case 'done':
+			return 'Done';
+		default:
+			return 'Processing...';
+	}
+}
+
 export default function ChatPanel({ onConfigure, postMessage, onMessage }: ChatPanelProps) {
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [input, setInput] = useState('');
 	const [loading, setLoading] = useState(false);
+	const [progressMessage, setProgressMessage] = useState<string>('Thinking...');
 	const [modelInfo, setModelInfo] = useState<{ provider: string; model: string } | null>(null);
 	const [availableModels, setAvailableModels] = useState<Record<string, string[]>>({});
 	const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -34,6 +84,13 @@ export default function ChatPanel({ onConfigure, postMessage, onMessage }: ChatP
 					break;
 				case 'chatLoading':
 					setLoading(message.isLoading);
+					break;
+				case 'chatProgress':
+					// Update progress message based on event type
+					if (message.event) {
+						const statusMsg = getProgressMessage(message.event);
+						setProgressMessage(statusMsg);
+					}
 					break;
 				case 'modelInfo':
 					setModelInfo({ provider: message.provider, model: message.model });
@@ -195,7 +252,7 @@ export default function ChatPanel({ onConfigure, postMessage, onMessage }: ChatP
 				{loading && (
 					<div className="flex justify-start">
 						<div className="max-w-[80%] px-3 py-2 rounded bg-[var(--vscode-editor-inactiveSelectionBackground)]">
-							<div className="text-sm">Thinking...</div>
+							<div className="text-sm">{progressMessage}</div>
 						</div>
 					</div>
 				)}

@@ -51,21 +51,14 @@ pub fn create_provider(
 /// Returns Some(model_name) if a different, cheaper/higher-TPM model should be used for summaries.
 ///
 /// Strategy:
-/// - OpenAI: Use GPT-5-mini for summaries when user has GPT-5.1 (30K TPM limit)
+/// - OpenAI: ALWAYS use GPT-5-mini for summaries (faster, cheaper, smarter than all predecessors)
 /// - Anthropic: Use Claude Haiku-4.5 for summaries when user has Opus/Sonnet
 /// - Groq: Always None (all models have 300K TPM, no hybrid needed)
 pub fn get_summary_model(provider: &str, user_model: &str) -> Option<String> {
     match provider.to_lowercase().as_str() {
         "openai" => {
-            // Use GPT-5-mini for summaries if user has low-TPM model
-            if user_model.contains("gpt-5.1") || user_model.contains("gpt-5-turbo") {
-                Some("gpt-5-mini".to_string())
-            } else if user_model.contains("gpt-5-mini") {
-                None // Already using mini, same model is fine
-            } else {
-                // For other/older models, use mini as safe default
-                Some("gpt-5-mini".to_string())
-            }
+            // Always use GPT-5-mini for summaries (fastest/cheapest/smartest)
+            Some("gpt-5-mini".to_string())
         }
         "anthropic" => {
             // Use Haiku-4.5 unless already using it

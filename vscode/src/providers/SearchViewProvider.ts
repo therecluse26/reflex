@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { query, ask, createChatSession, sendChatMessage, deleteChatSession } from '../utils/reflexClient';
+import { query, ask, createChatSession, sendChatMessage, sendChatMessageStream, deleteChatSession, ProgressEvent } from '../utils/reflexClient';
 import { SearchFilters, RfxQueryResult, ChatMessage } from '../types/search';
 import { ConfigManager } from '../utils/config';
 import { getModelValues, PROVIDER_NAMES } from '../utils/models';
@@ -234,21 +234,39 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
 				console.log(`Created chat session: ${this._chatSessionId}`);
 			}
 
-			// Send message to session
-			const response = await sendChatMessage(this._chatSessionId, message, this._serverManager);
+			// Track final answer
+			let finalAnswer = '';
 
-			this.sendChatLoading(false);
+			// Send message to session with streaming progress
+			await sendChatMessageStream(
+				this._chatSessionId,
+				message,
+				(event: ProgressEvent) => {
+					// Send progress update to webview
+					this.sendChatProgress(event);
 
-			// Build response message
-			const responseMessage: ChatMessage = {
-				role: 'assistant',
-				content: response.content,
-				timestamp: response.timestamp,
-				queries: response.queries
-			};
+					// Track answer event
+					if (event.type === 'answer' && event.answer) {
+						finalAnswer = event.answer;
+					}
 
-			this.sendChatResponse(responseMessage);
-			this._saveChatMessage(responseMessage);
+					// Stop loading when done
+					if (event.type === 'done' || event.type === 'error') {
+						this.sendChatLoading(false);
+					}
+				},
+				this._serverManager
+			);
+
+			// Build response message for history (if we got an answer)
+			if (finalAnswer) {
+				const responseMessage: ChatMessage = {
+					role: 'assistant',
+					content: finalAnswer,
+					timestamp: Date.now()
+				};
+				this._saveChatMessage(responseMessage);
+			}
 
 		} catch (error) {
 			this.sendChatLoading(false);
@@ -313,6 +331,15 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
 	public sendChatLoading(isLoading: boolean) {
 		if (this._view) {
 			this._view.webview.postMessage({ type: 'chatLoading', isLoading });
+		}
+	}
+
+	/**
+	 * Send chat progress update to webview
+	 */
+	public sendChatProgress(event: ProgressEvent) {
+		if (this._view) {
+			this._view.webview.postMessage({ type: 'chatProgress', event });
 		}
 	}
 

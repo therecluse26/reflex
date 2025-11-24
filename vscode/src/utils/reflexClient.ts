@@ -356,6 +356,100 @@ export async function sendChatMessage(
 }
 
 /**
+ * Progress event from SSE stream
+ */
+export interface ProgressEvent {
+	type: 'triaging' | 'answering_from_context' | 'thinking' | 'tools' | 'queries' | 'executing' | 'reindexing' | 'answer' | 'error' | 'done';
+	reasoning?: string;
+	needs_context?: boolean;
+	content?: string;
+	tool_calls?: string[];
+	queries?: string[];
+	results_count?: number;
+	execution_time_ms?: number;
+	current?: number;
+	total?: number;
+	message?: string;
+	answer?: string;
+	error?: string;
+}
+
+/**
+ * Send a message to a chat session with SSE streaming progress updates
+ */
+export async function sendChatMessageStream(
+	sessionId: string,
+	message: string,
+	onProgress: (event: ProgressEvent) => void,
+	serverManager?: any
+): Promise<void> {
+	const url = `${getApiUrl(serverManager)}/chat/sessions/${sessionId}/messages/stream`;
+	const response = await fetch(url, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ message })
+	});
+
+	if (!response.ok) {
+		const error = await response.text();
+		throw new Error(`Failed to send message: ${error}`);
+	}
+
+	// Read SSE stream
+	const reader = response.body?.getReader();
+	if (!reader) {
+		throw new Error('No response body');
+	}
+
+	const decoder = new TextDecoder();
+	let buffer = '';
+
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) {
+				break;
+			}
+
+			// Decode chunk and add to buffer
+			buffer += decoder.decode(value, { stream: true });
+
+			// Process complete SSE events (separated by double newline)
+			const events = buffer.split('\n\n');
+			buffer = events.pop() || ''; // Keep incomplete event in buffer
+
+			for (const eventText of events) {
+				if (!eventText.trim()) {
+					continue;
+				}
+
+				// Parse SSE event format: "data: {json}\n"
+				const lines = eventText.split('\n');
+				for (const line of lines) {
+					if (line.startsWith('data: ')) {
+						const data = line.substring(6); // Remove "data: " prefix
+						try {
+							const event = JSON.parse(data) as ProgressEvent;
+							onProgress(event);
+
+							// Stop reading after done event
+							if (event.type === 'done') {
+								reader.cancel();
+								return;
+							}
+						} catch (e) {
+							console.error('Failed to parse SSE event:', data, e);
+						}
+					}
+				}
+			}
+		}
+	} finally {
+		reader.releaseLock();
+	}
+}
+
+/**
  * Get chat session info via HTTP API
  */
 export async function getChatSessionInfo(

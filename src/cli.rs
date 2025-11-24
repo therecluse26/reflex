@@ -1611,10 +1611,13 @@ async fn run_server(port: u16, host: String) -> Result<()> {
     use axum::{
         extract::{Path, Query as AxumQuery, State},
         http::StatusCode,
-        response::{IntoResponse, Json},
+        response::{IntoResponse, Json, Sse},
+        response::sse::{Event, KeepAlive},
         routing::{get, post, delete},
         Router,
     };
+    use tokio_stream::{StreamExt, wrappers::ReceiverStream};
+    use futures::stream::Stream;
     use tower_http::cors::{CorsLayer, Any};
     use std::sync::{Arc, RwLock};
     use std::collections::HashMap;
@@ -2085,6 +2088,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             &config.provider,
             config.model.as_deref(),
             api_key,
+            None, // No progress callback for non-SSE mode
         ).await {
             Ok(ans) => ans,
             Err(e) => {
@@ -2127,6 +2131,233 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             timestamp,
             queries,
         }))
+    }
+
+    // POST /chat/sessions/{id}/messages/stream - Send a message with SSE progress updates
+    async fn handle_send_message_stream(
+        State(state): State<Arc<AppState>>,
+        Path(session_id): Path<String>,
+        Json(req): Json<SendMessageRequest>,
+    ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, (StatusCode, String)> {
+        log::info!("Streaming message for session {}: {}", session_id, req.message);
+
+        // Get session info (provider, model) before async work
+        let (provider_name, model_override) = {
+            let sessions = state.sessions.read().map_err(|e| {
+                log::error!("Failed to acquire read lock: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, "Session lock error".to_string())
+            })?;
+
+            let session = sessions.get(&session_id).ok_or_else(|| {
+                (StatusCode::NOT_FOUND, format!("Session {} not found", session_id))
+            })?;
+
+            (session.provider().to_string(), Some(session.model().to_string()))
+        };
+
+        // Add user message to session
+        {
+            let mut sessions = state.sessions.write().map_err(|e| {
+                log::error!("Failed to acquire write lock: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, "Session lock error".to_string())
+            })?;
+
+            let session = sessions.get_mut(&session_id).ok_or_else(|| {
+                (StatusCode::NOT_FOUND, format!("Session {} not found", session_id))
+            })?;
+
+            session.add_user_message(req.message.clone());
+        }
+
+        // Build conversation history
+        let conversation_history = {
+            let sessions = state.sessions.read().map_err(|e| {
+                log::error!("Failed to acquire read lock: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, "Session lock error".to_string())
+            })?;
+
+            let session = sessions.get(&session_id).ok_or_else(|| {
+                (StatusCode::NOT_FOUND, format!("Session {} not found", session_id))
+            })?;
+
+            session.build_context()
+        };
+
+        // Create channel for progress events
+        let (tx, rx) = tokio::sync::mpsc::channel::<crate::semantic::progress::ProgressEvent>(100);
+
+        // Clone data for background task
+        let question = req.message.clone();
+        let cache_path = state.cache_path.clone();
+        let state_clone = state.clone();
+        let session_id_clone = session_id.clone();
+
+        // Spawn background task to execute query and send progress events
+        tokio::spawn(async move {
+            use crate::semantic::progress::ProgressEvent;
+
+            // Send triaging event
+            let _ = tx.send(ProgressEvent::Triaging).await;
+
+            let cache = CacheManager::new(&std::path::PathBuf::from(&cache_path));
+
+            // Run agentic loop with conversation history
+            let agentic_config = crate::semantic::AgenticConfig {
+                max_iterations: 2,
+                max_tools_per_phase: 5,
+                enable_evaluation: true,
+                eval_config: Default::default(),
+                provider_override: Some(provider_name.clone()),
+                model_override: model_override.clone(),
+                show_reasoning: false,
+                verbose: false,
+                debug: false,
+            };
+
+            let reporter = Box::new(crate::semantic::QuietReporter);
+
+            let agentic_response = match crate::semantic::run_agentic_loop(
+                &question,
+                &cache,
+                agentic_config,
+                &*reporter,
+                Some(&conversation_history),
+            ).await {
+                Ok(response) => response,
+                Err(e) => {
+                    log::error!("Agentic loop failed: {}", e);
+                    let _ = tx.send(ProgressEvent::Error {
+                        error: format!("Query failed: {}", e),
+                    }).await;
+                    let _ = tx.send(ProgressEvent::Done).await;
+                    return;
+                }
+            };
+
+            // Send tools event if tools were executed
+            if let Some(ref tools) = agentic_response.tools_executed {
+                if !tools.is_empty() {
+                    let _ = tx.send(ProgressEvent::Tools {
+                        content: format!("Gathered context using {} tools", tools.len()),
+                        tool_calls: tools.clone(),
+                    }).await;
+                }
+            }
+
+            // Send queries event if queries were generated
+            if !agentic_response.queries.is_empty() {
+                let query_strings: Vec<String> = agentic_response.queries
+                    .iter()
+                    .map(|q| q.command.clone())
+                    .collect();
+
+                let _ = tx.send(ProgressEvent::Queries {
+                    queries: query_strings,
+                }).await;
+
+                // Send executing event
+                let results_count = agentic_response.total_count.unwrap_or(0);
+                let _ = tx.send(ProgressEvent::Executing {
+                    results_count,
+                    execution_time_ms: 0,
+                }).await;
+            }
+
+            // Extract codebase context
+            let codebase_context_str = crate::semantic::context::CodebaseContext::extract(&cache)
+                .ok()
+                .map(|ctx| ctx.to_prompt_string());
+
+            // Get configuration for smart pagination
+            let mut config = match crate::semantic::config::load_config(cache.path()) {
+                Ok(c) => c,
+                Err(e) => {
+                    log::error!("Failed to load config: {}", e);
+                    let _ = tx.send(ProgressEvent::Error {
+                        error: format!("Config error: {}", e),
+                    }).await;
+                    let _ = tx.send(ProgressEvent::Done).await;
+                    return;
+                }
+            };
+            config.provider = provider_name.clone();
+
+            let api_key = match crate::semantic::config::get_api_key(&config.provider) {
+                Ok(key) => key,
+                Err(e) => {
+                    log::error!("Failed to get API key: {}", e);
+                    let _ = tx.send(ProgressEvent::Error {
+                        error: format!("API key error: {}", e),
+                    }).await;
+                    let _ = tx.send(ProgressEvent::Done).await;
+                    return;
+                }
+            };
+
+            // Generate answer with smart pagination (handles all 3 tiers)
+            // Create progress callback to send pagination events
+            let tx_for_pagination = tx.clone();
+            let progress_callback = Box::new(move |event: crate::semantic::progress::ProgressEvent| {
+                let _ = tx_for_pagination.try_send(event);
+            });
+
+            let answer = match crate::semantic::generate_answer_with_smart_pagination(
+                &question,
+                &agentic_response.queries,
+                &agentic_response.results,
+                agentic_response.total_count.unwrap_or(0),
+                agentic_response.gathered_context.as_deref(),
+                codebase_context_str.as_deref(),
+                Some(&conversation_history),
+                &cache,
+                &config.provider,
+                config.model.as_deref(),
+                api_key,
+                Some(progress_callback),
+            ).await {
+                Ok(ans) => ans,
+                Err(e) => {
+                    log::error!("Failed to generate answer: {}", e);
+                    let _ = tx.send(ProgressEvent::Error {
+                        error: format!("Answer generation failed: {}", e),
+                    }).await;
+                    let _ = tx.send(ProgressEvent::Done).await;
+                    return;
+                }
+            };
+
+            // Send answer event
+            let _ = tx.send(ProgressEvent::Answer {
+                answer: answer.clone(),
+            }).await;
+
+            // Add answer to session (drop lock before sending event)
+            {
+                match state_clone.sessions.write() {
+                    Ok(mut sessions) => {
+                        if let Some(session) = sessions.get_mut(&session_id_clone) {
+                            session.add_answer_message(answer);
+                        }
+                        // Lock is dropped here
+                    }
+                    Err(e) => {
+                        log::error!("Failed to acquire write lock: {}", e);
+                    }
+                }
+            }
+
+            // Send done event (after lock is dropped)
+            let _ = tx.send(ProgressEvent::Done).await;
+        });
+
+        // Convert channel receiver into SSE stream
+        let stream = ReceiverStream::new(rx).map(|event| {
+            Ok::<_, std::convert::Infallible>(
+                Event::default().data(event.to_sse_data())
+            )
+        });
+
+        Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
     }
 
     // GET /chat/sessions/{id} - Get session info
@@ -2225,6 +2456,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
         .route("/chat/sessions/:id", get(handle_get_session))
         .route("/chat/sessions/:id", delete(handle_delete_session))
         .route("/chat/sessions/:id/messages", post(handle_send_message))
+        .route("/chat/sessions/:id/messages/stream", post(handle_send_message_stream))
         .route("/chat/sessions/:id/messages", get(handle_get_messages))
         .layer(cors)
         .with_state(state);

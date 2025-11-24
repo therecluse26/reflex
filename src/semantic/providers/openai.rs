@@ -18,7 +18,7 @@ impl OpenAiProvider {
         Ok(Self {
             client: reqwest::Client::new(),
             api_key,
-            model: model.unwrap_or_else(|| "gpt-4o-mini".to_string()),
+            model: model.unwrap_or_else(|| "gpt-5-mini".to_string()),
         })
     }
 }
@@ -96,7 +96,7 @@ impl LlmProvider for OpenAiProvider {
     }
 
     fn default_model(&self) -> &str {
-        "gpt-4o-mini"
+        "gpt-5-mini"
     }
 }
 

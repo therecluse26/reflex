@@ -8,6 +8,7 @@ use crate::models::FileGroupedResult;
 use crate::cache::CacheManager;
 use super::providers::LlmProvider;
 use super::schema::QueryCommand;
+use std::sync::Arc;
 
 /// Maximum number of matches to include in the prompt (to avoid token limits)
 const MAX_MATCHES_IN_PROMPT: usize = 50;
@@ -446,6 +447,8 @@ fn build_final_answer_from_summaries_prompt(
 /// - Tier 3 (21+ results): Hybrid pagination with summaries (handles TPM limits)
 ///
 /// This ensures identical behavior between TUI and VSCode while handling rate limits.
+///
+/// Optional progress callback receives ProgressEvent updates during pagination.
 pub async fn generate_answer_with_smart_pagination(
     question: &str,
     queries: &[QueryCommand],
@@ -458,6 +461,7 @@ pub async fn generate_answer_with_smart_pagination(
     provider_name: &str,
     user_model: Option<&str>,
     api_key: String,
+    progress_callback: Option<Box<dyn Fn(super::progress::ProgressEvent) + Send + Sync>>,
 ) -> Result<String> {
     const PAGE_SIZE: usize = 20;
 
@@ -509,6 +513,14 @@ pub async fn generate_answer_with_smart_pagination(
     let total_pages = (total_count + PAGE_SIZE - 1) / PAGE_SIZE;
     log::info!("Tier 3: Hybrid pagination ({} results, {} pages)", total_count, total_pages);
 
+    // Send initial pagination progress event
+    if let Some(ref cb) = progress_callback {
+        cb(super::progress::ProgressEvent::ProcessingPage {
+            current: 1,
+            total: total_pages,
+        });
+    }
+
     // Determine summary model
     let summary_model = super::providers::get_summary_model(provider_name, user_model_name);
 
@@ -533,45 +545,107 @@ pub async fn generate_answer_with_smart_pagination(
         )?
     };
 
-    // Generate page summaries
-    let mut summaries = Vec::new();
-    let mut current_offset = 0;
+    // Wrap provider in Arc for sharing across tasks
+    let summary_provider = Arc::new(summary_provider);
 
-    while current_offset < total_count {
-        let (page_results, _, _, pagination) = super::executor::execute_queries(
-            queries.to_vec(),
-            cache,
-            Some(PAGE_SIZE),
-            Some(current_offset),
-        ).await?;
+    // Wrap progress callback in Arc if it exists
+    let progress_callback = progress_callback.map(Arc::new);
 
-        let page_num = (current_offset / PAGE_SIZE) + 1;
-        log::debug!("Page {}/{}: {} results", page_num, total_pages, page_results.len());
+    // Collect page offsets to process (with safety limit of 20 pages)
+    let max_pages = total_pages.min(20);
+    let page_offsets: Vec<usize> = (0..max_pages).map(|i| i * PAGE_SIZE).collect();
 
-        let summary = generate_page_summary(
-            question,
-            &page_results,
-            page_num,
-            total_pages,
-            &*summary_provider,
-        ).await?;
+    if max_pages < total_pages {
+        log::warn!("Limiting to {} pages (max 20), skipping {} pages", max_pages, total_pages - max_pages);
+    }
 
-        summaries.push(summary);
+    // Process pages in batches of 5 for parallel summarization
+    const BATCH_SIZE: usize = 5;
+    let mut all_summaries = Vec::with_capacity(max_pages);
 
-        if !pagination.has_more {
-            break;
+    for batch_start in (0..max_pages).step_by(BATCH_SIZE) {
+        let batch_end = (batch_start + BATCH_SIZE).min(max_pages);
+        let batch_offsets = &page_offsets[batch_start..batch_end];
+
+        log::info!("Processing batch {}-{} of {} pages", batch_start + 1, batch_end, max_pages);
+
+        // Spawn parallel summary tasks for this batch
+        let mut tasks = Vec::new();
+
+        for (_batch_idx, &offset) in batch_offsets.iter().enumerate() {
+            let page_num = (offset / PAGE_SIZE) + 1;
+            let queries = queries.to_vec();
+            let cache = cache.clone();
+            let question = question.to_string();
+            let provider = Arc::clone(&summary_provider);
+            let progress_cb = progress_callback.clone();
+
+            let task = tokio::spawn(async move {
+                // Fetch page results
+                let (page_results, _, _, _) = super::executor::execute_queries(
+                    queries,
+                    &cache,
+                    Some(PAGE_SIZE),
+                    Some(offset),
+                ).await?;
+
+                log::debug!("Page {}/{}: {} results", page_num, total_pages, page_results.len());
+
+                // Send progress event for summary generation
+                if let Some(ref cb) = progress_cb {
+                    cb(super::progress::ProgressEvent::GeneratingSummary {
+                        current: page_num,
+                        total: total_pages,
+                    });
+                }
+
+                // Generate summary
+                let summary = generate_page_summary(
+                    &question,
+                    &page_results,
+                    page_num,
+                    total_pages,
+                    &**provider,
+                ).await?;
+
+                Ok::<(usize, String), anyhow::Error>((page_num, summary))
+            });
+
+            tasks.push(task);
         }
 
-        current_offset += PAGE_SIZE;
+        // Wait for all tasks in this batch to complete
+        let batch_results = futures::future::join_all(tasks).await;
 
-        // Safety limit: max 20 pages (400 results)
-        if summaries.len() >= 20 {
-            log::warn!("Reached max 20 pages, stopping");
-            break;
+        // Collect results and handle errors
+        let mut batch_summaries: Vec<(usize, String)> = Vec::new();
+        for result in batch_results {
+            match result {
+                Ok(Ok((page_num, summary))) => batch_summaries.push((page_num, summary)),
+                Ok(Err(e)) => return Err(e),
+                Err(e) => return Err(anyhow::anyhow!("Task panicked: {}", e)),
+            }
+        }
+
+        // Sort by page_num to maintain order
+        batch_summaries.sort_by_key(|(page_num, _)| *page_num);
+
+        // Add to all_summaries
+        for (_, summary) in batch_summaries {
+            all_summaries.push(summary);
         }
     }
 
+    let summaries = all_summaries;
+
     log::info!("Generated {} summaries, creating final answer", summaries.len());
+
+    // Send progress event for final answer synthesis
+    if let Some(ref cb) = progress_callback {
+        cb(super::progress::ProgressEvent::SynthesizingAnswer {
+            summary_count: summaries.len(),
+        });
+    }
 
     // Create final answer provider (user's premium model)
     let final_provider = super::providers::create_provider(

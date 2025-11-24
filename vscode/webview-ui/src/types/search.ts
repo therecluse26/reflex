@@ -88,6 +88,26 @@ export type WebviewToExtensionMessage =
 	| { type: 'selectModel'; provider: string; model: string };
 
 /**
+ * Progress event from SSE streaming
+ */
+export interface ProgressEvent {
+	type: 'triaging' | 'answering_from_context' | 'thinking' | 'tools' | 'queries' | 'executing' | 'processing_page' | 'generating_summary' | 'synthesizing_answer' | 'reindexing' | 'answer' | 'error' | 'done';
+	reasoning?: string;
+	needs_context?: boolean;
+	content?: string;
+	tool_calls?: string[];
+	queries?: string[];
+	results_count?: number;
+	execution_time_ms?: number;
+	current?: number;
+	total?: number;
+	summary_count?: number;
+	message?: string;
+	answer?: string;
+	error?: string;
+}
+
+/**
  * Messages from extension to webview
  */
 export type ExtensionToWebviewMessage =
@@ -97,5 +117,6 @@ export type ExtensionToWebviewMessage =
 	| { type: 'chatResponse'; message: ChatMessage }
 	| { type: 'chatHistory'; messages: ChatMessage[] }
 	| { type: 'chatLoading'; isLoading: boolean }
+	| { type: 'chatProgress'; event: ProgressEvent }
 	| { type: 'modelInfo'; provider: string; model: string }
 	| { type: 'availableModels'; models: Record<string, string[]>; currentProvider: string; currentModel: string };

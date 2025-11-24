@@ -1534,6 +1534,7 @@ async fn execute_query_async(
                                 provider_name,
                                 model_override,
                                 api_key,
+                                None, // TUI uses PhaseUpdate, not ProgressEvent
                             ).await {
                                 Ok(answer) => {
                                     let _ = tx.send(PhaseUpdate::Answer { answer });
@@ -1658,6 +1659,7 @@ async fn execute_query_async(
                 provider_name,
                 model_override,
                 api_key,
+                None, // TUI uses PhaseUpdate, not ProgressEvent
             ).await {
                 Ok(answer) => answer,
                 Err(e) => {

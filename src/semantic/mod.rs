@@ -21,6 +21,9 @@ pub mod reporter;
 pub mod chat_session;
 pub mod chat_tui;
 
+// HTTP streaming progress events
+pub mod progress;
+
 // Re-export main types for convenience
 pub use configure::run_configure_wizard;
 pub use executor::{execute_queries, parse_command, ParsedCommand, PaginationInfo};
