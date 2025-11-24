@@ -265,6 +265,7 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
 					content: finalAnswer,
 					timestamp: Date.now()
 				};
+				this.sendChatResponse(responseMessage);
 				this._saveChatMessage(responseMessage);
 			}
 
