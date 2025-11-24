@@ -1593,6 +1593,10 @@ fn handle_serve(port: u16, host: String) -> Result<()> {
     println!("  GET  /query?q=<pattern>&lang=<lang>&kind=<kind>&limit=<n>&symbols=true&regex=true&exact=true&contains=true&expand=true&file=<pattern>&timeout=<secs>&glob=<pattern>&exclude=<pattern>&paths=true&dependencies=true");
     println!("  GET  /stats");
     println!("  POST /index");
+    println!("  POST /chat/sessions");
+    println!("  POST /chat/sessions/:id/messages");
+    println!("  GET  /chat/sessions/:id");
+    println!("  DELETE /chat/sessions/:id");
     println!("\nPress Ctrl+C to stop.");
 
     // Start the server using tokio runtime
@@ -2042,7 +2046,7 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             .ok()
             .map(|ctx| ctx.to_prompt_string());
 
-        // Generate answer
+        // Initialize provider for answer generation
         let provider_instance = match (|| -> Result<_> {
             let mut config = crate::semantic::config::load_config(cache.path())?;
             config.provider = provider_name;
@@ -2056,20 +2060,88 @@ async fn run_server(port: u16, host: String) -> Result<()> {
             }
         };
 
-        let answer = match crate::semantic::generate_answer(
-            &req.message,
-            &agentic_response.results,
-            agentic_response.total_count.unwrap_or(0),
-            agentic_response.gathered_context.as_deref(),
-            codebase_context_str.as_deref(),
-            Some(&conversation_history),
-            &*provider_instance,
-        ).await {
-            Ok(answer) => answer,
-            Err(e) => {
-                log::error!("Failed to generate answer: {}", e);
-                return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Answer generation failed: {}", e)));
+        // Log agentic response details for debugging
+        log::info!("Agentic response: queries={}, results_count={}, total_count={:?}, gathered_context={}",
+            agentic_response.queries.len(),
+            agentic_response.results.len(),
+            agentic_response.total_count,
+            agentic_response.gathered_context.as_ref().map(|c| c.len()).unwrap_or(0)
+        );
+
+        // Paginated answer generation to avoid token limits
+        // Page size: 20 results per page (conservative to stay under 30k TPM limit)
+        const PAGE_SIZE: usize = 20;
+        let total_results = agentic_response.total_count.unwrap_or(0);
+        let mut current_offset = 0;
+        let mut answer_parts = Vec::new();
+
+        log::info!("Generating answer with pagination (total results: {}, page size: {})", total_results, PAGE_SIZE);
+
+        while current_offset < total_results {
+            // Execute queries for this page
+            let (page_results, _, _, pagination) = match crate::semantic::execute_queries(
+                agentic_response.queries.clone(),
+                &cache,
+                Some(PAGE_SIZE),
+                Some(current_offset),
+            ).await {
+                Ok(r) => r,
+                Err(e) => {
+                    log::error!("Failed to execute paginated queries: {}", e);
+                    return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Query execution failed: {}", e)));
+                }
+            };
+
+            log::debug!("Page {}: offset={}, returned {} results, has_more={}",
+                answer_parts.len() + 1, current_offset, page_results.len(), pagination.has_more);
+
+            // Generate answer for this page
+            let page_answer = match crate::semantic::generate_answer(
+                &req.message,
+                &page_results,
+                pagination.total,
+                agentic_response.gathered_context.as_deref(),
+                codebase_context_str.as_deref(),
+                Some(&conversation_history),
+                &*provider_instance,
+            ).await {
+                Ok(answer) => answer,
+                Err(e) => {
+                    log::error!("Failed to generate answer for page: {}", e);
+                    return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Answer generation failed: {}", e)));
+                }
+            };
+
+            answer_parts.push(page_answer);
+
+            // Break if no more results
+            if !pagination.has_more {
+                break;
             }
+
+            current_offset += PAGE_SIZE;
+
+            // Safety limit: max 5 pages (100 total results)
+            if answer_parts.len() >= 5 {
+                log::warn!("Reached max pagination limit (5 pages), stopping");
+                break;
+            }
+        }
+
+        // Combine all answer parts
+        let answer = if answer_parts.is_empty() {
+            // No answers generated - this means all pages failed or returned 0 results
+            log::error!("No answers generated for question: {}", req.message);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to generate answer: no results or all API calls failed. Check server logs for details.".to_string()
+            ));
+        } else if answer_parts.len() == 1 {
+            answer_parts.into_iter().next().unwrap()
+        } else {
+            // Multiple pages - combine with separators
+            log::info!("Combined {} answer parts", answer_parts.len());
+            answer_parts.join("\n\n---\n\n")
         };
 
         // Add answer to session and get timestamp
@@ -2993,8 +3065,8 @@ fn handle_ask(
         log::info!("LLM generated {} queries", semantic_response.queries.len());
 
         // Execute queries for standard mode
-        let (exec_results, exec_total, exec_count_only) = runtime.block_on(async {
-            crate::semantic::execute_queries(semantic_response.queries.clone(), &cache).await
+        let (exec_results, exec_total, exec_count_only, _pagination) = runtime.block_on(async {
+            crate::semantic::execute_queries(semantic_response.queries.clone(), &cache, None, None).await
         }).context("Failed to execute queries")?;
 
         (semantic_response.queries, exec_results, exec_total, exec_count_only, None)
@@ -3067,7 +3139,7 @@ fn handle_ask(
         // Build AgenticQueryResponse for JSON output (includes both queries and results)
         let json_response = crate::semantic::AgenticQueryResponse {
             queries: queries.clone(),
-            results: results.clone(),
+            results: results.to_vec(),
             total_count: if count_only { None } else { Some(total_count) },
             gathered_context: gathered_context.clone(),
             tools_executed: None, // No tools in non-agentic mode

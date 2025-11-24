@@ -148,10 +148,12 @@ pub async fn run_agentic_loop(
         conversation_history,
     ).await?;
 
-    // Phase 4: Execute queries
-    let (results, total_count, count_only) = super::executor::execute_queries(
+    // Phase 4: Execute queries (no pagination for agentic mode)
+    let (results, total_count, count_only, _pagination) = super::executor::execute_queries(
         query_response.queries.clone(),
         cache,
+        None,  // page_limit
+        None,  // page_offset
     ).await?;
 
     log::info!("Executed queries: {} file groups, {} total matches", results.len(), total_count);
@@ -485,10 +487,12 @@ async fn phase_6_refine(
 
     log::info!("Refinement complete: {} refined queries", refined_response.queries.len());
 
-    // Execute refined queries
-    let (results, total_count, count_only) = super::executor::execute_queries(
+    // Execute refined queries (no pagination for refinement)
+    let (results, total_count, count_only, _pagination) = super::executor::execute_queries(
         refined_response.queries.clone(),
         cache,
+        None,  // page_limit
+        None,  // page_offset
     ).await?;
 
     // Evaluate refined results (one final time)

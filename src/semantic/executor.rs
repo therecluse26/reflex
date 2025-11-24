@@ -281,6 +281,15 @@ impl ParsedCommand {
     }
 }
 
+/// Pagination metadata returned by execute_queries
+#[derive(Debug, Clone)]
+pub struct PaginationInfo {
+    pub total: usize,
+    pub has_more: bool,
+    pub current_offset: usize,
+    pub current_limit: usize,
+}
+
 /// Execute multiple queries with ordering and merging
 ///
 /// Queries are executed in order based on their `order` field.
@@ -290,14 +299,24 @@ impl ParsedCommand {
 /// Results are deduplicated by (file_path, start_line, end_line) to avoid duplicates
 /// across multiple queries.
 ///
-/// Returns a tuple of (merged results, total count across all queries, count_only mode).
+/// Optional pagination parameters override any --limit/--offset in query commands.
+///
+/// Returns a tuple of (merged results, total count across all queries, count_only mode, pagination info).
 /// If count_only is true, all queries had --count flag and only the count should be displayed.
 pub async fn execute_queries(
     queries: Vec<QueryCommand>,
     cache: &CacheManager,
-) -> Result<(Vec<FileGroupedResult>, usize, bool)> {
+    page_limit: Option<usize>,
+    page_offset: Option<usize>,
+) -> Result<(Vec<FileGroupedResult>, usize, bool, PaginationInfo)> {
     if queries.is_empty() {
-        return Ok((Vec::new(), 0, false));
+        let pagination = PaginationInfo {
+            total: 0,
+            has_more: false,
+            current_offset: 0,
+            current_limit: 0,
+        };
+        return Ok((Vec::new(), 0, false, pagination));
     }
 
     // Sort queries by order field
@@ -319,8 +338,16 @@ pub async fn execute_queries(
         log::debug!("Executing query {}: {}", query_cmd.order, query_cmd.command);
 
         // Parse command
-        let parsed = parse_command(&query_cmd.command)
+        let mut parsed = parse_command(&query_cmd.command)
             .with_context(|| format!("Failed to parse query command: {}", query_cmd.command))?;
+
+        // Apply pagination overrides if provided
+        if let Some(limit) = page_limit {
+            parsed.limit = Some(limit);
+        }
+        if let Some(offset) = page_offset {
+            parsed.offset = Some(offset);
+        }
 
         // Track if this query has --count flag
         if !parsed.count {
@@ -393,7 +420,20 @@ pub async fn execute_queries(
         all_count_only
     );
 
-    Ok((merged_results, total_count, all_count_only))
+    // Calculate pagination info
+    let current_offset = page_offset.unwrap_or(0);
+    let current_limit = page_limit.unwrap_or(100); // Default limit
+    let returned_count = seen_matches.len();
+    let has_more = current_offset + returned_count < total_count;
+
+    let pagination = PaginationInfo {
+        total: total_count,
+        has_more,
+        current_offset,
+        current_limit,
+    };
+
+    Ok((merged_results, total_count, all_count_only, pagination))
 }
 
 #[cfg(test)]

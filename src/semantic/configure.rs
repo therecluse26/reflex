@@ -21,9 +21,6 @@ const PROVIDERS: &[&str] = &["groq", "openai", "anthropic"];
 /// Available models per provider
 const OPENAI_MODELS: &[&str] = &[
     "gpt-5.1",
-    "gpt-5.1-mini",
-    "gpt-5.1-nano",
-    "gpt-5",
     "gpt-5-mini",
     "gpt-5-nano",
 ];

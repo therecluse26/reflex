@@ -164,7 +164,11 @@ export class ServerManager {
 					cwd: this.workspaceFolder.uri.fsPath,
 					shell: false,
 					detached: false,
-					stdio: ['ignore', 'pipe', 'pipe']
+					stdio: ['ignore', 'pipe', 'pipe'],
+				env: {
+					...process.env,
+					RUST_LOG: 'info'
+				}
 				}
 			);
 
