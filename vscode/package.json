@@ -3,14 +3,43 @@
   "displayName": "Reflex Code Search",
   "description": "Fast, local-first code search powered by Reflex",
   "version": "0.1.0",
-  "publisher": "reflex",
-  "icon": "icon.svg",
+  "publisher": "reflex-search-app",
+  "icon": "assets/reflex-icon.png",
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
+    "Programming Languages",
     "Other"
   ],
+  "keywords": [
+    "search",
+    "code search",
+    "full-text search",
+    "grep",
+    "find",
+    "ripgrep",
+    "reflex",
+    "symbol search",
+    "codebase search",
+    "local search",
+    "ai",
+    "chat",
+    "ask",
+    "trigram",
+    "rust",
+    "fast search"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/reflex-search/reflex.git",
+    "directory": "vscode"
+  },
+  "homepage": "https://github.com/reflex-search/reflex#readme",
+  "bugs": {
+    "url": "https://github.com/reflex-search/reflex/issues"
+  },
   "activationEvents": [
     "onStartupFinished",
     "onView:reflex.searchView"

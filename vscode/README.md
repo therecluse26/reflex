@@ -1,6 +1,6 @@
 # Reflex Code Search for VS Code
 
-Fast, local-first code search powered by [Reflex](https://github.com/your-org/reflex).
+Fast, local-first code search powered by [Reflex](https://github.com/reflex-search/reflex).
 
 ## Features
 
@@ -14,14 +14,17 @@ Fast, local-first code search powered by [Reflex](https://github.com/your-org/re
 - One-click re-indexing from the search panel
 - Status notifications for indexing progress
 
-### AI-Powered Chat (Coming Soon)
+### AI-Powered Chat
 - Ask questions about your codebase using natural language
 - Powered by your choice of AI provider (OpenAI, Anthropic, Groq)
+- Streaming responses with real-time progress updates
+- Persistent conversation history
+- Codebase-aware responses with automatic search integration
 
 ## Requirements
 
 - **Reflex CLI** must be installed and available in your PATH
-  - Install from: [Reflex Releases](https://github.com/your-org/reflex/releases)
+  - Install from: [Reflex Releases](https://github.com/reflex-search/reflex/releases)
   - Or build from source: `cargo install --path .`
 
 ## Installation
@@ -49,17 +52,36 @@ Click the "Re-Index" button in the search panel to rebuild the Reflex index for 
 
 ### Commands
 
+- `Reflex: Re-Index Project` - Rebuild the search index for your workspace
+- `Reflex: Configure AI Provider` - Set up your AI provider and API key for chat
+- `Reflex: Clear Chat History` - Reset your conversation history
 - `Reflex: Hello World` - Test command to verify extension is working
 
 ## Configuration
 
-Currently, configuration is managed through `~/.reflex/config.toml`. VS Code-specific settings will be added in a future release.
+### Extension Settings
+
+- **Reflex: Binary Path** - Custom path to rfx binary (leave empty to use PATH)
+- **Reflex: AI Provider** - Choose between OpenAI, Anthropic, or Groq for chat
+- **Reflex: Prompt Gitignore** - Automatically prompt to add `.reflex/` to `.gitignore`
+
+### AI Chat Setup
+
+To use the AI-powered chat feature:
+
+1. Run the command `Reflex: Configure AI Provider` from the Command Palette
+2. Choose your preferred provider (OpenAI, Anthropic, or Groq)
+3. Enter your API key when prompted
+4. Start chatting in the search panel's Chat tab
+
+Alternatively, you can manually configure via `~/.reflex/config.toml`.
 
 ## Known Issues
 
 - This is an early preview release
-- Search panel UI is in active development
-- Chat participant feature is not yet implemented
+- API keys must be configured manually via command palette or config file
+- Chat history is stored in VS Code workspace state (not synced across machines)
+- Some advanced search features (AST queries, dependency analysis) not yet exposed in UI
 
 ## Release Notes
 
